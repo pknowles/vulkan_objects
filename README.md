@@ -1,3 +1,15 @@
+# vko: Vulkan Objects
+
+This library is an RAII wrapper around some core parts of the vulkan SDK.
+The aims are:
+
+1. Dependencies are implied by the language
+
+   Delayed initialization allows you to create an object before its dependencies
+   are created or even in scope. This makes using it difficult. For example, you
+   can't create a VkDevice before a VkInstance.
+
+2. Lifetime and ownership is well defined
 
 # volk vulkan loader
 FetchContent_Declare(
