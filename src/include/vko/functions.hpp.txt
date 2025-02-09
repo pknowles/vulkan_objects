@@ -1,0 +1,134 @@
+// Copyright (c) 2025 Pyarelal Knowles, MIT License
+// This file was generated from {{ template_filename }}. Do not edit directly.
+{# Ignore that. This is the original! #}
+#pragma once
+
+#ifndef VK_NO_PROTOTYPES
+#error vulkan_objects expects VK_NO_PROTOTYPES to be defined by the build system
+#endif
+
+#include <vulkan/vulkan_core.h>
+
+namespace vko
+{
+
+// Top level functions that are loaded directly from the vulkan loader, driver
+// or anything that provides a top level "vkGetInstanceProcAddr" (which may
+// actually be called with a null instance in order to load "vkCreateInstance").
+struct GlobalCommands
+{
+    GlobalCommands(PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr);
+## for command in global_commands
+{% if command in platform_commands %}
+{% else %}
+    PFN_{{ command }} {{ command }};
+{% endif %}
+## endfor
+
+    // Platform commands (presumably none)
+## for extgroup in extension_group_commands
+{% if extgroup.hasPlatform and "" in extgroup.parents %}
+#if defined({{ join(extgroup.extensions, ") || defined(") }})
+## for command in extgroup.commands
+    PFN_{{ command }} {{ command }};
+## endfor
+#endif
+{% endif %}
+## endfor
+};
+
+// Instance function table
+// An "instance function" is any Vulkan function where the first parameter is an
+// instance object or no object at all.
+struct InstanceCommands
+{
+    InstanceCommands(VkInstance instance, PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr);
+## for command in instance_commands
+{% if command in platform_commands %}
+{% else %}
+    PFN_{{ command }} {{ command }};
+{% endif %}
+## endfor
+
+    // Platform commands
+## for extgroup in extension_group_commands
+{% if extgroup.hasPlatform and "VkInstance" in extgroup.parents %}
+#if defined({{ join(extgroup.extensions, ") || defined(") }})
+## for command in extgroup.commands
+    PFN_{{ command }} {{ command }};
+## endfor
+#endif
+{% endif %}
+## endfor
+};
+
+// Device function table
+// A "device function" is any Vulkan function which takes any device object as
+// its first parameter or a child object of the device. The vast majority of
+// Vulkan functions are device functions. Some Vulkan device functions are:
+struct DeviceCommands
+{
+    DeviceCommands(VkDevice device, PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr);
+## for command in device_commands
+{% if command in platform_commands %}
+{% else %}
+    PFN_{{ command }} {{ command }};
+{% endif %}
+## endfor
+
+    // Platform commands
+## for extgroup in extension_group_commands
+{% if extgroup.hasPlatform and "VkDevice" in extgroup.parents %}
+#if defined({{ join(extgroup.extensions, ") || defined(") }})
+## for command in extgroup.commands
+    PFN_{{ command }} {{ command }};
+## endfor
+#endif
+{% endif %}
+## endfor
+};
+
+{#
+// Features
+## for feature in findall("//feature/require/command/../../@name")
+#define VKO_{{ feature }}_commands \
+## for command in findall("//feature[@name='" + feature + "']/require/command/@name")
+    {{ command }}{% if not loop.is_last %}
+ \
+    {% else %}
+
+    {% endif %}
+## endfor
+## endfor
+
+// Extensions
+## for extension in findall("//extensions/extension/require/command/../../@name")
+#if {{ extension }}
+#define VKO_{{ extension }}_commands \
+## for command in findall("//extensions/extension[@name='" + extension + "']/require/command/@name")
+    {{ command }}{% if not loop.is_last %}
+ \
+    {% else %}
+
+    {% endif %}
+## endfor
+#else
+#define VKO_{{ extension }}_commands
+#endif
+## endfor
+
+// Combined
+#define VKO_ALL_commands \
+## for feature in findall("//feature/require/command/../../@name")
+    VKO_{{ feature }}_commands \
+## endfor
+## for extension in findall("//extensions/extension/require/command/../../@name")
+    VKO_{{ extension }}_commands{% if not loop.is_last %}
+ \
+    {% else %}
+
+    {% endif %}
+## endfor
+#}
+
+}  // namespace vko

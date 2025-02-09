@@ -1,17 +1,26 @@
+
+> [!CAUTION]
+> Incomplete. This doesn't even compile yet.
+
 # vko: Vulkan Objects
 
-This library is an RAII wrapper around some core parts of the vulkan SDK. It is
-primarily a thin API wrapper, not an engine or rendering abstraction. That said,
-there are some optional utilities to make very specific but common operations
-easy to write.
+This library is a self-contained Vulkan 3D Graphics API provider and thin RAII
+wrapper. It is not an engine or rendering abstraction. That said, there are some
+optional utilities to make very specific but common operations easy to write.
+Naturally, these are layered on top and in separate headers.
 
 The aims are:
 
 1. Dependencies are implied by the language
 
-   Delayed initialization allows you to create an object before its dependencies
-   are created or even in scope. This makes using it difficult. For example, you
-   can't create a VkDevice before a VkInstance.
+   No default initialization. Delayed initialization would allow you to create
+   an object before its dependencies are created or even in scope. This would
+   make using the library ambiguous and error prone. For example, you can't
+   create a VkCommandPool before a VkDevice and by forcing initialization a user
+   will immediately be reminded to create the VkDevice first.
+
+   If it's truly needed there is always std::optional and std::unique_ptr, which
+   better show the intent of a nullable object.
 
 2. Objects are general and have minimal dependencies
 
@@ -19,11 +28,65 @@ The aims are:
    easy to write. Objects should be reusable and not impose unnecessary
    limitations. A big part of this is the single-responsibility principle.
 
-3. Lifetime and ownership is well defined
+3. Simple, singular implementation
 
-   Standard RAII: out of scope cleanup, no leaks, help avoid dangling pointers.
-   Most objects are not copyable. This matches the API: you can't copy a
-   VkDevice.
+   Supporting older versions and multiple ways to do things for different edge
+   cases is hard. I'm only one person. I'll pick one way and do it well,
+   hopefully without limiting important features.
+
+   It includes vulkan from:
+
+   - https://github.com/KhronosGroup/Vulkan-Headers for vulkan_core.h and
+     platform-specific headers
+   - https://github.com/KhronosGroup/Vulkan-Docs for vk.xml
+
+   This library includes its own vulkan function pointer loader, like
+   [volk](https://github.com/zeux/volk), but because vulkan_core.h is included,
+   there is no need to support different versions. It's all one thing.
+
+4. Lifetime and ownership is well defined
+
+   Standard RAII: out of scope cleanup, no leaks, help avoid dangling pointers,
+   be safe knowing if you have a handle the object is valid and initialized.
+   Most objects are move-only and not copyable. This matches the API, e.g. you
+   can't copy a VkDevice.
+
+5. No effort plumbing
+
+   Use existing structures to hold data. E.g. there are already many
+   `*CreateInfo` structs that can be taken as an argument. No need to
+   unpack/forward/pack arguments. This is the single definition rule.
+
+   Once objects are allocated, use the Vulkan C API for certain operations. I.e.
+   there is no wrapping raw `vk*()` calls as members on objects. It might look
+   right to add a `drawIndexed()` (calling `vkCmdDrawIndexed`) call on a
+   `CommandBuffer` object, but maybe that's never used because the raw
+   `VkCommandBuffer` is passed to some higher level object and then
+   `CommandBuffer` doesn't have to "know" about drawing.
+
+   Vulkan comes with an official C++
+   [vulkan.hpp](https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/vulkan/vulkan.hpp)
+   and
+   [vulkan_raii.hpp](https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/vk_raii_ProgrammingGuide.md)
+   that do this. They're heavyweight in terms of line count. No really, 15MB+ of
+   pure header files. They also mix in helpers, which are great, but there's no
+   layering to pick just what you want to use. Admittedly, it's nice to type `.`
+   and have your IDE auto-complete methods.
+
+## Issues
+
+- Some `vkCreate*` calls are plural but have singular destruction. E.g.
+  `vkCreateGraphicsPipelines` -> `vkDestroyPipeline`. By default, singular
+  constructors will be created. If needed, a `makePipelines()` wrapper can be
+  added to allow the driver to create these objects in batches, before splitting
+  them to individual C++ objects.
+- Some `vkCreate*` calls are plural and have plural destruction, e.g.
+  `vkAllocateCommandBuffers` -> `vkFreeCommandBuffer`. Ideally these would be
+  modelled with a plural `CommandBuffers` container. On balance being able to
+  split up ownership with an individual `CommandBuffer` object is more useful.
+  Thus, singular objects will be the norm until someone tells me this impacts
+  perf significantly. Nothing prevents plural objects being added in the future.
+- Some `vkCreate*` have no destruction. E.g. `vkCreateDisplayModeKHR`. \*shruggie\*
 
 ## Error handling
 
@@ -46,6 +109,10 @@ See:
 With that decision made, we need improved tooling. Particularly smooth and
 intuitive experience debugging IDEs and debuggers to be able to break for
 specific exception categories. Don't throw the baby out with the bathwater.
+
+## Generated code
+
+
 
 # volk vulkan loader
 

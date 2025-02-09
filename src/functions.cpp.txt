@@ -1,0 +1,73 @@
+// Copyright (c) 2025 Pyarelal Knowles, MIT License
+// This file was generated from {{ template_filename }}. Do not edit directly.
+{# Ignore that. This is the original! #}
+
+#include <vko/functions.hpp>
+
+namespace vko
+{
+
+GlobalCommands::GlobalCommands(PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr)
+{% set sep = ":" %}
+## for command in global_commands
+{% if command in platform_commands %}
+{% else %}
+    {{ sep }} {{ command }}(reinterpret_cast<PFN_{{ command }}>(vkGetInstanceProcAddr(nullptr, "{{ command }}")))
+    {% set sep = "," %}
+{% endif %}
+## endfor
+## for extgroup in extension_group_commands
+{% if extgroup.hasPlatform and "" in extgroup.parents %}
+#if defined({{ join(extgroup.extensions, ") || defined(") }})
+## for command in extgroup.commands
+    {{ sep }} {{ command }}(reinterpret_cast<PFN_{{ command }}>(vkGetInstanceProcAddr(nullptr, "{{ command }}")))
+## endfor
+#endif
+{% endif %}
+## endfor
+{
+}
+
+InstanceCommands::InstanceCommands(VkInstance instance, PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr)
+{% set sep = ":" %}
+## for command in instance_commands
+{% if command in platform_commands %}
+{% else %}
+    {{ sep }} {{ command }}(reinterpret_cast<PFN_{{ command }}>(vkGetInstanceProcAddr(instance, "{{ command }}")))
+    {% set sep = "," %}
+{% endif %}
+## endfor
+## for extgroup in extension_group_commands
+{% if extgroup.hasPlatform and "VkInstance" in extgroup.parents %}
+#if defined({{ join(extgroup.extensions, ") || defined(") }})
+## for command in extgroup.commands
+    {{ sep }} {{ command }}(reinterpret_cast<PFN_{{ command }}>(vkGetInstanceProcAddr(instance, "{{ command }}")))
+## endfor
+#endif
+{% endif %}
+## endfor
+{
+}
+
+DeviceCommands::DeviceCommands(VkDevice device, PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr)
+{% set sep = ":" %}
+## for command in device_commands
+{% if command in platform_commands %}
+{% else %}
+    {{ sep }} {{ command }}(reinterpret_cast<PFN_{{ command }}>(vkGetDeviceProcAddr(device, "{{ command }}")))
+    {% set sep = "," %}
+{% endif %}
+## endfor
+## for extgroup in extension_group_commands
+{% if extgroup.hasPlatform and "VkDevice" in extgroup.parents %}
+#if defined({{ join(extgroup.extensions, ") || defined(") }})
+## for command in extgroup.commands
+    {{ sep }} {{ command }}(reinterpret_cast<PFN_{{ command }}>(vkGetDeviceProcAddr(device, "{{ command }}")))
+## endfor
+#endif
+{% endif %}
+## endfor
+{
+}
+
+}  // namespace vko

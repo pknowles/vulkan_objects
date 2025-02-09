@@ -14,7 +14,6 @@ if(NOT GTest_FOUND)
   FetchContent_MakeAvailable(googletest)
 endif()
 
-find_package(GTest QUIET)
 FetchContent_Declare(
     volk
     GIT_REPOSITORY https://github.com/zeux/volk.git
@@ -26,8 +25,9 @@ FetchContent_MakeAvailable(volk)
 
 # Unit tests
 add_executable(unit_tests
-    )
-target_link_libraries(unit_tests gtest_main)
+  src/test.cpp
+  )
+target_link_libraries(unit_tests vulkan_objects gtest_main)
 
 if(MSVC)
   target_compile_options(unit_tests PRIVATE /W4 /WX)

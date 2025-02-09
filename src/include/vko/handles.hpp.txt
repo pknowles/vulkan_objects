@@ -1,0 +1,92 @@
+// Copyright (c) 2025 Pyarelal Knowles, MIT License
+// This file was generated from {{ template_filename }}. Do not edit directly.
+{# Ignore that. This is the original! #}
+#pragma once
+
+#include <vulkan/vulkan_core.h>
+#include <string_view>
+#include <stdexcept>
+#include <vko/functions.hpp>
+
+namespace vko
+{
+
+constexpr std::string_view toString(VkResult result)
+{
+    switch (result) 
+    {
+## for result in findall("//enums[@name='VkResult']/enum/@name")
+    case {{ result }}: return "{{ result }}";
+## endfor
+    default: break;
+    }
+    return "<invalid result>";
+}
+
+class Error : public std::runtime_error {
+public:
+    Error(VkResult result)
+        : std::runtime_error(std::string(toString(result))) {}
+};
+
+template <class T, class Owner, class CreateInfo, auto CreateFunc, auto DestroyFunc>
+class Handle {
+public:
+    Handle(Owner owner, const CreateInfo& createInfo) {
+        VkResult result = CreateFunc(owner, &createInfo, nullptr, &m_handle);
+        if (result != VK_SUCCESS)
+            throw Error(result);
+    }
+    ~Handle() { destroy(); }
+    Handle(const Handle& other) = delete;
+    Handle(Handle&& other) noexcept
+        : m_owner(other.m_owner),
+          m_handle(other.m_handle) {
+        other.m_handle = VK_NULL_HANDLE;
+    }
+    Handle& operator=(const Handle& other) = delete;
+    Handle& operator=(Handle&& other) {
+        destroy();
+        m_owner = other.m_owner;
+        m_handle = other.m_handle;
+        other.m_handle = VK_NULL_HANDLE;
+        return *this;
+    }
+    operator T() const { return m_handle; }
+    explicit operator bool() const { return m_handle != VK_NULL_HANDLE; }
+
+private:
+    void destroy() {
+        if (m_handle != VK_NULL_HANDLE)
+            DestroyFunc(m_owner, m_handle, nullptr);
+    }
+    Owner m_owner = VK_NULL_HANDLE;
+    T     m_handle = VK_NULL_HANDLE;
+};
+
+// Special case VkInstance
+using InstanceHandle = Handle<VkInstance, GlobalCommands, VkInstanceCreateInfo, &GlobalCommands::vkCreateInstance, &GlobalCommands::vkDestroyInstance>;
+class Instance : public InstanceHandle, public InstanceCommands{};
+
+// Special case VkDevice
+using DeviceHandle = Handle<VkDevice, Instance, VkDeviceCreateInfo, &InstanceCommands::vkCreateDevice, &InstanceCommands::vkDestroyDevice>;
+class Device : public DeviceHandle, public InstanceCommands{};
+
+## for handle in handles
+{% if handle.failure %}
+// Skipping {{ handle.name }} for {{ handle.create }}: {{ handle.failure }}
+{% else %}
+{% if handle.extension %}
+#if defined({{ handle.extension }})
+{% endif %}
+{% if "Vk" + handle.name != handle.owner %}
+{% set owner=substr(handle.owner, 2) %}
+using {{ handle.name }} = Handle<{{ handle.type }}, {{ owner }}, {{ handle.createInfo }}, &{{ owner }}Commands::{{ handle.create }}, &{{ owner }}Commands::{{ handle.destroy }}>;
+{% endif %}
+{% if handle.extension %}
+#endif  // defined({{ handle.extension }})
+{% endif %}
+{% endif %}
+## endfor
+
+}  // namespace vko
