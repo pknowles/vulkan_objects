@@ -1,17 +1,26 @@
+
+> [!CAUTION]
+> Incomplete. This doesn't even compile yet.
+
 # vko: Vulkan Objects
 
 This library is an RAII wrapper around some core parts of the vulkan SDK. It is
 primarily a thin API wrapper, not an engine or rendering abstraction. That said,
 there are some optional utilities to make very specific but common operations
-easy to write.
+easy to write. Naturally, these are layered on top and in separate headers.
 
 The aims are:
 
 1. Dependencies are implied by the language
 
-   Delayed initialization allows you to create an object before its dependencies
-   are created or even in scope. This makes using it difficult. For example, you
-   can't create a VkDevice before a VkInstance.
+   No default initialization. Delayed initialization would allow you to create
+   an object before its dependencies are created or even in scope. This would
+   make using the library ambiguous and error prone. For example, you can't
+   create a VkCommandPool before a VkDevice and by forcing initialization a user
+   will immediately be reminded to create the VkDevice first.
+
+   If it's truly needed there is always std::optional and std::unique_ptr, which
+   better show the intent of a nullable object.
 
 2. Objects are general and have minimal dependencies
 
@@ -19,11 +28,18 @@ The aims are:
    easy to write. Objects should be reusable and not impose unnecessary
    limitations. A big part of this is the single-responsibility principle.
 
-3. Lifetime and ownership is well defined
+3. Simple, singular implementation
 
-   Standard RAII: out of scope cleanup, no leaks, help avoid dangling pointers.
-   Most objects are not copyable. This matches the API: you can't copy a
-   VkDevice.
+   Supporting older versions and multiple ways to do things for different edge
+   cases is hard. I'm only one person. I'll pick one way and do it well,
+   hopefully without limiting important features.
+
+4. Lifetime and ownership is well defined
+
+   Standard RAII: out of scope cleanup, no leaks, help avoid dangling pointers,
+   be safe knowing if you have a handle the object is valid and initialized.
+   Most objects are move-only and not copyable. This matches the API, e.g. you
+   can't copy a VkDevice.
 
 ## Error handling
 
@@ -46,6 +62,10 @@ See:
 With that decision made, we need improved tooling. Particularly smooth and
 intuitive experience debugging IDEs and debuggers to be able to break for
 specific exception categories. Don't throw the baby out with the bathwater.
+
+## Generated code
+
+
 
 # volk vulkan loader
 

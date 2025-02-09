@@ -1,0 +1,79 @@
+// Copyright (c) 2025 Pyarelal Knowles, MIT License
+
+#include <vulkan/vulkan_core.h>
+
+namespace vko
+{
+
+template <class T, auto DestroyFunc>
+class VulkanHandle
+{
+public:
+  // Support empty construction for non-raii users. Note that the address of the
+  // object can never be taken.
+  VulkanHandle() = default;
+
+  // Allow a raw handle to be passed in for automatic deletion
+  VulkanHandle(VkDevice device, T&& handle)  // require std::move() so there's a clear change of ownership
+      : m_device(device)
+      , m_handle(handle)
+  {
+  }
+  ~VulkanHandle() { destroy(); }
+  VulkanHandle(const VulkanHandle& other) = delete;
+  VulkanHandle(VulkanHandle&& other) noexcept
+      : m_device(other.m_device)
+      , m_handle(other.m_handle)
+  {
+    other.m_handle = VK_NULL_HANDLE;
+  }
+  VulkanHandle& operator=(const VulkanHandle& other) = delete;
+  VulkanHandle& operator=(VulkanHandle&& other)
+  {
+    destroy();
+    m_device       = other.m_device;
+    m_handle       = other.m_handle;
+    other.m_handle = VK_NULL_HANDLE;
+    return *this;
+  }
+  operator T() const { return m_handle; }
+  explicit operator bool() const { return m_handle != VK_NULL_HANDLE; }
+
+private:
+  void destroy()
+  {
+    if(m_handle != VK_NULL_HANDLE)
+      DestroyFunc(m_device, m_handle, nullptr);
+  }
+  VkDevice m_device = VK_NULL_HANDLE;
+  T        m_handle = VK_NULL_HANDLE;
+};
+
+template <class T, class CreateInfo, auto CreateFunc, auto DestroyFunc>
+class ConstructingVulkanHandle : public VulkanHandle<T, DestroyFunc>
+{
+public:
+  using VulkanHandle<T, DestroyFunc>::VulkanHandle;
+  ConstructingVulkanHandle(VkDevice device, const CreateInfo& createInfo)
+      : VulkanHandle<T, DestroyFunc>(device, create(device, createInfo))
+  {
+  }
+
+private:
+  static T create(VkDevice device, const CreateInfo& createInfo)
+  {
+    T result = VK_NULL_HANDLE;
+    NVVK_CHECK(CreateFunc(device, &createInfo, nullptr, &result));
+    return result;
+  }
+};
+
+## for type in findall("//types/type[@category='handle']/name")
+{%
+	set base=sub("^Vk|[A-Z]{2,}$", "", type.inner)
+%}{%
+	set suffix=search("[A-Z]{2,}$", type.inner)
+%}using {{ base }}{{ suffix }} = ConstructingVulkanHandle<{{ type.inner }}, Vk{{ base }}CreateInfo{{ suffix }}, vkCreate{{ base }}{{ suffix }}, vkDestroy{{ base }}{{ suffix }}>;
+## endfor
+
+}  // namespace vko
