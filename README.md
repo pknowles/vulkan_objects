@@ -41,6 +41,22 @@ The aims are:
    Most objects are move-only and not copyable. This matches the API, e.g. you
    can't copy a VkDevice.
 
+## Issues
+
+- Some `vkCreate*` calls are plural but have singular destruction. E.g.
+  `vkCreateGraphicsPipelines` -> `vkDestroyPipeline`. By default, singular
+  constructors will be created. If needed, a `makePipelines()` wrapper can be
+  added to allow the driver to create these objects in batches, before splitting
+  them to individual C++ objects.
+- Some `vkCreate*` calls are plural and have plural destruction, e.g.
+  `vkAllocateCommandBuffers` -> `vkFreeCommandBuffer`. Ideally these would be
+  modelled with a plural `CommandBuffers` container. On balance being able to
+  split up ownership with an individual `CommandBuffer` object is more useful.
+  Thus, singular objects will be the norm until someone tells me this impacts
+  perf significantly. Nothing prevents plural objects being added in the future.
+- Some `vkCreate*` have no destruction. E.g. `vkCreateDisplayModeKHR`. \*shruggie\*
+
+
 ## Error handling
 
 Exceptions

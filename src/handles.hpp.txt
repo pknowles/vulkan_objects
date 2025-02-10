@@ -1,37 +1,62 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
+{#
+===========================================================================
+This is the template file for handles.hpp, processed with the inja template
+engine library.
+===========================================================================
+#}
 
 #include <vulkan/vulkan_core.h>
+#include <string_view>
+#include <stdexcept>
 
 namespace vko
 {
 
-template <class T, auto DestroyFunc>
-class VulkanHandle
+
+constexpr std::string_view toString(VkResult result)
+{
+    switch (result) 
+    {
+## for result in findall("//enums[@name='VkResult']/enum/@name")
+    case {{ result }}: return "{{ result }}";
+## endfor
+    default: break;
+    }
+    return "<invalid result>";
+}
+
+
+class Error : public std::runtime_error
 {
 public:
-  // Support empty construction for non-raii users. Note that the address of the
-  // object can never be taken.
-  VulkanHandle() = default;
+    Error(VkResult result) : std::runtime_error(std::string(toString(result))) {}
+};
 
-  // Allow a raw handle to be passed in for automatic deletion
-  VulkanHandle(VkDevice device, T&& handle)  // require std::move() so there's a clear change of ownership
-      : m_device(device)
-      , m_handle(handle)
+
+template <class T, class Owner, class CreateInfo, auto CreateFunc, auto DestroyFunc>
+class Handle
+{
+public:
+  Handle(Owner owner, const CreateInfo& createInfo)
   {
+      VkResult result = CreateFunc(owner, &createInfo, nullptr, &m_handle);
+      if (result != VK_SUCCESS)
+          throw Error(result);
   }
-  ~VulkanHandle() { destroy(); }
-  VulkanHandle(const VulkanHandle& other) = delete;
-  VulkanHandle(VulkanHandle&& other) noexcept
-      : m_device(other.m_device)
+  ~Handle() { destroy(); }
+  Handle(const Handle& other) = delete;
+  Handle(Handle&& other) noexcept
+      : m_owner(other.m_owner)
       , m_handle(other.m_handle)
   {
     other.m_handle = VK_NULL_HANDLE;
   }
-  VulkanHandle& operator=(const VulkanHandle& other) = delete;
-  VulkanHandle& operator=(VulkanHandle&& other)
+  Handle& operator=(const Handle& other) = delete;
+  Handle& operator=(Handle&& other)
   {
     destroy();
-    m_device       = other.m_device;
+    m_owner       = other.m_owner;
     m_handle       = other.m_handle;
     other.m_handle = VK_NULL_HANDLE;
     return *this;
@@ -43,37 +68,25 @@ private:
   void destroy()
   {
     if(m_handle != VK_NULL_HANDLE)
-      DestroyFunc(m_device, m_handle, nullptr);
+      DestroyFunc(m_owner, m_handle, nullptr);
   }
-  VkDevice m_device = VK_NULL_HANDLE;
-  T        m_handle = VK_NULL_HANDLE;
+  Owner m_owner = VK_NULL_HANDLE;
+  T     m_handle = VK_NULL_HANDLE;
 };
 
-template <class T, class CreateInfo, auto CreateFunc, auto DestroyFunc>
-class ConstructingVulkanHandle : public VulkanHandle<T, DestroyFunc>
-{
-public:
-  using VulkanHandle<T, DestroyFunc>::VulkanHandle;
-  ConstructingVulkanHandle(VkDevice device, const CreateInfo& createInfo)
-      : VulkanHandle<T, DestroyFunc>(device, create(device, createInfo))
-  {
-  }
 
-private:
-  static T create(VkDevice device, const CreateInfo& createInfo)
-  {
-    T result = VK_NULL_HANDLE;
-    NVVK_CHECK(CreateFunc(device, &createInfo, nullptr, &result));
-    return result;
-  }
-};
-
-## for type in findall("//types/type[@category='handle']/name")
-{%
-	set base=sub("^Vk|[A-Z]{2,}$", "", type.inner)
-%}{%
-	set suffix=search("[A-Z]{2,}$", type.inner)
-%}using {{ base }}{{ suffix }} = ConstructingVulkanHandle<{{ type.inner }}, Vk{{ base }}CreateInfo{{ suffix }}, vkCreate{{ base }}{{ suffix }}, vkDestroy{{ base }}{{ suffix }}>;
+## for handle in handles
+{% if handle.failure %}
+// Skipping {{ handle.name }} for {{ handle.create }}: {{ handle.failure }}
+{% else %}
+{% if handle.extension %}
+#if defined({{ handle.extension }})
+{% endif %}
+using {{ handle.name }} = Handle<{{ handle.type }}, {{ handle.owner }}, {{ handle.createInfo }}, {{ handle.create }}, {{ handle.destroy }}>;
+{% if handle.extension %}
+#endif  // defined({{ handle.extension }})
+{% endif %}
+{% endif %}
 ## endfor
 
 }  // namespace vko
