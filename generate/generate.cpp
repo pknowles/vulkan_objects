@@ -68,7 +68,12 @@ int main(int argc, char** argv) {
 
     env.add_callback("find", 1, [&spec](inja::Arguments& args) {
         pugi::xpath_node path = spec.select_node(args.at(0)->get<std::string>().c_str());
-        return toJson(path.node());
+        inja::json result;
+        if(path && path.node())
+            result = inja::json(path.node().value());
+        else if (path)
+            result = inja::json(path.attribute().value());
+        return result;
     });
 
     env.add_callback("findall", 1, [&spec](inja::Arguments& args) {

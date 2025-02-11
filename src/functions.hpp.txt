@@ -1,0 +1,56 @@
+// Copyright (c) 2025 Pyarelal Knowles, MIT License
+{#
+=============================================================================
+This is the template file for functions.hpp, processed with the inja template
+engine library.
+=============================================================================
+#}
+#pragma once
+
+#include <vulkan/vulkan_core.h>
+
+namespace vko
+{
+
+// Features
+## for feature in findall("//feature/require/command/../../@name")
+#define VKO_{{ feature }}_commands \
+## for command in findall("//feature[@name='" + feature + "']/require/command/@name")
+    {{ command }}{% if not loop.is_last %}
+ \
+    {% else %}
+
+    {% endif %}
+## endfor
+## endfor
+
+// Extensions
+## for extension in findall("//extensions/extension/require/command/../../@name")
+#if {{ extension }}
+#define VKO_{{ extension }}_commands \
+## for command in findall("//extensions/extension[@name='" + extension + "']/require/command/@name")
+    {{ command }}{% if not loop.is_last %}
+ \
+    {% else %}
+
+    {% endif %}
+## endfor
+#else
+#define VKO_{{ extension }}_commands
+#endif
+## endfor
+
+// Combined
+#define VKO_ALL_commands \
+## for feature in findall("//feature/require/command/../../@name")
+    VKO_{{ feature }}_commands \
+## endfor
+## for extension in findall("//extensions/extension/require/command/../../@name")
+    VKO_{{ extension }}_commands{% if not loop.is_last %}
+ \
+    {% else %}
+
+    {% endif %}
+## endfor
+
+}  // namespace vko

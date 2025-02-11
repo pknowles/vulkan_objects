@@ -10,6 +10,7 @@ set(generated_directory "${CMAKE_CURRENT_BINARY_DIR}/include/vko")
 file(MAKE_DIRECTORY "${generated_directory}")
 set(generated_sources
   src/handles.hpp.txt
+  src/functions.hpp.txt
   )
 add_custom_target(vulkan_objects_headers)
 

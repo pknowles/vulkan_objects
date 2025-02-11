@@ -4,10 +4,10 @@
 
 # vko: Vulkan Objects
 
-This library is an RAII wrapper around some core parts of the vulkan SDK. It is
-primarily a thin API wrapper, not an engine or rendering abstraction. That said,
-there are some optional utilities to make very specific but common operations
-easy to write. Naturally, these are layered on top and in separate headers.
+This library is a self-contained Vulkan 3D Graphics API provider and thin RAII
+wrapper. It is not an engine or rendering abstraction. That said, there are some
+optional utilities to make very specific but common operations easy to write.
+Naturally, these are layered on top and in separate headers.
 
 The aims are:
 
@@ -34,12 +34,44 @@ The aims are:
    cases is hard. I'm only one person. I'll pick one way and do it well,
    hopefully without limiting important features.
 
+   It includes vulkan from:
+
+   - https://github.com/KhronosGroup/Vulkan-Headers for vulkan_core.h and
+     platform-specific headers
+   - https://github.com/KhronosGroup/Vulkan-Docs for vk.xml
+
+   This library includes its own vulkan function pointer loader, like
+   [volk](https://github.com/zeux/volk), but because vulkan_core.h is included,
+   there is no need to support different versions. It's all one thing.
+
 4. Lifetime and ownership is well defined
 
    Standard RAII: out of scope cleanup, no leaks, help avoid dangling pointers,
    be safe knowing if you have a handle the object is valid and initialized.
    Most objects are move-only and not copyable. This matches the API, e.g. you
    can't copy a VkDevice.
+
+5. No effort plumbing
+
+   Use existing structures to hold data. E.g. there are already many
+   `*CreateInfo` structs that can be taken as an argument. No need to
+   unpack/forward/pack arguments. This is the single definition rule.
+
+   Once objects are allocated, use the Vulkan C API for certain operations. I.e.
+   there is no wrapping raw `vk*()` calls as members on objects. It might look
+   right to add a `drawIndexed()` (calling `vkCmdDrawIndexed`) call on a
+   `CommandBuffer` object, but maybe that's never used because the raw
+   `VkCommandBuffer` is passed to some higher level object and then
+   `CommandBuffer` doesn't have to "know" about drawing.
+
+   Vulkan comes with an official C++
+   [vulkan.hpp](https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/vulkan/vulkan.hpp)
+   and
+   [vulkan_raii.hpp](https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/vk_raii_ProgrammingGuide.md)
+   that do this. They're heavyweight in terms of line count. No really, 15MB+ of
+   pure header files. They also mix in helpers, which are great, but there's no
+   layering to pick just what you want to use. Admittedly, it's nice to type `.`
+   and have your IDE auto-complete methods.
 
 ## Issues
 
@@ -55,7 +87,6 @@ The aims are:
   Thus, singular objects will be the norm until someone tells me this impacts
   perf significantly. Nothing prevents plural objects being added in the future.
 - Some `vkCreate*` have no destruction. E.g. `vkCreateDisplayModeKHR`. \*shruggie\*
-
 
 ## Error handling
 

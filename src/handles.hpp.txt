@@ -5,6 +5,7 @@ This is the template file for handles.hpp, processed with the inja template
 engine library.
 ===========================================================================
 #}
+#pragma once
 
 #include <vulkan/vulkan_core.h>
 #include <string_view>
@@ -12,7 +13,6 @@ engine library.
 
 namespace vko
 {
-
 
 constexpr std::string_view toString(VkResult result)
 {
@@ -26,54 +26,112 @@ constexpr std::string_view toString(VkResult result)
     return "<invalid result>";
 }
 
-
-class Error : public std::runtime_error
-{
+class Error : public std::runtime_error {
 public:
-    Error(VkResult result) : std::runtime_error(std::string(toString(result))) {}
+    Error(VkResult result)
+        : std::runtime_error(std::string(toString(result))) {}
 };
-
 
 template <class T, class Owner, class CreateInfo, auto CreateFunc, auto DestroyFunc>
-class Handle
-{
+class Handle {
 public:
-  Handle(Owner owner, const CreateInfo& createInfo)
-  {
-      VkResult result = CreateFunc(owner, &createInfo, nullptr, &m_handle);
-      if (result != VK_SUCCESS)
-          throw Error(result);
-  }
-  ~Handle() { destroy(); }
-  Handle(const Handle& other) = delete;
-  Handle(Handle&& other) noexcept
-      : m_owner(other.m_owner)
-      , m_handle(other.m_handle)
-  {
-    other.m_handle = VK_NULL_HANDLE;
-  }
-  Handle& operator=(const Handle& other) = delete;
-  Handle& operator=(Handle&& other)
-  {
-    destroy();
-    m_owner       = other.m_owner;
-    m_handle       = other.m_handle;
-    other.m_handle = VK_NULL_HANDLE;
-    return *this;
-  }
-  operator T() const { return m_handle; }
-  explicit operator bool() const { return m_handle != VK_NULL_HANDLE; }
+    Handle(Owner owner, const CreateInfo& createInfo) {
+        VkResult result = CreateFunc(owner, &createInfo, nullptr, &m_handle);
+        if (result != VK_SUCCESS)
+            throw Error(result);
+    }
+    ~Handle() { destroy(); }
+    Handle(const Handle& other) = delete;
+    Handle(Handle&& other) noexcept
+        : m_owner(other.m_owner),
+          m_handle(other.m_handle) {
+        other.m_handle = VK_NULL_HANDLE;
+    }
+    Handle& operator=(const Handle& other) = delete;
+    Handle& operator=(Handle&& other) {
+        destroy();
+        m_owner = other.m_owner;
+        m_handle = other.m_handle;
+        other.m_handle = VK_NULL_HANDLE;
+        return *this;
+    }
+    operator T() const { return m_handle; }
+    explicit operator bool() const { return m_handle != VK_NULL_HANDLE; }
 
 private:
-  void destroy()
-  {
-    if(m_handle != VK_NULL_HANDLE)
-      DestroyFunc(m_owner, m_handle, nullptr);
-  }
-  Owner m_owner = VK_NULL_HANDLE;
-  T     m_handle = VK_NULL_HANDLE;
+    void destroy() {
+        if (m_handle != VK_NULL_HANDLE)
+            DestroyFunc(m_owner, m_handle, nullptr);
+    }
+    Owner m_owner = VK_NULL_HANDLE;
+    T     m_handle = VK_NULL_HANDLE;
 };
 
+// Specialization for VkInstance
+template <>
+class Handle<VkInstance, void, VkInstanceCreateInfo, vkCreateInstance, vkDestroyInstance> {
+public:
+    Handle(const VkInstanceCreateInfo& createInfo) {
+        VkResult result = vkCreateInstance(&createInfo, nullptr, &m_handle);
+        if (result != VK_SUCCESS)
+            throw Error(result);
+    }
+    ~Handle() { destroy(); }
+    Handle(const Handle& other) = delete;
+    Handle(Handle&& other) noexcept
+        : m_handle(other.m_handle) {
+        other.m_handle = VK_NULL_HANDLE;
+    }
+    Handle& operator=(const Handle& other) = delete;
+    Handle& operator=(Handle&& other) {
+        destroy();
+        m_handle = other.m_handle;
+        other.m_handle = VK_NULL_HANDLE;
+        return *this;
+    }
+    operator VkInstance() const { return m_handle; }
+    explicit operator bool() const { return m_handle != VK_NULL_HANDLE; }
+
+private:
+    void destroy() {
+        if (m_handle != VK_NULL_HANDLE)
+            vkDestroyInstance(m_handle, nullptr);
+    }
+    VkInstance m_handle = VK_NULL_HANDLE;
+};
+
+// Specialization for VkDevice
+template <>
+class Handle<VkDevice, void, VkDeviceCreateInfo, vkCreateDevice, vkDestroyDevice> {
+public:
+    Handle(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo& createInfo) {
+        VkResult result = vkCreateDevice(physicalDevice, &createInfo, nullptr, &m_handle);
+        if (result != VK_SUCCESS)
+            throw Error(result);
+    }
+    ~Handle() { destroy(); }
+    Handle(const Handle& other) = delete;
+    Handle(Handle&& other) noexcept
+        : m_handle(other.m_handle) {
+        other.m_handle = VK_NULL_HANDLE;
+    }
+    Handle& operator=(const Handle& other) = delete;
+    Handle& operator=(Handle&& other) {
+        destroy();
+        m_handle = other.m_handle;
+        other.m_handle = VK_NULL_HANDLE;
+        return *this;
+    }
+    operator VkDevice() const { return m_handle; }
+    explicit operator bool() const { return m_handle != VK_NULL_HANDLE; }
+
+private:
+    void destroy() {
+        if (m_handle != VK_NULL_HANDLE)
+            vkDestroyDevice(m_handle, nullptr);
+    }
+    VkDevice m_handle = VK_NULL_HANDLE;
+};
 
 ## for handle in handles
 {% if handle.failure %}
