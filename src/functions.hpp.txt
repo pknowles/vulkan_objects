@@ -12,6 +12,29 @@ engine library.
 namespace vko
 {
 
+// Instance function table
+
+// An "instance function" is any Vulkan function where the first parameter is an
+// instance object or no object at all.
+struct InstanceCommands
+{
+## for command in findall("//commands/command[@api='vulkan' or not(@api)]/param/type[1][not(text()='VkDevice')]/../../proto/name/text()")
+    pfn_{{ command }} {{ command }};
+## endfor
+};
+
+// Device function table
+// A "device function" is any Vulkan function which takes any device object as
+// its first parameter or a child object of the device. The vast majority of
+// Vulkan functions are device functions. Some Vulkan device functions are:
+struct DeviceCommands
+{
+## for command in findall("//commands/command[@api='vulkan' or not(@api)]/param/type[1][text()='VkDevice']/../../proto/name/text()")
+    pfn_{{ command }} {{ command }};
+## endfor
+};
+
+{#
 // Features
 ## for feature in findall("//feature/require/command/../../@name")
 #define VKO_{{ feature }}_commands \
@@ -52,5 +75,6 @@ namespace vko
 
     {% endif %}
 ## endfor
+#}
 
 }  // namespace vko
