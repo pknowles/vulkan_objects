@@ -1,12 +1,13 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 
-#include <iostream>
 #include <filesystem>
-#include <pugixml.hpp>
 #include <inja/inja.hpp>
+#include <iostream>
+#include <pugixml.hpp>
 #include <regex>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
@@ -231,6 +232,39 @@ int main(int argc, char** argv) {
         }
     }
     data["handles"] = handles;
+
+    // Compute device handles recursively in order to find device functions.
+    // This should be flat in the spec :(
+    std::unordered_map<std::string_view, std::vector<std::string_view>> handleChildren;
+    for(const pugi::xpath_node& handle : spec.select_nodes("//types/type[@category='handle']"))
+    {
+        std::string_view name = handle.node().child("name").text().get();
+        std::string_view parent = handle.node().attribute("parent").value();
+        handleChildren[parent].push_back(name);
+    }
+    std::unordered_set<std::string_view> deviceHandles;
+    const auto handleDFS = [](const auto& addChildren, const auto& handleChildren, auto& deviceHandles, std::string_view parent) -> void {
+        deviceHandles.insert(parent);
+        auto children = handleChildren.find(parent);
+        if(children != handleChildren.end())
+            for(const std::string_view& child : children->second)
+                addChildren(addChildren, handleChildren, deviceHandles, child);
+    };
+    handleDFS(handleDFS, handleChildren, deviceHandles, "VkDevice");
+
+    inja::json instanceFunctions = inja::json::array();
+    inja::json deviceFunctions = inja::json::array();
+    for(const pugi::xpath_node& command : spec.select_nodes("//commands/command[@api='vulkan' or not(@api)]/proto/.."))
+    {
+        std::string_view firstParam = command.node().select_node("param[1]/type/text()").node().value();
+        std::string_view funcName = command.node().select_node("proto/name/text()").node().value();
+        if(deviceHandles.count(firstParam) == 0)
+            instanceFunctions.push_back(funcName);
+        else
+            deviceFunctions.push_back(funcName);
+    }
+    data["instance_functions"] = instanceFunctions;
+    data["device_functions"] = deviceFunctions;
 
     try {
         env.render_to(outputFile, templatArghReservedKeyword, data);

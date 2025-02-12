@@ -18,8 +18,8 @@ namespace vko
 // instance object or no object at all.
 struct InstanceCommands
 {
-## for command in findall("//commands/command[@api='vulkan' or not(@api)]/param/type[1][not(text()='VkDevice')]/../../proto/name/text()")
-    pfn_{{ command }} {{ command }};
+## for command in instance_functions
+    PFN_{{ command }} {{ command }};
 ## endfor
 };
 
@@ -29,8 +29,8 @@ struct InstanceCommands
 // Vulkan functions are device functions. Some Vulkan device functions are:
 struct DeviceCommands
 {
-## for command in findall("//commands/command[@api='vulkan' or not(@api)]/param/type[1][text()='VkDevice']/../../proto/name/text()")
-    pfn_{{ command }} {{ command }};
+## for command in device_functions
+    PFN_{{ command }} {{ command }};
 ## endfor
 };
 
