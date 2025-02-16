@@ -1,13 +1,17 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 
+#include <algorithm>
 #include <filesystem>
 #include <inja/inja.hpp>
 #include <iostream>
 #include <pugixml.hpp>
+#include <ranges>
 #include <regex>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -38,6 +42,88 @@ inja::json toJson(const pugi::xml_node& node) {
     return result;
 };
 
+struct SortedStrings {
+    std::vector<std::string_view> strings;
+    void insert(std::string_view sv) {
+        strings.push_back(sv);
+        std::ranges::sort(strings);
+    }
+    bool operator==(const SortedStrings& other) const {
+        return std::ranges::equal(strings, other.strings);
+    }
+};
+
+// Probably terrible, but it just has to work for now.
+// Loosely based off https://stackoverflow.com/questions/17016175/c-unordered-map-using-a-custom-class-type-as-the-key
+// See also: https://stackoverflow.com/questions/35985960/c-why-is-boosthash-combine-the-best-way-to-combine-hash-values
+template <>
+struct std::hash<SortedStrings>
+{
+  std::size_t operator()(const SortedStrings& k) const
+  {
+      return std::transform_reduce(
+          k.strings.begin(), k.strings.end(), size_t{0},
+          [](size_t a, size_t b) { return (a ^ (b << 1)) >> 1; }, std::hash<std::string_view>{});
+  }
+};
+
+// *sigh*. almost
+auto split(std::string_view str, char delim)
+{
+    // &*rng.begin() is UB if the range is empty, so we need
+    // to check before using it
+    return str | std::views::split(delim) | std::views::transform([](auto&& rng) {
+               const auto size = std::ranges::distance(rng);
+               return size ? std::string_view(&*rng.begin(), size) : std::string_view();
+           });
+}
+
+std::unordered_map<std::string_view, std::string_view> makeCommandRootParents(const pugi::xml_document& spec)
+{
+    // Compute device handles recursively in order to find device functions.
+    // This should be flat in the spec :(
+    // NOTE: in this code, instance handles are all device handles since the
+    // "parent" of a device is an instance
+    std::unordered_map<std::string_view, std::vector<std::string_view>> handleChildren;
+    for(const pugi::xpath_node& handle : spec.select_nodes("//types/type[@category='handle']"))
+    {
+        std::string_view name = handle.node().child("name").text().get();
+        std::string_view parent = handle.node().attribute("parent").value();
+        handleChildren[parent].push_back(name);
+    }
+    const auto handleDFS = [](const auto& addChildren, const auto& handleChildren, auto& handles, std::string_view parent) -> void {
+        handles.insert(parent);
+        auto children = handleChildren.find(parent);
+        if(children != handleChildren.end())
+            for(const std::string_view& child : children->second)
+                addChildren(addChildren, handleChildren, handles, child);
+    };
+    std::unordered_set<std::string_view> instanceHandles;
+    std::unordered_set<std::string_view> deviceHandles;
+    handleDFS(handleDFS, handleChildren, deviceHandles, "VkDevice");
+    handleDFS(handleDFS, handleChildren, instanceHandles, "VkInstance");
+
+    std::unordered_map<std::string_view, std::string_view> commandRootParents;
+    for (const pugi::xpath_node& command :
+         spec.select_nodes("//commands/command/proto/..")) {
+        std::string_view firstParam =
+            command.node().select_node("param[1]/type/text()").node().value();
+        auto commandName = command.node().select_node("proto/name/text()").node().value();
+        if (deviceHandles.count(firstParam) != 0)
+            commandRootParents[commandName] = "VkDevice";
+        else if (instanceHandles.count(firstParam) != 0)
+            commandRootParents[commandName] = "VkInstance";
+        else
+            commandRootParents[commandName] = "";
+    }
+    for (const pugi::xpath_node& command : spec.select_nodes("//commands/command[@alias]")) {
+        std::string_view name = command.node().attribute("name").value();
+        std::string_view alias = command.node().attribute("alias").value();
+        commandRootParents[name] = commandRootParents[alias];
+    }
+    return commandRootParents;
+}
+
 int main(int argc, char** argv) {
     if(argc != 4){
         std::cout << "Usage: ./generate <vk.xml> <template.hpp.txt> <output.hpp>\n";
@@ -51,7 +137,7 @@ int main(int argc, char** argv) {
     std::filesystem::create_directories(outputFilename.parent_path());
     std::ofstream outputFile(outputFilename);
     if(!outputFile.good()){
-        std::cout << "Failed to open output file '" << outputFilename << "'\n";
+        std::cout << "Failed to open output file " << outputFilename << "\n";
         return EXIT_FAILURE;
     }
 
@@ -122,10 +208,20 @@ int main(int argc, char** argv) {
     inja::Template templatArghReservedKeyword;
     try {
         templatArghReservedKeyword = env.parse_template(templateFilename.string());
-    } catch ( const std::exception& e ){
-        std::cout << "Error loading template file '" << outputFilename << "':\n" << e.what() << "\n";
+    } catch ( const inja::ParserError& e ){
+        std::cout << templateFilename.string() << ":" << e.location.line << ":" << e.location.column << ": error: " << e.message << "\n";
         return EXIT_FAILURE;
     }
+
+    // Only generate for vulkan, not vulkansc
+    auto apiAllowed = [](std::string_view apis) {
+        if (apis.empty())
+            return true;
+        for (auto api : split(apis, ','))
+            if (api == "vulkan")
+                return true;
+        return false;
+    };
 
     inja::json data;
 
@@ -138,9 +234,11 @@ int main(int argc, char** argv) {
         std::regex pluralStrip("(.*)(ies|es|s)$");
 
         std::unordered_map<std::string, Command> destroyCommands;
-        for(const pugi::xpath_node& command : spec.select_nodes("//commands/command[@api='vulkan' or not(@api)]"))
+        for(const pugi::xpath_node& command : spec.select_nodes("//commands/command"))
         {
             pugi::xml_node node = command.node();
+            if(!apiAllowed(node.attribute("api").value()))
+                continue;
             std::string destroyFuncName = node.select_node("proto/name/text()").node().value();
             std::smatch destroyMatch;
             if(std::regex_match(destroyFuncName, destroyMatch, destroyFunc))
@@ -165,8 +263,10 @@ int main(int argc, char** argv) {
         }
 
         // Get all commands. Filter for vulkan commands, not vulkansc
-        for(const pugi::xpath_node& command : spec.select_nodes("//commands/command[@api='vulkan' or not(@api)]"))
+        for(const pugi::xpath_node& command : spec.select_nodes("//commands/command"))
         {
+            if(!apiAllowed(command.node().attribute("api").value()))
+                continue;
             std::string createFuncName = command.node().select_node("proto/name/text()").node().value();
             std::smatch createMatch;
             if(std::regex_match(createFuncName, createMatch, createFunc))
@@ -234,54 +334,110 @@ int main(int argc, char** argv) {
     }
     data["handles"] = handles;
 
-    // Compute device handles recursively in order to find device functions.
-    // This should be flat in the spec :(
-    std::unordered_map<std::string_view, std::vector<std::string_view>> handleChildren;
-    for(const pugi::xpath_node& handle : spec.select_nodes("//types/type[@category='handle']"))
-    {
-        std::string_view name = handle.node().child("name").text().get();
-        std::string_view parent = handle.node().attribute("parent").value();
-        handleChildren[parent].push_back(name);
-    }
-    const auto handleDFS = [](const auto& addChildren, const auto& handleChildren, auto& handles, std::string_view parent) -> void {
-        handles.insert(parent);
-        auto children = handleChildren.find(parent);
-        if(children != handleChildren.end())
-            for(const std::string_view& child : children->second)
-                addChildren(addChildren, handleChildren, handles, child);
-    };
-    std::unordered_set<std::string_view> instanceHandles;
-    std::unordered_set<std::string_view> deviceHandles;
-    handleDFS(handleDFS, handleChildren, deviceHandles, "VkDevice");
-    handleDFS(handleDFS, handleChildren, instanceHandles, "VkInstance");
+    std::unordered_map<std::string_view, std::string_view> commandRootParents = makeCommandRootParents(spec);
 
-    // TODO: asymmetry with vkCreateInstance and vkDestroyInstance being in
-    // separate tables feels wrong.
-    inja::json instanceFunctions = inja::json::array();
-    inja::json deviceFunctions = inja::json::array();
-    inja::json globalFunctions = inja::json::array();
-    for (const pugi::xpath_node& command :
-         spec.select_nodes("//commands/command[@api='vulkan' or not(@api)]/proto/..")) {
-        std::string_view firstParam =
-            command.node().select_node("param[1]/type/text()").node().value();
-        std::string_view funcName = command.node().select_node("proto/name/text()").node().value();
-        if (instanceHandles.count(firstParam) != 0)
-            instanceFunctions.push_back(funcName);
-        else if (deviceHandles.count(firstParam) != 0)
-            deviceFunctions.push_back(funcName);
-        else
-            globalFunctions.push_back(funcName);
+    std::set<std::string_view> commands; // required commands only, filtered by apiAllowed()
+    std::unordered_map<std::string_view, SortedStrings> commandsRequiredBy;
+    for (const pugi::xpath_node& featureNode :
+         spec.select_nodes("//feature/require/command/../..")) {
+        std::string_view feature = featureNode.node().attribute("name").value();
+        std::vector<std::string_view> featureApiDefines;
+        if(!apiAllowed(featureNode.node().attribute("api").value()))
+            continue;
+        for (const pugi::xpath_node& commandNode :
+             spec.select_nodes((std::string("//feature[@name='") + std::string(feature) + "']/require/command/@name")
+                 .c_str())) {
+            std::string_view command = commandNode.attribute().value();
+            commands.insert(command);
+            assert(!feature.empty());
+            commandsRequiredBy[command].insert(feature);
+        }
     }
-    data["instance_functions"] = instanceFunctions;
-    data["device_functions"] = deviceFunctions;
-    data["global_functions"] = globalFunctions;
+
+    inja::json platformCommands = inja::json::array();
+    std::unordered_set<std::string_view> platformExtensions;
+    for (const pugi::xpath_node& extensionNode :
+         spec.select_nodes("//extensions/extension/require/command/../..")) {
+        std::string_view extension = extensionNode.node().attribute("name").value();
+        std::string_view promotedto = extensionNode.node().attribute("promotedto").value();
+        std::string_view platform = extensionNode.node().attribute("platform").value();
+        if(!platform.empty())
+            platformExtensions.insert(extension);
+        if(!apiAllowed(extensionNode.node().attribute("supported").value()))
+            continue;
+        for (const pugi::xpath_node& commandNode :
+             spec.select_nodes((std::string("//extensions/extension[@name='") +
+                                std::string(extension) + "']/require/command/@name")
+                                   .c_str())) {
+            std::string_view command = commandNode.attribute().value();
+            commands.insert(command);
+            assert(!extension.empty());
+            if (promotedto.empty())
+                commandsRequiredBy[command].insert(extension);
+            else
+                commandsRequiredBy[command].insert(promotedto);
+            if(!platform.empty())
+                platformCommands.push_back(command);
+        }
+    }
+
+    std::unordered_map<SortedStrings, std::vector<std::string_view>> extensionGroupCommandsMap;
+    for(auto& [command, requiredBy] : commandsRequiredBy)
+        extensionGroupCommandsMap[requiredBy].push_back(command);
+    assert(extensionGroupCommandsMap.count(SortedStrings()) == 0); // everything should have a requirement
+
+    inja::json deviceCommands = inja::json::array();
+    inja::json instanceCommands = inja::json::array();
+    inja::json globalCommands = inja::json::array();
+    for (auto& command : commands) {
+        if (commandRootParents[command] == "VkDevice")
+            deviceCommands.push_back(command);
+        else if (commandRootParents[command] == "VkInstance" && command != "vkDestroyInstance") // Hack for vkCreateInstance symmetry
+            instanceCommands.push_back(command);
+        else
+            globalCommands.push_back(command);
+    }
+
+    inja::json extensionGroupCommands = inja::json::array();
+    for(auto& [extensions, commands] : extensionGroupCommandsMap)
+    {
+        inja::json extensionGroup;
+        extensionGroup["extensions"] = extensions.strings;
+        extensionGroup["commands"] = commands;
+
+        // Compute hasPlatform
+        // TODO: make faster?
+        extensionGroup["hasPlatform"] = false;
+        for (auto& ext : extensions.strings)
+        {
+            if (platformExtensions.count(ext))
+            {
+                extensionGroup["hasPlatform"] = true;
+                break;
+            }
+        }
+
+        // Compute parent objects
+        std::unordered_set<std::string_view> parentObjects;
+        for(auto& command : commands)
+            parentObjects.insert(commandRootParents[command]);
+        extensionGroup["parents"] = parentObjects;
+
+        extensionGroupCommands.push_back(extensionGroup);
+    }
+
+    data["instance_commands"] = instanceCommands;
+    data["device_commands"] = deviceCommands;
+    data["global_commands"] = globalCommands;
+    data["platform_commands"] = platformCommands;
+    data["command_parents"] = commandRootParents;
+    data["extension_group_commands"] = extensionGroupCommands;
 
     try {
         env.render_to(outputFile, templatArghReservedKeyword, data);
     } catch (const inja::RenderError& e) {
-        std::cout << "Error rendering template '" << outputFilename << "':\n" << e.what() << "\n";
+        std::cout << templateFilename.string() << ":" << e.location.line << ":" << e.location.column << ": error: " << e.message << "\n";
         return EXIT_FAILURE;
     }
-
     return EXIT_SUCCESS;
 }

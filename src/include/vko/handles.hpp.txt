@@ -10,6 +10,7 @@ engine library.
 #include <vulkan/vulkan_core.h>
 #include <string_view>
 #include <stdexcept>
+#include <vko/functions.hpp>
 
 namespace vko
 {
@@ -69,10 +70,10 @@ private:
 
 // Specialization for VkInstance
 template <>
-class Handle<VkInstance, void, VkInstanceCreateInfo, vkCreateInstance, vkDestroyInstance> {
+class Handle<VkInstance, void, VkInstanceCreateInfo, &GlobalCommands::vkCreateInstance, &GlobalCommands::vkDestroyInstance> {
 public:
-    Handle(const VkInstanceCreateInfo& createInfo) {
-        VkResult result = vkCreateInstance(&createInfo, nullptr, &m_handle);
+    Handle(const GlobalCommands& vk, const VkInstanceCreateInfo& createInfo) {
+        VkResult result = vk.vkCreateInstance(&createInfo, nullptr, &m_handle);
         if (result != VK_SUCCESS)
             throw Error(result);
     }
@@ -102,10 +103,10 @@ private:
 
 // Specialization for VkDevice
 template <>
-class Handle<VkDevice, void, VkDeviceCreateInfo, vkCreateDevice, vkDestroyDevice> {
+class Handle<VkDevice, void, VkDeviceCreateInfo, &InstanceCommands::vkCreateDevice, &InstanceCommands::vkDestroyDevice> {
 public:
-    Handle(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo& createInfo) {
-        VkResult result = vkCreateDevice(physicalDevice, &createInfo, nullptr, &m_handle);
+    Handle(const InstanceCommands& vk, VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo& createInfo) {
+        VkResult result = vk.vkCreateDevice(physicalDevice, &createInfo, nullptr, &m_handle);
         if (result != VK_SUCCESS)
             throw Error(result);
     }

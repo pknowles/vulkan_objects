@@ -7,6 +7,10 @@ engine library.
 #}
 #pragma once
 
+#ifndef VK_NO_PROTOTYPES
+#error vulkan_objects expects VK_NO_PROTOTYPES to be defined by the build system
+#endif
+
 #include <vulkan/vulkan_core.h>
 
 namespace vko
@@ -18,8 +22,22 @@ namespace vko
 struct GlobalCommands
 {
     GlobalCommands(PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr);
-## for command in global_functions
+## for command in global_commands
+{% if command in platform_commands %}
+{% else %}
     PFN_{{ command }} {{ command }};
+{% endif %}
+## endfor
+
+    // Platform commands (presumably none)
+## for extgroup in extension_group_commands
+{% if extgroup.hasPlatform and "" in extgroup.parents %}
+#if defined({{ join(extgroup.extensions, ") || defined(") }})
+## for command in extgroup.commands
+    PFN_{{ command }} {{ command }};
+## endfor
+#endif
+{% endif %}
 ## endfor
 };
 
@@ -29,8 +47,22 @@ struct GlobalCommands
 struct InstanceCommands
 {
     InstanceCommands(VkInstance instance, PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr);
-## for command in instance_functions
+## for command in instance_commands
+{% if command in platform_commands %}
+{% else %}
     PFN_{{ command }} {{ command }};
+{% endif %}
+## endfor
+
+    // Platform commands
+## for extgroup in extension_group_commands
+{% if extgroup.hasPlatform and "VkInstance" in extgroup.parents %}
+#if defined({{ join(extgroup.extensions, ") || defined(") }})
+## for command in extgroup.commands
+    PFN_{{ command }} {{ command }};
+## endfor
+#endif
+{% endif %}
 ## endfor
 };
 
@@ -40,9 +72,23 @@ struct InstanceCommands
 // Vulkan functions are device functions. Some Vulkan device functions are:
 struct DeviceCommands
 {
-    InstanceCommands(VkDevice device, PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr);
-## for command in device_functions
+    DeviceCommands(VkDevice device, PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr);
+## for command in device_commands
+{% if command in platform_commands %}
+{% else %}
     PFN_{{ command }} {{ command }};
+{% endif %}
+## endfor
+
+    // Platform commands
+## for extgroup in extension_group_commands
+{% if extgroup.hasPlatform and "VkDevice" in extgroup.parents %}
+#if defined({{ join(extgroup.extensions, ") || defined(") }})
+## for command in extgroup.commands
+    PFN_{{ command }} {{ command }};
+## endfor
+#endif
+{% endif %}
 ## endfor
 };
 

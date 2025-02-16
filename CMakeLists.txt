@@ -19,14 +19,15 @@ add_library(vulkan_objects
   )
 target_compile_features(vulkan_objects PUBLIC cxx_std_20)
 target_include_directories(vulkan_objects PUBLIC include "${generated_directory}/src/include")
+target_compile_definitions(vulkan_objects PUBLIC VK_NO_PROTOTYPES)
 add_dependencies(vulkan_objects vulkan_objects_generated)
 
 set(VULKAN_OBJECTS_SPEC_TAG "v1.4.307" CACHE STRING "GIT tag from https://github.com/KhronosGroup/Vulkan-Docs/tags")
-if(NOT VULKAN_SPEC_XML)
-    set(VULKAN_SPEC_XML "${CMAKE_BINARY_DIR}/vk.xml")
-    file(DOWNLOAD "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/${VULKAN_OBJECTS_SPEC_TAG}/xml/vk.xml"
-        "${VULKAN_SPEC_XML}")
-endif()
+#if(NOT VULKAN_SPEC_XML)
+#    set(VULKAN_SPEC_XML "${CMAKE_BINARY_DIR}/vk.xml")
+#    file(DOWNLOAD "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/${VULKAN_OBJECTS_SPEC_TAG}/xml/vk.xml"
+#        "${VULKAN_SPEC_XML}")
+#endif()
 
 # 17MB and counting, for just the text header files!!
 include(FetchContent)
@@ -37,6 +38,7 @@ FetchContent_Declare(
   GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(vulkan_headers)
+set(VULKAN_SPEC_XML ${vulkan_headers_SOURCE_DIR}/registry/vk.xml)
 target_link_libraries(vulkan_objects PUBLIC Vulkan::Headers)
 
 function(add_generated_file source)
