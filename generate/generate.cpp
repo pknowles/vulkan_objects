@@ -48,6 +48,7 @@ int main(int argc, char** argv) {
     fs::path templateFilename(argv[2]);
     fs::path outputFilename(argv[3]);
 
+    std::filesystem::create_directories(outputFilename.parent_path());
     std::ofstream outputFile(outputFilename);
     if(!outputFile.good()){
         std::cout << "Failed to open output file '" << outputFilename << "'\n";
@@ -242,29 +243,38 @@ int main(int argc, char** argv) {
         std::string_view parent = handle.node().attribute("parent").value();
         handleChildren[parent].push_back(name);
     }
-    std::unordered_set<std::string_view> deviceHandles;
-    const auto handleDFS = [](const auto& addChildren, const auto& handleChildren, auto& deviceHandles, std::string_view parent) -> void {
-        deviceHandles.insert(parent);
+    const auto handleDFS = [](const auto& addChildren, const auto& handleChildren, auto& handles, std::string_view parent) -> void {
+        handles.insert(parent);
         auto children = handleChildren.find(parent);
         if(children != handleChildren.end())
             for(const std::string_view& child : children->second)
-                addChildren(addChildren, handleChildren, deviceHandles, child);
+                addChildren(addChildren, handleChildren, handles, child);
     };
+    std::unordered_set<std::string_view> instanceHandles;
+    std::unordered_set<std::string_view> deviceHandles;
     handleDFS(handleDFS, handleChildren, deviceHandles, "VkDevice");
+    handleDFS(handleDFS, handleChildren, instanceHandles, "VkInstance");
 
+    // TODO: asymmetry with vkCreateInstance and vkDestroyInstance being in
+    // separate tables feels wrong.
     inja::json instanceFunctions = inja::json::array();
     inja::json deviceFunctions = inja::json::array();
-    for(const pugi::xpath_node& command : spec.select_nodes("//commands/command[@api='vulkan' or not(@api)]/proto/.."))
-    {
-        std::string_view firstParam = command.node().select_node("param[1]/type/text()").node().value();
+    inja::json globalFunctions = inja::json::array();
+    for (const pugi::xpath_node& command :
+         spec.select_nodes("//commands/command[@api='vulkan' or not(@api)]/proto/..")) {
+        std::string_view firstParam =
+            command.node().select_node("param[1]/type/text()").node().value();
         std::string_view funcName = command.node().select_node("proto/name/text()").node().value();
-        if(deviceHandles.count(firstParam) == 0)
+        if (instanceHandles.count(firstParam) != 0)
             instanceFunctions.push_back(funcName);
-        else
+        else if (deviceHandles.count(firstParam) != 0)
             deviceFunctions.push_back(funcName);
+        else
+            globalFunctions.push_back(funcName);
     }
     data["instance_functions"] = instanceFunctions;
     data["device_functions"] = deviceFunctions;
+    data["global_functions"] = globalFunctions;
 
     try {
         env.render_to(outputFile, templatArghReservedKeyword, data);

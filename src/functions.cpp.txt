@@ -1,0 +1,41 @@
+// Copyright (c) 2025 Pyarelal Knowles, MIT License
+{#
+===========================================================================
+This is the template file for handles.hpp, processed with the inja template
+engine library.
+===========================================================================
+#}
+
+#include <vko/functions.hpp>
+
+namespace vko
+{
+
+GlobalCommands::GlobalCommands(PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr)
+{% set sep = ":" %}
+## for command in global_functions
+    {{ sep }} {{ command }}(reinterpret_cast<PFN_{{ command }}>(vkGetInstanceProcAddr(nullptr, "{{ command }}")))
+    {% set sep = "," %}
+## endfor
+{
+}
+
+InstanceCommands::InstanceCommands(VkInstance instance, PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr)
+{% set sep = ":" %}
+## for command in instance_functions
+    {{ sep }} {{ command }}(reinterpret_cast<PFN_{{ command }}>(vkGetInstanceProcAddr(instance, "{{ command }}")))
+    {% set sep = "," %}
+## endfor
+};
+
+DeviceCommands::DeviceCommands(VkDevice device, PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr)
+{% set sep = ":" %}
+struct DeviceCommands
+{
+## for command in device_functions
+    {{ sep }} {{ command }}(reinterpret_cast<PFN_{{ command }}>(vkGetInstanceProcAddr(device, "{{ command }}")))
+    {% set sep = "," %}
+## endfor
+};
+
+}  // namespace vko

@@ -12,12 +12,23 @@ engine library.
 namespace vko
 {
 
-// Instance function table
+// Top level functions that are loaded directly from the vulkan loader, driver
+// or anything that provides a top level "vkGetInstanceProcAddr" (which may
+// actually be called with a null instance in order to load "vkCreateInstance").
+struct GlobalCommands
+{
+    GlobalCommands(PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr);
+## for command in global_functions
+    PFN_{{ command }} {{ command }};
+## endfor
+};
 
+// Instance function table
 // An "instance function" is any Vulkan function where the first parameter is an
 // instance object or no object at all.
 struct InstanceCommands
 {
+    InstanceCommands(VkInstance instance, PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr);
 ## for command in instance_functions
     PFN_{{ command }} {{ command }};
 ## endfor
@@ -29,6 +40,7 @@ struct InstanceCommands
 // Vulkan functions are device functions. Some Vulkan device functions are:
 struct DeviceCommands
 {
+    InstanceCommands(VkDevice device, PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr);
 ## for command in device_functions
     PFN_{{ command }} {{ command }};
 ## endfor
