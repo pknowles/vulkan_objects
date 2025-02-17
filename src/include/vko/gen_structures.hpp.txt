@@ -1,0 +1,20 @@
+// Copyright (c) 2025 Pyarelal Knowles, MIT License
+// This file was generated from {{ template_filename }}. Do not edit directly.
+{# Ignore that. This is the original! #}
+#pragma once
+
+#include <vulkan/vulkan_core.h>
+
+namespace vko
+{
+
+template<class T> struct struct_traits;
+//findall("//types/type[@category='struct']/member/name[text()='sType']/../../@name")
+## for struct in types
+{% set sType = find("//types/type[@category='struct' and @name='" + struct + "']/member/name[text()='sType']/../@values") %}
+{% if sType and struct != "VkBaseOutStructure" and struct != "VkBaseInStructure" and not (struct in platform_types) %}
+template<> struct struct_traits<{{ struct }}> { static constexpr VkStructureType sType = {{ sType }}; };
+{% endif %}
+## endfor
+
+}  // namespace vko

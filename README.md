@@ -22,11 +22,24 @@ The aims are:
    If it's truly needed there is always std::optional and std::unique_ptr, which
    better show the intent of a nullable object.
 
-2. Objects are general and have minimal dependencies
+2. Objects are general, have minimal dependencies and don't suck you into an
+   ecosystem
 
-   Expose the full featureset of the API, but make shortcuts and special cases
-   easy to write. Objects should be reusable and not impose unnecessary
-   limitations. A big part of this is the single-responsibility principle.
+   For example, it's common to pass around an everything "context" object
+   containing the VkDevice, maybe an allocator or queues. This is convenient,
+   but then you have to have one of these objects everywhere.
+
+   Expose the full featureset of the API near-verbatim. Objects should be
+   reusable and pluggable. A big part of this is the single-responsibility
+   principle.
+
+   Make shortcuts and special cases easy to write, but by layering utilities on
+   top. Allow objects to be replaced, don't force people to use them.
+
+   \*TODO: One exception here is the loader and function tables. Globals are not
+   used, which necessitates function pointer tables. A workaround may be passing
+   the tables as a template parameter to allow other loaders to be used, or an
+   extra set of tables.
 
 3. Simple, singular implementation
 
@@ -34,15 +47,13 @@ The aims are:
    cases is hard. I'm only one person. I'll pick one way and do it well,
    hopefully without limiting important features.
 
-   It includes vulkan from:
-
-   - https://github.com/KhronosGroup/Vulkan-Headers for vulkan_core.h and
-     platform-specific headers
-   - https://github.com/KhronosGroup/Vulkan-Docs for vk.xml
+   It includes vulkan from https://github.com/KhronosGroup/Vulkan-Headers for
+   `vk.xml`, `vulkan_core.h` and platform-specific headers
 
    This library includes its own vulkan function pointer loader, like
    [volk](https://github.com/zeux/volk), but because vulkan_core.h is included,
-   there is no need to support different versions. It's all one thing.
+   there is no need to support different versions. It's all one thing. An
+   exception is conditionals for platform-specific types.
 
 4. Lifetime and ownership is well defined
 
@@ -111,16 +122,3 @@ intuitive experience debugging IDEs and debuggers to be able to break for
 specific exception categories. Don't throw the baby out with the bathwater.
 
 ## Generated code
-
-
-
-# volk vulkan loader
-
-FetchContent_Declare(
-    volk
-    GIT_REPOSITORY https://github.com/zeux/volk.git
-    GIT_TAG 21ceafb55b7ca55b15aee758a8541c06e29780cd # 1.3.270
-    GIT_SHALLOW TRUE
-)
-FetchContent_MakeAvailable(volk)
-

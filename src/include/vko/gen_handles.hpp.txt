@@ -1,0 +1,69 @@
+// Copyright (c) 2025 Pyarelal Knowles, MIT License
+// This file was generated from {{ template_filename }}. Do not edit directly.
+{# Ignore that. This is the original! #}
+#pragma once
+
+#include <vulkan/vulkan_core.h>
+#include <vko/functions.hpp>
+#include <vko/exceptions.hpp>
+#include <vko/handle.hpp>
+
+namespace vko
+{
+
+// TODO: these won't work on 32-bit platforms because Vulkan typedefs them as uint64_t
+template<class Handle> struct handle_traits;
+## for command in handle_destroy_commands
+{% if command.name in platform_commands %}
+#if defined({{ join(command.extensions, ") || defined(") }})
+{% endif %}
+{% if command.parent == "VkDevice" %}
+template<> struct handle_traits<{{ command.handle }}> { using table = DeviceCommands; using destroy_first_param = {{ command.first_param }}; static constexpr auto table_destroy = &DeviceCommands::{{ command.name }}; using destroy_t = PFN_{{ command.name }}; };
+{% else if command.parent == "VkInstance" %}
+template<> struct handle_traits<{{ command.handle }}> { using table = InstanceCommands; using destroy_first_param = {{ command.first_param }}; static constexpr auto table_destroy = &InstanceCommands::{{ command.name }}; using destroy_t = PFN_{{ command.name }}; };
+{% else %}
+template<> struct handle_traits<{{ command.handle }}> { using table = GlobalCommands; using destroy_first_param = {{ command.first_param }}; static constexpr auto table_destroy = &GlobalCommands::{{ command.name }}; using destroy_t = PFN_{{ command.name }}; };
+{% endif %}
+{% if command.name in platform_commands %}
+#endif  // defined({{ join(command.extensions, ") || defined(") }})
+{% endif %}
+## endfor
+
+## for handle in handles
+{% if handle.failure %}
+// Skipping {{ handle.name }} for {{ handle.create }}: {{ handle.failure }}
+{% else %}
+    {% if handle.create in platform_commands %}
+#if defined({{ join(handle.extensions, ") || defined(") }})
+    {% endif %}
+    {% if "Vk" + handle.name != handle.parent %}{# Don't generate code for special case VkInstance and VkDevice handles #}
+    {% set parent=substr(handle.parent, 2) %}
+        {% if handle.create %}
+using {{ handle.name }} = Handle<{{ handle.type }}, PFN_{{ handle.create }}, {{ handle.createInfo }}>;
+            {% if handle.createPlural %}
+//template<> {{ handle.type }} createHandle<{{ handle.type }}, {{ parent }}Commands, {{ handle.parent }}, PFN_{{ handle.create }}, {{ handle.createInfo }}>(const {{ parent }}Commands& vk, {{ handle.parent }} parent, const {{ handle.createInfo }}& createInfo) {
+//    {{ handle.type }} handle; check(vk.{{ handle.create }}(parent, 1, &createInfo, nullptr, &handle)); return handle; }
+            {% else %}
+template <> struct CreateHandle<{{ handle.type }}, PFN_{{ handle.create }}, {{ handle.createInfo }}> {
+    template <class FunctionsAndParent>
+        requires std::constructible_from<{{ handle.parent }}, FunctionsAndParent>
+    {{ handle.type }} operator()(const {{ handle.createInfo }}& createInfo, const FunctionsAndParent& vk) { return (*this)(createInfo, vk, vk); }
+    template <class Functions>
+    {{ handle.type }} operator()(const {{ handle.createInfo }}& createInfo, const Functions& vk, {{ handle.parent }} parent) {
+        {{ handle.type }} handle;
+        check(vk.{{ handle.create }}(parent, &createInfo, nullptr, &handle));
+        return handle;
+    }
+};
+            {% endif %}
+        {% else %}
+using {{ handle.name }} = Handle<{{ handle.type }}>;
+        {% endif %}
+    {% endif %}
+    {% if handle.create in platform_commands %}
+#endif  // defined({{ join(handle.extensions, ") || defined(") }})
+    {% endif %}
+{% endif %}
+## endfor
+
+}  // namespace vko

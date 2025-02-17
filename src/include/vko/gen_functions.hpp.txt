@@ -7,10 +7,31 @@
 #error vulkan_objects expects VK_NO_PROTOTYPES to be defined by the build system
 #endif
 
+#include <memory>
 #include <vulkan/vulkan_core.h>
 
 namespace vko
 {
+
+constexpr inline std::string_view toString(VkResult result)
+{
+    switch (result) 
+    {
+## for result in findall("//enums[@name='VkResult']/enum/@name")
+    case {{ result }}: return "{{ result }}";
+## endfor
+    default: break;
+    }
+    return "<invalid result>";
+}
+
+constexpr inline void check(VkResult result)
+{
+    if (result != VK_SUCCESS) 
+    {
+        throw std::runtime_error("Vulkan error: " + std::string(toString(result)));
+    }
+}
 
 // Top level functions that are loaded directly from the vulkan loader, driver
 // or anything that provides a top level "vkGetInstanceProcAddr" (which may

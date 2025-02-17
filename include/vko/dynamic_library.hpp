@@ -1,12 +1,15 @@
 // Copyright (c) 2024-2025 Pyarelal Knowles, MIT License
 #pragma once
 
-namespace vko
-{
+#include <vko/exceptions.hpp>
+#include <filesystem>
 
 #ifdef _WIN32
 
 #include <windows.h>
+
+namespace vko
+{
 
 class LastError : public Exception {
 public:
@@ -54,10 +57,15 @@ private:
     HMODULE m_module = nullptr;
 };
 
+} // namespace vko
+
 #else
 
 #include <string.h>
 #include <dlfcn.h>
+
+namespace vko
+{
 
 class LastError : public Exception {
 public:
@@ -92,12 +100,12 @@ public:
     operator void*() const { return m_handle; }
 
     template <typename FuncType>
-    FuncType* get(const std::string& functionName) const {
+    FuncType get(const std::string& functionName) const {
         void* functionAddress = ::dlsym(m_handle, functionName.c_str());
         if (!functionAddress) {
             throw Exception(dlerror());
         }
-        return reinterpret_cast<FuncType*>(functionAddress);
+        return reinterpret_cast<FuncType>(functionAddress);
     }
 
 private:
@@ -112,6 +120,6 @@ private:
     void* m_handle = nullptr;
 };
 
-#endif
-
 } // namespace vko
+
+#endif
