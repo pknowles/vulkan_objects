@@ -1,10 +1,6 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
-{#
-===========================================================================
-This is the template file for handles.hpp, processed with the inja template
-engine library.
-===========================================================================
-#}
+// This file was generated from {{ template_filename }}. Do not edit directly.
+{# Ignore that. This is the original! #}
 #pragma once
 
 #include <vulkan/vulkan_core.h>
@@ -68,71 +64,13 @@ private:
     T     m_handle = VK_NULL_HANDLE;
 };
 
-// Specialization for VkInstance
-template <>
-class Handle<VkInstance, void, VkInstanceCreateInfo, &GlobalCommands::vkCreateInstance, &GlobalCommands::vkDestroyInstance> {
-public:
-    Handle(const GlobalCommands& vk, const VkInstanceCreateInfo& createInfo) {
-        VkResult result = vk.vkCreateInstance(&createInfo, nullptr, &m_handle);
-        if (result != VK_SUCCESS)
-            throw Error(result);
-    }
-    ~Handle() { destroy(); }
-    Handle(const Handle& other) = delete;
-    Handle(Handle&& other) noexcept
-        : m_handle(other.m_handle) {
-        other.m_handle = VK_NULL_HANDLE;
-    }
-    Handle& operator=(const Handle& other) = delete;
-    Handle& operator=(Handle&& other) {
-        destroy();
-        m_handle = other.m_handle;
-        other.m_handle = VK_NULL_HANDLE;
-        return *this;
-    }
-    operator VkInstance() const { return m_handle; }
-    explicit operator bool() const { return m_handle != VK_NULL_HANDLE; }
+// Special case VkInstance
+using InstanceHandle = Handle<VkInstance, GlobalCommands, VkInstanceCreateInfo, &GlobalCommands::vkCreateInstance, &GlobalCommands::vkDestroyInstance>;
+class Instance : public InstanceHandle, public InstanceCommands{};
 
-private:
-    void destroy() {
-        if (m_handle != VK_NULL_HANDLE)
-            vkDestroyInstance(m_handle, nullptr);
-    }
-    VkInstance m_handle = VK_NULL_HANDLE;
-};
-
-// Specialization for VkDevice
-template <>
-class Handle<VkDevice, void, VkDeviceCreateInfo, &InstanceCommands::vkCreateDevice, &InstanceCommands::vkDestroyDevice> {
-public:
-    Handle(const InstanceCommands& vk, VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo& createInfo) {
-        VkResult result = vk.vkCreateDevice(physicalDevice, &createInfo, nullptr, &m_handle);
-        if (result != VK_SUCCESS)
-            throw Error(result);
-    }
-    ~Handle() { destroy(); }
-    Handle(const Handle& other) = delete;
-    Handle(Handle&& other) noexcept
-        : m_handle(other.m_handle) {
-        other.m_handle = VK_NULL_HANDLE;
-    }
-    Handle& operator=(const Handle& other) = delete;
-    Handle& operator=(Handle&& other) {
-        destroy();
-        m_handle = other.m_handle;
-        other.m_handle = VK_NULL_HANDLE;
-        return *this;
-    }
-    operator VkDevice() const { return m_handle; }
-    explicit operator bool() const { return m_handle != VK_NULL_HANDLE; }
-
-private:
-    void destroy() {
-        if (m_handle != VK_NULL_HANDLE)
-            vkDestroyDevice(m_handle, nullptr);
-    }
-    VkDevice m_handle = VK_NULL_HANDLE;
-};
+// Special case VkDevice
+using DeviceHandle = Handle<VkDevice, Instance, VkDeviceCreateInfo, &InstanceCommands::vkCreateDevice, &InstanceCommands::vkDestroyDevice>;
+class Device : public DeviceHandle, public InstanceCommands{};
 
 ## for handle in handles
 {% if handle.failure %}
@@ -141,7 +79,10 @@ private:
 {% if handle.extension %}
 #if defined({{ handle.extension }})
 {% endif %}
-using {{ handle.name }} = Handle<{{ handle.type }}, {{ handle.owner }}, {{ handle.createInfo }}, {{ handle.create }}, {{ handle.destroy }}>;
+{% if "Vk" + handle.name != handle.owner %}
+{% set owner=substr(handle.owner, 2) %}
+using {{ handle.name }} = Handle<{{ handle.type }}, {{ owner }}, {{ handle.createInfo }}, &{{ owner }}Commands::{{ handle.create }}, &{{ owner }}Commands::{{ handle.destroy }}>;
+{% endif %}
 {% if handle.extension %}
 #endif  // defined({{ handle.extension }})
 {% endif %}

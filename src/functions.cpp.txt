@@ -1,10 +1,6 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
-{#
-===========================================================================
-This is the template file for handles.hpp, processed with the inja template
-engine library.
-===========================================================================
-#}
+// This file was generated from {{ template_filename }}. Do not edit directly.
+{# Ignore that. This is the original! #}
 
 #include <vko/functions.hpp>
 

@@ -20,7 +20,6 @@ struct Command {
     pugi::xml_node node;
     std::smatch    match;
     std::string    object;
-    std::string    owner;
     bool           plural;
 };
 
@@ -192,10 +191,10 @@ int main(int argc, char** argv) {
         return inja::json(std::regex_replace(text, re, replace));
     });
 
-    env.add_callback("slice", 3, [](inja::Arguments& args) {
+    env.add_callback("substr", [](inja::Arguments& args) {
         auto s = args.at(0)->get<std::string>();
         auto a = args.at(1)->get<ptrdiff_t>();
-        auto b = args.at(2)->get<ptrdiff_t>();
+        auto b = args.size() > 2 ? args.at(2)->get<ptrdiff_t>() : ptrdiff_t(s.size());
         if (a < 0)
             a += s.size();
         if (b < 0)
@@ -222,6 +221,8 @@ int main(int argc, char** argv) {
                 return true;
         return false;
     };
+
+    std::unordered_map<std::string_view, std::string_view> commandRootParents = makeCommandRootParents(spec);
 
     inja::json data;
 
@@ -254,11 +255,8 @@ int main(int argc, char** argv) {
                     throw std::runtime_error("Duplicate destroy functions for type " + object +
                                              ": " + destroyFuncName + " and " +
                                              destroyCommands[object].name + "\n");
-                std::string owner = node.select_node("param[1]/type/text()").node().value();
-                if(owner == object)
-                    owner = "void";
                 destroyCommands[object] = {std::move(destroyFuncName), std::move(node),
-                                           std::move(destroyMatch), object, std::move(owner), plural};
+                                           std::move(destroyMatch), object, plural};
             }
         }
 
@@ -314,7 +312,7 @@ int main(int argc, char** argv) {
                 obj["name"] = objectName;
                 obj["type"] = type;
                 obj["suffix"] = createMatch[3].str();
-                obj["owner"] = destroyFunc->second.owner;
+                obj["owner"] = commandRootParents[destroyFunc->second.name];
                 obj["createInfo"] = createInfo;
                 obj["create"] = createFuncName;
                 obj["createPlural"] = plural;
@@ -333,8 +331,6 @@ int main(int argc, char** argv) {
         }
     }
     data["handles"] = handles;
-
-    std::unordered_map<std::string_view, std::string_view> commandRootParents = makeCommandRootParents(spec);
 
     std::set<std::string_view> commands; // required commands only, filtered by apiAllowed()
     std::unordered_map<std::string_view, SortedStrings> commandsRequiredBy;
@@ -390,9 +386,23 @@ int main(int argc, char** argv) {
     inja::json instanceCommands = inja::json::array();
     inja::json globalCommands = inja::json::array();
     for (auto& command : commands) {
+        // Hack for vkCreateDevice symmetry; weird to load destroy call after construction
+        if(command == "vkDestroyDevice")
+        {
+            instanceCommands.push_back(command);
+            continue;
+        }
+
+        // Hack for vkCreateInstance symmetry; weird to load destroy call after construction
+        if(command == "vkDestroyInstance")
+        {
+            globalCommands.push_back(command);
+            continue;
+        }
+
         if (commandRootParents[command] == "VkDevice")
             deviceCommands.push_back(command);
-        else if (commandRootParents[command] == "VkInstance" && command != "vkDestroyInstance") // Hack for vkCreateInstance symmetry
+        else if (commandRootParents[command] == "VkInstance")
             instanceCommands.push_back(command);
         else
             globalCommands.push_back(command);
@@ -432,6 +442,7 @@ int main(int argc, char** argv) {
     data["platform_commands"] = platformCommands;
     data["command_parents"] = commandRootParents;
     data["extension_group_commands"] = extensionGroupCommands;
+    data["template_filename"] = templateFilename.filename().generic_string();
 
     try {
         env.render_to(outputFile, templatArghReservedKeyword, data);
