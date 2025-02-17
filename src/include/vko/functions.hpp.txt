@@ -7,10 +7,22 @@
 #error vulkan_objects expects VK_NO_PROTOTYPES to be defined by the build system
 #endif
 
+#include <memory>
 #include <vulkan/vulkan_core.h>
 
 namespace vko
 {
+
+struct VulkanLibrary
+{
+public:
+    VulkanLibrary();
+    ~VulkanLibrary();
+    PFN_vkGetInstanceProcAddr loader() const;
+
+private:
+    std::unique_ptr<struct FindVulkanImpl> m_impl;
+};
 
 // Top level functions that are loaded directly from the vulkan loader, driver
 // or anything that provides a top level "vkGetInstanceProcAddr" (which may

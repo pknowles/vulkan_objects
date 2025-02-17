@@ -5,8 +5,8 @@
 
 #include <vulkan/vulkan_core.h>
 #include <string_view>
-#include <stdexcept>
 #include <vko/functions.hpp>
+#include <vko/exceptions.hpp>
 
 namespace vko
 {
@@ -23,19 +23,29 @@ constexpr std::string_view toString(VkResult result)
     return "<invalid result>";
 }
 
-class Error : public std::runtime_error {
-public:
-    Error(VkResult result)
-        : std::runtime_error(std::string(toString(result))) {}
-};
+template <class T, class Owner, class CreateInfo, auto CreateFunc>
+T createHandle(const Owner& owner, const CreateInfo& createInfo)
+{
+    T handle;
+    VkResult result = (owner.*CreateFunc)(owner, &createInfo, nullptr, &handle);
+    if (result != VK_SUCCESS)
+        throw Exception(toString(result));
+    return handle;
+}
+
+template <class T, class Owner, auto DestroyFunc>
+void destroyHandle(const Owner& owner, T handle)
+{
+    (owner.*DestroyFunc)(owner, handle, nullptr);
+}
 
 template <class T, class Owner, class CreateInfo, auto CreateFunc, auto DestroyFunc>
 class Handle {
 public:
-    Handle(Owner owner, const CreateInfo& createInfo) {
-        VkResult result = CreateFunc(owner, &createInfo, nullptr, &m_handle);
-        if (result != VK_SUCCESS)
-            throw Error(result);
+    Handle(const Owner& owner, const CreateInfo& createInfo)
+        : m_owner(&owner)
+        , m_handle(createHandle<T, Owner, CreateInfo, CreateFunc>(owner, createInfo))
+    {
     }
     ~Handle() { destroy(); }
     Handle(const Handle& other) = delete;
@@ -58,15 +68,34 @@ public:
 private:
     void destroy() {
         if (m_handle != VK_NULL_HANDLE)
-            DestroyFunc(m_owner, m_handle, nullptr);
+            destroyHandle<T, Owner, DestroyFunc>(*m_owner, m_handle);
     }
-    Owner m_owner = VK_NULL_HANDLE;
-    T     m_handle = VK_NULL_HANDLE;
+    const Owner* m_owner = nullptr;
+    T            m_handle = VK_NULL_HANDLE;
 };
 
 // Special case VkInstance
+template <>
+VkInstance createHandle<VkInstance, GlobalCommands, VkInstanceCreateInfo, &GlobalCommands::vkCreateInstance>(const GlobalCommands& owner, const VkInstanceCreateInfo& createInfo)
+{
+    VkInstance handle;
+    VkResult result = owner.vkCreateInstance(&createInfo, nullptr, &handle);
+    if (result != VK_SUCCESS)
+        throw Exception(toString(result));
+    return handle;
+}
+template <>
+void destroyHandle<VkInstance, GlobalCommands, &GlobalCommands::vkDestroyInstance>(const GlobalCommands& owner, VkInstance handle)
+{
+    owner.vkDestroyInstance(handle, nullptr);
+}
 using InstanceHandle = Handle<VkInstance, GlobalCommands, VkInstanceCreateInfo, &GlobalCommands::vkCreateInstance, &GlobalCommands::vkDestroyInstance>;
-class Instance : public InstanceHandle, public InstanceCommands{};
+class Instance : public InstanceHandle, public InstanceCommands {
+public:
+    Instance(InstanceHandle&& handle, PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr)
+        : InstanceHandle(std::move(handle)),
+          InstanceCommands(*this, vkGetInstanceProcAddr) {}
+};
 
 // Special case VkDevice
 using DeviceHandle = Handle<VkDevice, Instance, VkDeviceCreateInfo, &InstanceCommands::vkCreateDevice, &InstanceCommands::vkDestroyDevice>;
