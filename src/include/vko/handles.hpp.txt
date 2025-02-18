@@ -85,11 +85,16 @@ VkInstance createHandle<VkInstance, GlobalCommands, VkInstanceCreateInfo, &Globa
     return handle;
 }
 template <>
-void destroyHandle<VkInstance, GlobalCommands, &GlobalCommands::vkDestroyInstance>(const GlobalCommands& owner, VkInstance handle)
+void destroyHandle<VkInstance, GlobalCommands, &InstanceCommands::vkDestroyInstance>(const GlobalCommands& owner, VkInstance handle)
 {
-    owner.vkDestroyInstance(handle, nullptr);
+    // HACK: For whatever reason, vulkan breaks create/destroy symmetry here.
+    // The destroy function must be loaded in InstanceCommands, but we don't
+    // have access to that here. Instead, we re-load the function. The real fix
+    // would be in the vulkan spec.
+    auto vkDestroyInstance = reinterpret_cast<PFN_vkDestroyInstance>(owner.vkGetInstanceProcAddr(handle, "vkDestroyInstance"));
+    vkDestroyInstance(handle, nullptr);
 }
-using InstanceHandle = Handle<VkInstance, GlobalCommands, VkInstanceCreateInfo, &GlobalCommands::vkCreateInstance, &GlobalCommands::vkDestroyInstance>;
+using InstanceHandle = Handle<VkInstance, GlobalCommands, VkInstanceCreateInfo, &GlobalCommands::vkCreateInstance, &InstanceCommands::vkDestroyInstance>;
 class Instance : public InstanceHandle, public InstanceCommands {
 public:
     Instance(InstanceHandle&& handle, PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr)
@@ -98,8 +103,54 @@ public:
 };
 
 // Special case VkDevice
-using DeviceHandle = Handle<VkDevice, Instance, VkDeviceCreateInfo, &InstanceCommands::vkCreateDevice, &InstanceCommands::vkDestroyDevice>;
-class Device : public DeviceHandle, public InstanceCommands{};
+template <>
+class Handle<VkDevice, Instance, VkDeviceCreateInfo, &InstanceCommands::vkCreateDevice, &DeviceCommands::vkDestroyDevice> {
+public:
+    Handle(const Instance& owner, VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo& createInfo)
+        : m_owner(&owner)
+    {
+        VkResult result = owner.vkCreateDevice(physicalDevice, &createInfo, nullptr, &m_handle);
+        if (result != VK_SUCCESS)
+            throw Exception(toString(result));
+        m_vkDestroyDevice = reinterpret_cast<PFN_vkDestroyDevice>(owner.vkGetDeviceProcAddr(m_handle, "vkDestroyDevice"));
+    }
+    ~Handle() { destroy(); }
+    Handle(const Handle& other) = delete;
+    Handle(Handle&& other) noexcept
+        : m_owner(other.m_owner),
+          m_vkDestroyDevice(other.m_vkDestroyDevice),
+          m_handle(other.m_handle) {
+        other.m_handle = VK_NULL_HANDLE;
+    }
+    Handle& operator=(const Handle& other) = delete;
+    Handle& operator=(Handle&& other) {
+        destroy();
+        m_owner = other.m_owner;
+        m_vkDestroyDevice = other.m_vkDestroyDevice;
+        m_handle = other.m_handle;
+        other.m_handle = VK_NULL_HANDLE;
+        return *this;
+    }
+    operator VkDevice() const { return m_handle; }
+    explicit operator bool() const { return m_handle != VK_NULL_HANDLE; }
+
+private:
+    void destroy() {
+        if (m_handle != VK_NULL_HANDLE)
+            m_vkDestroyDevice(m_handle, nullptr);
+    }
+    const Instance* m_owner = nullptr;
+    PFN_vkDestroyDevice m_vkDestroyDevice = nullptr;
+    VkDevice            m_handle = VK_NULL_HANDLE;
+};
+using DeviceHandle = Handle<VkDevice, Instance, VkDeviceCreateInfo, &InstanceCommands::vkCreateDevice, &DeviceCommands::vkDestroyDevice>;
+class Device : public DeviceHandle, public DeviceCommands {
+public:
+    Device(DeviceHandle&& handle, PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr)
+        : DeviceHandle(std::move(handle)),
+          DeviceCommands(*this, vkGetDeviceProcAddr) {}
+};
+
 
 ## for handle in handles
 {% if handle.failure %}

@@ -8,8 +8,9 @@ add_subdirectory(generate)
 
 set(generated_directory "${CMAKE_CURRENT_BINARY_DIR}/gen")
 set(generated_sources
-  src/include/vko/handles.hpp.txt
   src/include/vko/functions.hpp.txt
+  src/include/vko/handles.hpp.txt
+  src/include/vko/structures.hpp.txt
   src/functions.cpp.txt
   )
 add_custom_target(vulkan_objects_generated)
@@ -22,12 +23,7 @@ target_include_directories(vulkan_objects PUBLIC include "${generated_directory}
 target_compile_definitions(vulkan_objects PUBLIC VK_NO_PROTOTYPES)
 add_dependencies(vulkan_objects vulkan_objects_generated)
 
-set(VULKAN_OBJECTS_SPEC_TAG "v1.4.307" CACHE STRING "GIT tag from https://github.com/KhronosGroup/Vulkan-Docs/tags")
-#if(NOT VULKAN_SPEC_XML)
-#    set(VULKAN_SPEC_XML "${CMAKE_BINARY_DIR}/vk.xml")
-#    file(DOWNLOAD "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/${VULKAN_OBJECTS_SPEC_TAG}/xml/vk.xml"
-#        "${VULKAN_SPEC_XML}")
-#endif()
+set(VULKAN_OBJECTS_SPEC_TAG "v1.4.307" CACHE STRING "GIT tag from https://github.com/KhronosGroup/Vulkan-Headers/tags")
 
 # 17MB and counting, for just the text header files!!
 include(FetchContent)
@@ -58,13 +54,6 @@ endfunction()
 foreach(generated_source IN LISTS generated_sources)
   add_generated_file("${CMAKE_CURRENT_SOURCE_DIR}/${generated_source}")
 endforeach()
-
-if(TARGET volk)
-  target_link_libraries(vulkan_objects INTERFACE volk)
-  target_compile_definitions(vulkan_objects INTERFACE VULKAN_LOADER_VOLK=1)
-else()
-  target_compile_definitions(vulkan_objects INTERFACE VULKAN_LOADER_VOLK=0)
-endif()
 
 if(BUILD_TESTING)
   option(BUILD_VULKAN_OBJECTS_TESTING "Enable vulkan_objects testing" ON)

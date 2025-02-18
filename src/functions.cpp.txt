@@ -59,7 +59,11 @@ GlobalCommands::GlobalCommands(PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr)
 ## for command in global_commands
 {% if command in platform_commands %}
 {% else %}
+    {% if command == "vkGetInstanceProcAddr" %}
+    {{ sep }} {{ command }}(vkGetInstanceProcAddr)  // Special case since there is no vkGetGlobalProcAddr() for example
+    {% else %}
     {{ sep }} {{ command }}(reinterpret_cast<PFN_{{ command }}>(vkGetInstanceProcAddr(nullptr, "{{ command }}")))
+    {% endif %}
     {% set sep = "," %}
 {% endif %}
 ## endfor

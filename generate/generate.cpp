@@ -120,6 +120,12 @@ std::unordered_map<std::string_view, std::string_view> makeCommandRootParents(co
         std::string_view alias = command.node().attribute("alias").value();
         commandRootParents[name] = commandRootParents[alias];
     }
+
+    // Override the loaders since they are used to populate each table and must
+    // be loaded in the parent table.
+    commandRootParents["vkGetDeviceProcAddr"] = "VkInstance";
+    commandRootParents["vkGetInstanceProcAddr"] = "";
+
     return commandRootParents;
 }
 
@@ -332,50 +338,83 @@ int main(int argc, char** argv) {
     }
     data["handles"] = handles;
 
+    std::set<std::string_view> types; // required types only, filtered by apiAllowed()
     std::set<std::string_view> commands; // required commands only, filtered by apiAllowed()
+    std::unordered_map<std::string_view, SortedStrings> typesRequiredBy;
     std::unordered_map<std::string_view, SortedStrings> commandsRequiredBy;
     for (const pugi::xpath_node& featureNode :
-         spec.select_nodes("//feature/require/command/../..")) {
+         spec.select_nodes("//feature/require/..")) {
         std::string_view feature = featureNode.node().attribute("name").value();
-        std::vector<std::string_view> featureApiDefines;
         if(!apiAllowed(featureNode.node().attribute("api").value()))
             continue;
+        for (const pugi::xpath_node& typeNode :
+             spec.select_nodes((std::string("//feature[@name='") + std::string(feature) + "']/require/type/@name")
+                 .c_str())) {
+            std::string_view type = typeNode.attribute().value();
+            types.insert(type);
+            typesRequiredBy[type].insert(feature);
+        }
         for (const pugi::xpath_node& commandNode :
              spec.select_nodes((std::string("//feature[@name='") + std::string(feature) + "']/require/command/@name")
                  .c_str())) {
             std::string_view command = commandNode.attribute().value();
             commands.insert(command);
-            assert(!feature.empty());
             commandsRequiredBy[command].insert(feature);
         }
     }
 
+    inja::json platformTypes = inja::json::array();
     inja::json platformCommands = inja::json::array();
     std::unordered_set<std::string_view> platformExtensions;
     for (const pugi::xpath_node& extensionNode :
-         spec.select_nodes("//extensions/extension/require/command/../..")) {
+         spec.select_nodes("//extensions/extension/require/..")) {
         std::string_view extension = extensionNode.node().attribute("name").value();
         std::string_view promotedto = extensionNode.node().attribute("promotedto").value();
         std::string_view platform = extensionNode.node().attribute("platform").value();
+        std::string_view requiredby = promotedto.empty() ? extension : promotedto;
         if(!platform.empty())
             platformExtensions.insert(extension);
+
+        // The extension may be limited to specific APIs
         if(!apiAllowed(extensionNode.node().attribute("supported").value()))
             continue;
+
+        for (const pugi::xpath_node& typeNode :
+             spec.select_nodes((std::string("//extensions/extension[@name='") +
+                                std::string(extension) + "']/require/type/@name")
+                                   .c_str())) {
+
+            // The <require> tag may be limited to specific APIs
+            if(!apiAllowed(typeNode.parent().parent().attribute("api").value()))
+                continue;
+
+            std::string_view type = typeNode.attribute().value();
+            types.insert(type);
+            typesRequiredBy[type].insert(requiredby);
+            if(!platform.empty())
+                platformTypes.push_back(type);
+        }
         for (const pugi::xpath_node& commandNode :
              spec.select_nodes((std::string("//extensions/extension[@name='") +
                                 std::string(extension) + "']/require/command/@name")
                                    .c_str())) {
+
+            // The <require> tag may be limited to specific APIs
+            if(!apiAllowed(commandNode.parent().parent().attribute("api").value()))
+                continue;
+
             std::string_view command = commandNode.attribute().value();
             commands.insert(command);
-            assert(!extension.empty());
-            if (promotedto.empty())
-                commandsRequiredBy[command].insert(extension);
-            else
-                commandsRequiredBy[command].insert(promotedto);
+            commandsRequiredBy[command].insert(requiredby);
             if(!platform.empty())
                 platformCommands.push_back(command);
         }
     }
+
+    std::unordered_map<SortedStrings, std::vector<std::string_view>> extensionGroupTypesMap;
+    for(auto& [command, requiredBy] : typesRequiredBy)
+        extensionGroupTypesMap[requiredBy].push_back(command);
+    assert(extensionGroupTypesMap.count(SortedStrings()) == 0); // everything should have a requirement
 
     std::unordered_map<SortedStrings, std::vector<std::string_view>> extensionGroupCommandsMap;
     for(auto& [command, requiredBy] : commandsRequiredBy)
@@ -386,6 +425,9 @@ int main(int argc, char** argv) {
     inja::json instanceCommands = inja::json::array();
     inja::json globalCommands = inja::json::array();
     for (auto& command : commands) {
+        // It's worse than I thought. You can't load the destroy functions
+        // without an instance! *double-picard-facepalm*
+        #if 0
         // Hack for vkCreateDevice symmetry; weird to load destroy call after construction
         if(command == "vkDestroyDevice")
         {
@@ -399,6 +441,7 @@ int main(int argc, char** argv) {
             globalCommands.push_back(command);
             continue;
         }
+        #endif
 
         if (commandRootParents[command] == "VkDevice")
             deviceCommands.push_back(command);
@@ -406,6 +449,15 @@ int main(int argc, char** argv) {
             instanceCommands.push_back(command);
         else
             globalCommands.push_back(command);
+    }
+
+    inja::json extensionGroupTypes = inja::json::array();
+    for(auto& [extensions, types] : extensionGroupTypesMap)
+    {
+        inja::json extensionGroup;
+        extensionGroup["extensions"] = extensions.strings;
+        extensionGroup["types"] = types;
+        extensionGroupTypes.push_back(extensionGroup);
     }
 
     inja::json extensionGroupCommands = inja::json::array();
@@ -436,11 +488,14 @@ int main(int argc, char** argv) {
         extensionGroupCommands.push_back(extensionGroup);
     }
 
+    data["types"] = types;
     data["instance_commands"] = instanceCommands;
     data["device_commands"] = deviceCommands;
     data["global_commands"] = globalCommands;
+    data["platform_types"] = platformTypes;
     data["platform_commands"] = platformCommands;
     data["command_parents"] = commandRootParents;
+    data["extension_group_types"] = extensionGroupTypes;
     data["extension_group_commands"] = extensionGroupCommands;
     data["template_filename"] = templateFilename.filename().generic_string();
 
