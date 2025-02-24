@@ -5,6 +5,8 @@
 #include <exception>
 #include <stdexcept>
 
+namespace vko {
+
 class Exception : public std::exception {
 public:
     template<class Str>
@@ -18,3 +20,5 @@ public:
 private:
     std::string m_what;
 };
+
+} // namespace vko

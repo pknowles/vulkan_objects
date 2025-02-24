@@ -4,8 +4,8 @@
 #include <tuple>
 #include <vector>
 #include <vko/exceptions.hpp>
-#include <vko/handles.hpp>
-#include <vko/structures.hpp>
+#include <vko/gen_structures.hpp>
+#include <vko/gen_functions.hpp>
 #include <vulkan/vulkan_core.h>
 
 namespace vko

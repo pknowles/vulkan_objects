@@ -13,16 +13,25 @@
 namespace vko
 {
 
-struct VulkanLibrary
+constexpr inline std::string_view toString(VkResult result)
 {
-public:
-    VulkanLibrary();
-    ~VulkanLibrary();
-    PFN_vkGetInstanceProcAddr loader() const;
+    switch (result) 
+    {
+## for result in findall("//enums[@name='VkResult']/enum/@name")
+    case {{ result }}: return "{{ result }}";
+## endfor
+    default: break;
+    }
+    return "<invalid result>";
+}
 
-private:
-    std::unique_ptr<struct FindVulkanImpl> m_impl;
-};
+constexpr inline void check(VkResult result)
+{
+    if (result != VK_SUCCESS) 
+    {
+        throw std::runtime_error("Vulkan error: " + std::string(toString(result)));
+    }
+}
 
 // Top level functions that are loaded directly from the vulkan loader, driver
 // or anything that provides a top level "vkGetInstanceProcAddr" (which may

@@ -15,12 +15,11 @@
 
 namespace fs = std::filesystem;
 
-struct Command {
-    std::string    name;
-    pugi::xml_node node;
-    std::smatch    match;
-    std::string    object;
-    bool           plural;
+struct DestroyCommand {
+    std::string_view name;
+    std::string_view first_param;
+    std::string_view handle;
+    bool             plural;
 };
 
 std::string inner(const pugi::xml_node& node) {
@@ -232,112 +231,6 @@ int main(int argc, char** argv) {
 
     inja::json data;
 
-    inja::json handles = inja::json::array();
-    {
-        std::regex createFunc("vk(Create|Allocate)(.*)([A-Z]{2,})?");
-        std::regex destroyFunc("vk(Destroy|Free)(.*)([A-Z]{2,})?");
-        std::regex typeBaseStrip("^Vk|[A-Z]{2,}$");
-        std::regex suffixPattern("[A-Z]{2,}$");
-        std::regex pluralStrip("(.*)(ies|es|s)$");
-
-        std::unordered_map<std::string, Command> destroyCommands;
-        for(const pugi::xpath_node& command : spec.select_nodes("//commands/command"))
-        {
-            pugi::xml_node node = command.node();
-            if(!apiAllowed(node.attribute("api").value()))
-                continue;
-            std::string destroyFuncName = node.select_node("proto/name/text()").node().value();
-            std::smatch destroyMatch;
-            if(std::regex_match(destroyFuncName, destroyMatch, destroyFunc))
-            {
-                std::string object;
-                pugi::xpath_node countNode = node.select_node("param/name[contains(text(),'Count')]");
-                bool plural = static_cast<bool>(countNode);
-                if(plural)
-                    object = node.select_node("param[last()]/type/text()").node().value();
-                else
-                    object = node.select_node("param[position() = (last() - 1)]/type/text()").node().value();
-                if(destroyCommands.count(object))
-                    throw std::runtime_error("Duplicate destroy functions for type " + object +
-                                             ": " + destroyFuncName + " and " +
-                                             destroyCommands[object].name + "\n");
-                destroyCommands[object] = {std::move(destroyFuncName), std::move(node),
-                                           std::move(destroyMatch), object, plural};
-            }
-        }
-
-        // Get all commands. Filter for vulkan commands, not vulkansc
-        for(const pugi::xpath_node& command : spec.select_nodes("//commands/command"))
-        {
-            if(!apiAllowed(command.node().attribute("api").value()))
-                continue;
-            std::string createFuncName = command.node().select_node("proto/name/text()").node().value();
-            std::smatch createMatch;
-            if(std::regex_match(createFuncName, createMatch, createFunc))
-            {
-                std::string type = command.node().select_node("param[last()]/type/text()").node().value();
-                std::string typeBase = std::regex_replace(type, typeBaseStrip, "");
-                std::smatch typeSuffixMatch;
-                std::string typeSuffix = std::regex_search(type, typeSuffixMatch, suffixPattern) ? typeSuffixMatch[0].str() : "";
-                std::string objectName = createMatch[2].str() + createMatch[3].str();
-
-                // Make plural object creation singular
-                // TODO: support plural containers?
-                pugi::xpath_node countNode = command.node().select_node("param/name[contains(text(),'Count')]");
-                bool plural = static_cast<bool>(countNode);
-                if(plural)
-                    objectName = std::regex_replace(objectName, pluralStrip, "$1");
-
-                auto destroyFunc = destroyCommands.find(type);
-                if(destroyFunc == destroyCommands.end())
-                {
-                    inja::json obj = inja::json::object();
-                    obj["name"] = objectName;
-                    obj["create"] = createFuncName;
-                    obj["failure"] = "No definition destroy function for " + type;
-                    handles.push_back(obj);
-                    continue;
-                }
-
-                pugi::xpath_node createInfoNode = command.node().select_node("param/name[contains(text(),'Info')]");
-                if(!createInfoNode)
-                {
-                    inja::json obj = inja::json::object();
-                    obj["name"] = objectName;
-                    obj["create"] = createFuncName;
-                    obj["failure"] = "Could not find CreateInfo";
-                    handles.push_back(obj);
-                    continue;
-                }
-
-                std::string createInfo = createInfoNode.parent().select_node("type/text()").node().value();
-                pugi::xpath_variable_set vars;
-                vars.set("createFuncName", createFuncName.c_str());
-
-                inja::json obj = inja::json::object();
-                obj["name"] = objectName;
-                obj["type"] = type;
-                obj["suffix"] = createMatch[3].str();
-                obj["owner"] = commandRootParents[destroyFunc->second.name];
-                obj["createInfo"] = createInfo;
-                obj["create"] = createFuncName;
-                obj["createPlural"] = plural;
-                obj["destroy"] = destroyFunc->second.name;
-                obj["destroyPlural"] = destroyFunc->second.plural;
-                obj["failure"] = false;
-
-                pugi::xpath_node extensionCommand = spec.select_node("//extensions/extension/require/command[@name=$createFuncName]", &vars);
-                if(extensionCommand)
-                    obj["extension"] = extensionCommand.parent().parent().attribute("name").value();
-                else
-                    obj["extension"] = false;
-
-                handles.push_back(obj);
-            }
-        }
-    }
-    data["handles"] = handles;
-
     std::set<std::string_view> types; // required types only, filtered by apiAllowed()
     std::set<std::string_view> commands; // required commands only, filtered by apiAllowed()
     std::unordered_map<std::string_view, SortedStrings> typesRequiredBy;
@@ -450,6 +343,134 @@ int main(int argc, char** argv) {
         else
             globalCommands.push_back(command);
     }
+
+    inja::json handles = inja::json::array();
+    {
+        std::regex createFunc("vk(Create|Allocate)(.*)([A-Z]{2,})?");
+        std::regex destroyFunc("vk(Destroy|Free)(.*)([A-Z]{2,})?");
+        std::regex typeBaseStrip("^Vk|[A-Z]{2,}$");
+        std::regex suffixPattern("[A-Z]{2,}$");
+        std::regex pluralStrip("(.*)(ies|es|s)$");
+
+        // Find all destroy functions
+        std::unordered_map<std::string_view, DestroyCommand> destroyCommands;
+        for(std::string_view command : commands)
+        {
+            std::match_results<std::string_view::const_iterator> destroyMatch;
+            if(std::regex_match(command.begin(), command.end(), destroyMatch, destroyFunc))
+            {
+                pugi::xpath_node node = spec.select_node(("//commands/command/proto/name[text()='" + std::string(command) + "']/../..").c_str());
+                if(!node)
+                {
+                    // Verify it was in fact an alias
+                    assert(spec.select_node(
+                        ("//commands/command[@name='" + std::string(command) + "']/@alias")
+                            .c_str()));
+                    continue;
+                }
+
+                pugi::xpath_node countNode = node.node().select_node("param/name[contains(text(),'Count')]");
+                bool plural = static_cast<bool>(countNode);
+
+                std::string_view first_param = node.node().select_node("param[1]/type/text()").node().value();
+
+                std::string_view object;
+                if(plural)
+                    object = node.node().select_node("param[last()]/type/text()").node().value();
+                else
+                    object = node.node().select_node("param[position() = (last() - 1)]/type/text()").node().value();
+                if(destroyCommands.count(object))
+                    throw std::runtime_error("Duplicate destroy functions for type " + std::string(object) +
+                                             ": " + std::string(command) + " and " +
+                                             std::string(destroyCommands[object].name) + "\n");
+                destroyCommands[object] = {command, first_param, object, plural};
+            }
+        }
+
+        // For all create functions
+        for(std::string_view command : commands)
+        {
+            std::match_results<std::string_view::const_iterator> createMatch;
+            if(std::regex_match(command.begin(), command.end(), createMatch, createFunc))
+            {
+                auto createFuncName = command;
+                pugi::xpath_node node = spec.select_node(("//commands/command/proto/name[text()='" + std::string(command) + "']/../..").c_str());
+                if(!node)
+                {
+                    // Verify it was in fact an alias
+                    assert(spec.select_node(
+                        ("//commands/command[@name='" + std::string(command) + "']/@alias")
+                            .c_str()));
+                    continue;
+                }
+                std::string type = node.node().select_node("param[last()]/type/text()").node().value();
+                std::string typeBase = std::regex_replace(type, typeBaseStrip, "");
+                std::smatch typeSuffixMatch;
+                std::string typeSuffix = std::regex_search(type, typeSuffixMatch, suffixPattern) ? typeSuffixMatch[0].str() : "";
+                std::string objectName = createMatch[2].str() + createMatch[3].str();
+
+                // Make plural object creation singular
+                // TODO: support plural containers?
+                pugi::xpath_node countNode = node.node().select_node("param/name[contains(text(),'Count')]");
+                bool plural = static_cast<bool>(countNode);
+                if(plural)
+                    objectName = std::regex_replace(objectName, pluralStrip, "$1");
+
+                auto destroyFunc = destroyCommands.find(type);
+                if(destroyFunc == destroyCommands.end())
+                {
+                    inja::json obj = inja::json::object();
+                    obj["name"] = objectName;
+                    obj["create"] = createFuncName;
+                    obj["failure"] = "No definition destroy function for " + type;
+                    handles.push_back(obj);
+                    continue;
+                }
+
+                pugi::xpath_node createInfoNode = node.node().select_node("param/type[contains(text(),'CreateInfo')]/text()");
+                if(!createInfoNode)
+                {
+                    inja::json obj = inja::json::object();
+                    obj["name"] = objectName;
+                    obj["create"] = createFuncName;
+                    obj["failure"] = "Could not find CreateInfo";
+                    handles.push_back(obj);
+                    continue;
+                }
+
+                std::string_view createInfo = createInfoNode.node().value();
+
+                inja::json obj = inja::json::object();
+                obj["name"] = objectName;
+                obj["type"] = type;
+                obj["suffix"] = createMatch[3].str();
+                obj["owner"] = commandRootParents[destroyFunc->second.name];
+                obj["createInfo"] = createInfo;
+                obj["create"] = createFuncName;
+                obj["createPlural"] = plural;
+                obj["destroy"] = destroyFunc->second.name;
+                obj["destroyPlural"] = destroyFunc->second.plural;
+                obj["failure"] = false;
+                obj["extensions"] = commandsRequiredBy[createFuncName].strings;
+
+                handles.push_back(obj);
+            }
+        }
+
+        inja::json jsonDestroyCommands = inja::json::array();
+        for(auto& [handle, destroy] : destroyCommands)
+        {
+            inja::json destroyFunc = inja::json::object();
+            destroyFunc["handle"] = handle;
+            destroyFunc["name"] = destroy.name;
+            destroyFunc["parent"] = commandRootParents[destroy.name];
+            destroyFunc["first_param"] = destroy.first_param;
+            destroyFunc["extensions"] = commandsRequiredBy[destroy.name].strings;
+            jsonDestroyCommands.push_back(destroyFunc);
+        }
+        data["handle_destroy_commands"] = jsonDestroyCommands;
+    }
+    data["handles"] = handles;
 
     inja::json extensionGroupTypes = inja::json::array();
     for(auto& [extensions, types] : extensionGroupTypesMap)

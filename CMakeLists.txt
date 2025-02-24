@@ -6,17 +6,18 @@ project(vulkan_objects)
 
 add_subdirectory(generate)
 
-set(generated_directory "${CMAKE_CURRENT_BINARY_DIR}/gen")
+set(generated_directory "${CMAKE_CURRENT_BINARY_DIR}/src_gen")
 set(generated_sources
-  src/include/vko/functions.hpp.txt
-  src/include/vko/handles.hpp.txt
-  src/include/vko/structures.hpp.txt
-  src/functions.cpp.txt
+  src/include/vko/gen_functions.hpp.txt
+  src/include/vko/gen_handles.hpp.txt
+  src/include/vko/gen_structures.hpp.txt
+  src/gen_functions.cpp.txt
   )
 add_custom_target(vulkan_objects_generated)
 
 add_library(vulkan_objects
-  ${generated_directory}/src/functions.cpp
+  src/functions.cpp
+  ${generated_directory}/src/gen_functions.cpp
   )
 target_compile_features(vulkan_objects PUBLIC cxx_std_20)
 target_include_directories(vulkan_objects PUBLIC include "${generated_directory}/src/include")
