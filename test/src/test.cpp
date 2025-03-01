@@ -9,7 +9,7 @@
 #include <vko/handles.hpp>
 #include <vulkan/vulkan_core.h>
 
-TEST(Integration, Init)
+TEST(Integration, InitHappyPath)
 {
     vko::VulkanLibrary library;
     vko::GlobalCommands globalCommands(library.loader());
@@ -32,7 +32,8 @@ TEST(Integration, Init)
         .enabledExtensionCount = 0,
         .ppEnabledExtensionNames = nullptr,
     };
-    vko::Instance instance(vko::InstanceHandle(globalCommands, instanceCreateInfo), library.loader());
+    std::optional<vko::Instance> another;
+    vko::Instance instance(vko::InstanceHandle(instanceCreateInfo, globalCommands), library.loader());
 
     // Pick a VkPhysicalDevice
     std::vector<VkPhysicalDevice> physicalDevices = vko::toVector(instance.vkEnumeratePhysicalDevices, instance);
@@ -89,14 +90,19 @@ TEST(Integration, Init)
         .ppEnabledExtensionNames = deviceExtensions.data(),
         .pEnabledFeatures = nullptr,
     };
-    vko::Device device(vko::DeviceHandle(instance, physicalDevice, deviceCreateInfo), instance.vkGetDeviceProcAddr);
+    vko::Device device(deviceCreateInfo, instance, physicalDevice);
 
     VkQueue queue = vko::get(device.vkGetDeviceQueue, device, queueFamilyIndex, 0);
 
-    // Finally get to some real gpu programming
+    // Test the first device call
     device.vkQueueWaitIdle(queue);
 
-    // TODO: maybe not make dangling pointers to the instance and device
-    static auto crash = std::move(instance);
-    //instance.vkDestroyInstance = nullptr;
+    // Create the first non-instance/device object
+    VkCommandPoolCreateInfo commandPoolCreateInfo{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .queueFamilyIndex = queueFamilyIndex,
+    };
+    vko::CommandPool commandPool(commandPoolCreateInfo, device);
 }

@@ -35,21 +35,23 @@ template<> struct handle_traits<{{ command.handle }}> { using table = GlobalComm
 {% if handle.create in platform_commands %}
 #if defined({{ join(handle.extensions, ") || defined(") }})
 {% endif %}
-{% if "Vk" + handle.name != handle.owner %}{# Don't generate code for special case VkInstance and VkDevice handles #}
-{% set owner=substr(handle.owner, 2) %}
+{% if "Vk" + handle.name != handle.parent %}{# Don't generate code for special case VkInstance and VkDevice handles #}
+{% set parent=substr(handle.parent, 2) %}
 using {{ handle.name }} = Handle<{{ handle.type }}, PFN_{{ handle.create }}, {{ handle.createInfo }}>;
 {% if handle.createPlural %}
-//template<> {{ handle.type }} createHandle<{{ handle.type }}, {{ owner }}Commands, {{ handle.owner }}, PFN_{{ handle.create }}, {{ handle.createInfo }}>(const {{ owner }}Commands& vk, {{ handle.owner }} parent, const {{ handle.createInfo }}& createInfo) {
+//template<> {{ handle.type }} createHandle<{{ handle.type }}, {{ parent }}Commands, {{ handle.parent }}, PFN_{{ handle.create }}, {{ handle.createInfo }}>(const {{ parent }}Commands& vk, {{ handle.parent }} parent, const {{ handle.createInfo }}& createInfo) {
 //    {{ handle.type }} handle; check(vk.{{ handle.create }}(parent, 1, &createInfo, nullptr, &handle)); return handle; }
 {% else %}
-//template<> {{ handle.type }} createHandle<{{ handle.type }}, {{ owner }}Commands, {{ handle.owner }}, PFN_{{ handle.create }}, {{ handle.createInfo }}>(const {{ owner }}Commands& vk, {{ handle.owner }} parent, const {{ handle.createInfo }}& createInfo) {
+//template<> {{ handle.type }} createHandle<{{ handle.type }}, {{ parent }}Commands, {{ handle.parent }}, PFN_{{ handle.create }}, {{ handle.createInfo }}>(const {{ parent }}Commands& vk, {{ handle.parent }} parent, const {{ handle.createInfo }}& createInfo) {
 //    {{ handle.type }} handle; check(vk.{{ handle.create }}(parent, &createInfo, nullptr, &handle)); return handle; }
 template <> struct CreateHandle<{{ handle.type }}, PFN_{{ handle.create }}, {{ handle.createInfo }}> {
+    template <class FunctionsAndParent>
+        requires std::constructible_from<{{ handle.parent }}, FunctionsAndParent>
+    {{ handle.type }} operator()(const {{ handle.createInfo }}& createInfo, const FunctionsAndParent& vk) { return (*this)(createInfo, vk, vk); }
     template <class Functions>
-    {{ handle.type }} operator()(const Functions& vk, {{ handle.owner }} owner,
-                        const {{ handle.createInfo }}& createInfo) {
+    {{ handle.type }} operator()(const {{ handle.createInfo }}& createInfo, const Functions& vk, {{ handle.parent }} parent) {
         {{ handle.type }} handle;
-        check(vk.{{ handle.create }}(owner, &createInfo, nullptr, &handle));
+        check(vk.{{ handle.create }}(parent, &createInfo, nullptr, &handle));
         return handle;
     }
 };

@@ -22,8 +22,12 @@ struct DestroyFunc{
     // In most cases the parent is the first parameter of the destroy function
     using Parent = handle_traits<T>::destroy_first_param;
 
-    DestroyFunc(const handle_traits<T>::table& table, T, Parent parent)
-        : destroy(table.handle_traits<T>::table_destroy),
+    template <class FunctionsAndParent>
+        requires std::constructible_from<Parent, FunctionsAndParent>
+    DestroyFunc(T handle, const FunctionsAndParent& vk) : DestroyFunc(handle, vk, vk) {
+    }
+    DestroyFunc(T /* instance/device are special :( */, const handle_traits<T>::table& table, Parent parent)
+        : destroy(table.*handle_traits<T>::table_destroy),
           parent(parent) {}
     void operator()(T handle) const { destroy(parent, handle, nullptr); }
 
@@ -39,18 +43,10 @@ struct DestroyFunc{
 template <class T, class CreateFunc, class CreateInfo>
 class Handle {
 public:
-    #if 0
-    template <class Functions, class... Args>
-    Handle(const Functions& functions, const CreateInfo& createInfo, const Args&... args)
-        : m_handle(CreateHandle<T, CreateFunc, CreateInfo, Functions, Args...>()(
-              functions, createInfo, args...)),
-          m_destroy(
-              DestroyFunc<T>(functions, m_handle /* sigh; needed for instance and device */, args...)) {}
-    #endif
-    template <class ParentAndFunctions, class ...Args>
-    Handle(const ParentAndFunctions& parentAndFunctions, const CreateInfo& createInfo,  const Args&... args)
-        : m_handle(CreateHandle<T, CreateFunc, CreateInfo>()(parentAndFunctions, createInfo, parentAndFunctions, args...)),
-          m_destroy(DestroyFunc<T>(parentAndFunctions, m_handle /* sigh; needed for instance and device */, parentAndFunctions, args...)) {}
+    template <class ...Args>
+    Handle(const CreateInfo& createInfo,  const Args&... args)
+        : m_handle(CreateHandle<T, CreateFunc, CreateInfo>()(createInfo, args...)),
+          m_destroy(DestroyFunc<T>(m_handle /* sigh; only needed for instance and device */, args...)) {}
     ~Handle() { destroy(); }
     Handle(const Handle& other) = delete;
     Handle(Handle&& other) noexcept
@@ -81,7 +77,7 @@ private:
 template <>
 struct CreateHandle<VkInstance, PFN_vkCreateInstance, VkInstanceCreateInfo> {
     template <class Functions>
-    VkInstance operator()(const Functions& vk, const VkInstanceCreateInfo& createInfo) {
+    VkInstance operator()(const VkInstanceCreateInfo& createInfo, const Functions& vk) {
         VkInstance handle;
         check(vk.vkCreateInstance(&createInfo, nullptr, &handle));
         return handle;
@@ -90,7 +86,8 @@ struct CreateHandle<VkInstance, PFN_vkCreateInstance, VkInstanceCreateInfo> {
 
 template <>
 struct DestroyFunc<VkInstance> {
-    DestroyFunc(const GlobalCommands& vk, VkInstance handle)
+    template <class Functions>
+    DestroyFunc(VkInstance handle, const Functions& vk)
         : destroy(reinterpret_cast<PFN_vkDestroyInstance>(
               vk.vkGetInstanceProcAddr(handle, "vkDestroyInstance"))) {
         if (!destroy)
@@ -105,23 +102,23 @@ struct DestroyFunc<VkInstance> {
 // function must be loaded in InstanceCommands, but we don't have access to that
 // here. Instead, we re-load the function per object (assuming there won't be
 // many). The real fix would be in the vulkan spec.
-using InstanceHandle = Handle<VkInstance, PFN_vkDestroyDevice, VkInstanceCreateInfo>;
+using InstanceHandle = Handle<VkInstance, PFN_vkCreateInstance, VkInstanceCreateInfo>;
 
 // Convenience class to combine the instance handle and its function pointers
 class Instance : public InstanceHandle, public InstanceCommands {
 public:
-    Instance(const GlobalCommands& vk, const VkInstanceCreateInfo& createInfo)
-        : Instance(InstanceHandle(vk, createInfo), vk.vkGetInstanceProcAddr) {}
+    Instance(const VkInstanceCreateInfo& createInfo, const GlobalCommands& vk)
+        : Instance(InstanceHandle(createInfo, vk), vk.vkGetInstanceProcAddr) {}
     Instance(InstanceHandle&& handle, PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr)
         : InstanceHandle(std::move(handle)),
           InstanceCommands(*this, vkGetInstanceProcAddr) {}
 };
 
 template <>
-struct CreateHandle<VkDevice, PFN_vkCreateInstance, VkDeviceCreateInfo> {
+struct CreateHandle<VkDevice, PFN_vkCreateDevice, VkDeviceCreateInfo> {
     template <class Functions>
-    VkDevice operator()(const Functions& vk, VkPhysicalDevice physicalDevice,
-                        const VkDeviceCreateInfo& createInfo) {
+    VkDevice operator()(const VkDeviceCreateInfo& createInfo, const Functions& vk,
+                        VkPhysicalDevice physicalDevice) {
         VkDevice handle;
         check(vk.vkCreateDevice(physicalDevice, &createInfo, nullptr, &handle));
         return handle;
@@ -130,13 +127,14 @@ struct CreateHandle<VkDevice, PFN_vkCreateInstance, VkDeviceCreateInfo> {
 
 template <>
 struct DestroyFunc<VkDevice> {
-    DestroyFunc(const Instance& vk, VkPhysicalDevice, VkDevice handle)
+    DestroyFunc(VkDevice handle, const InstanceCommands& vk, VkPhysicalDevice /* fake "parent", not needed for destruction */)
         : destroy(reinterpret_cast<PFN_vkDestroyDevice>(
               vk.vkGetDeviceProcAddr(handle, "vkDestroyDevice")))
     {
         if (!destroy)
             throw Exception("Driver's vkGetDeviceProcAddr(vkDestroyDevice) returned null");
     }
+    void                  operator()(VkDevice handle) const { destroy(handle, nullptr); }
     PFN_vkDestroyDevice destroy;
 };
 
@@ -145,11 +143,14 @@ struct DestroyFunc<VkDevice> {
 // function must be loaded in InstanceCommands, but we don't have access to that
 // here. Instead, we re-load the function per object (assuming there won't be
 // many). The real fix would be in the vulkan spec.
-using DeviceHandle = Handle<VkDevice, PFN_vkDestroyDevice, VkDeviceCreateInfo>;
+using DeviceHandle = Handle<VkDevice, PFN_vkCreateDevice, VkDeviceCreateInfo>;
 
 // Convenience class to combine the device handle and its function pointers
 class Device : public DeviceHandle, public DeviceCommands {
 public:
+    Device(const VkDeviceCreateInfo& createInfo, const InstanceCommands& vk,
+           VkPhysicalDevice physicalDevice)
+        : Device(DeviceHandle(createInfo, vk, physicalDevice), vk.vkGetDeviceProcAddr) {}
     Device(DeviceHandle&& handle, PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr)
         : DeviceHandle(std::move(handle)),
           DeviceCommands(*this, vkGetDeviceProcAddr) {}

@@ -444,7 +444,7 @@ int main(int argc, char** argv) {
                 obj["name"] = objectName;
                 obj["type"] = type;
                 obj["suffix"] = createMatch[3].str();
-                obj["owner"] = commandRootParents[destroyFunc->second.name];
+                obj["parent"] = commandRootParents[destroyFunc->second.name];
                 obj["createInfo"] = createInfo;
                 obj["create"] = createFuncName;
                 obj["createPlural"] = plural;
