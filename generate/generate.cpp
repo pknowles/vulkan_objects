@@ -18,8 +18,10 @@ namespace fs = std::filesystem;
 struct DestroyCommand {
     std::string_view name;
     std::string_view first_param;
-    std::string_view handle;
-    bool             plural;
+    std::string      suffix;
+    std::string      objectName;
+    bool             plural = false;
+    bool             hasCreate = false;
 };
 
 std::string inner(const pugi::xml_node& node) {
@@ -383,7 +385,12 @@ int main(int argc, char** argv) {
                     throw std::runtime_error("Duplicate destroy functions for type " + std::string(object) +
                                              ": " + std::string(command) + " and " +
                                              std::string(destroyCommands[object].name) + "\n");
-                destroyCommands[object] = {command, first_param, object, plural};
+                std::string suffix = destroyMatch[3].str();
+                std::string objectName = destroyMatch[2].str() + destroyMatch[3].str();
+                if(plural)
+                    objectName = std::regex_replace(objectName, pluralStrip, "$1");
+                destroyCommands[object] = {command, first_param, suffix, objectName,
+                                           plural};
             }
         }
 
@@ -453,8 +460,30 @@ int main(int argc, char** argv) {
                 obj["failure"] = false;
                 obj["extensions"] = commandsRequiredBy[createFuncName].strings;
 
+                // Don't create a destroy-only handle
+                destroyFunc->second.hasCreate = true;
+
                 handles.push_back(obj);
             }
+        }
+
+        for(auto& [handle, destroy] : destroyCommands)
+        {
+            if(destroy.hasCreate)
+                continue;
+            inja::json obj = inja::json::object();
+            obj["name"] = destroy.objectName.c_str();
+            obj["type"] = handle;
+            obj["suffix"] = destroy.suffix.c_str();
+            obj["parent"] = commandRootParents[destroy.name];
+            obj["createInfo"] = false;
+            obj["create"] = false;
+            obj["createPlural"] = false;
+            obj["destroy"] = destroy.name;
+            obj["destroyPlural"] = destroy.plural;
+            obj["failure"] = false;
+            obj["extensions"] = commandsRequiredBy[destroy.name].strings;
+            handles.push_back(obj);
         }
 
         inja::json jsonDestroyCommands = inja::json::array();
@@ -465,6 +494,7 @@ int main(int argc, char** argv) {
             destroyFunc["name"] = destroy.name;
             destroyFunc["parent"] = commandRootParents[destroy.name];
             destroyFunc["first_param"] = destroy.first_param;
+            destroyFunc["plural"] = destroy.plural;
             destroyFunc["extensions"] = commandsRequiredBy[destroy.name].strings;
             jsonDestroyCommands.push_back(destroyFunc);
         }
