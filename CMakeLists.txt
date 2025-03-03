@@ -26,6 +26,30 @@ add_dependencies(vulkan_objects vulkan_objects_generated)
 
 set(VULKAN_OBJECTS_SPEC_TAG "v1.4.307" CACHE STRING "GIT tag from https://github.com/KhronosGroup/Vulkan-Headers/tags")
 
+# Platform-specific window manager enablement
+if(WIN32)
+  target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_WIN32_KHR)
+elseif(ANDROID)
+  target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_ANDROID_KHR)
+elseif(APPLE)
+  target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_METAL_EXT)
+elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|BSD|GNU")
+  #find_package(Wayland)
+  #if(xcb_FOUND)
+  #  target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_WAYLAND_KHR)
+  #endif()
+  #find_package(XCB)
+  #if(XCB_FOUND)
+  #  target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_XCB_KHR)
+  #  target_link_libraries(vulkan_objects PUBLIC xcb)
+  #endif()
+  find_package(X11)
+  if(X11_FOUND)
+    target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_XLIB_KHR)
+    target_link_libraries(vulkan_objects PUBLIC ${X11_LIBRARIES})
+  endif()
+endif()
+
 # 17MB and counting, for just the text header files!!
 include(FetchContent)
 FetchContent_Declare(
