@@ -8,13 +8,31 @@
 
 #include <windows.h>
 
-namespace vko
-{
+namespace vko {
+
+class Message {
+public:
+    Message()                                = delete;
+    Message(const Message& other)            = delete;
+    Message& operator=(const Message& other) = delete;
+    Message(DWORD error, HMODULE module = NULL)
+        : m_size(FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                                    FORMAT_MESSAGE_IGNORE_INSERTS |
+                                    (module ? FORMAT_MESSAGE_FROM_HMODULE : 0),
+                                module, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                                (LPSTR)&m_buffer, 0, NULL)) {}
+    ~Message() { LocalFree(m_buffer); }
+    std::string str() const { return {m_buffer, m_size}; }
+
+private:
+    LPSTR m_buffer;
+    DWORD m_size;
+};
 
 class LastError : public Exception {
 public:
     LastError()
-        : Exception(std::string(strerror(errno))) {}
+        : Exception(Message(::GetLastError()).str()) {}
 };
 
 class DynamicLibrary {
@@ -25,7 +43,7 @@ public:
         : m_module(other.m_module) {
         other.m_module = nullptr;
     };
-    DynamicLibrary(const fs::path& path)
+    DynamicLibrary(const std::filesystem::path& path)
         : m_module(::LoadLibraryW(path.c_str())) {
         if (!m_module) {
             throw LastError(); //("Failed to load " + path.string());
@@ -37,6 +55,7 @@ public:
             FreeLibrary(m_module);
         m_module = other.m_module;
         other.m_module = nullptr;
+        return *this;
     }
     ~DynamicLibrary() {
         if (m_module)
@@ -45,12 +64,12 @@ public:
     operator HMODULE() const { return m_module; }
 
     template <typename FuncType>
-    FuncType* get(const std::string& functionName) const {
+    FuncType get(const std::string& functionName) const {
         FARPROC functionAddress = ::GetProcAddress(m_module, functionName.c_str());
         if (!functionAddress) {
             throw LastError(); //("Failed to get address for " + functionName);
         }
-        return reinterpret_cast<FuncType*>(functionAddress);
+        return reinterpret_cast<FuncType>(functionAddress);
     }
 
 private:

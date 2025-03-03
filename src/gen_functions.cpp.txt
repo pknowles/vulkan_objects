@@ -2,7 +2,16 @@
 // This file was generated from {{ template_filename }}. Do not edit directly.
 {# Ignore that. This is the original! #}
 
+#ifndef VK_NO_PROTOTYPES
+#error vulkan_objects expects VK_NO_PROTOTYPES to be defined by the build system
+#endif
+
 #include <vko/gen_functions.hpp>
+#include <vulkan/vulkan.h>
+
+// DANGER: Unless we include all the platform-specific headers via vulkan.h,
+// some files would see different definitions of the function tables.
+// Unfortunately, this makes things slow. Pre-compiled headers should help.
 
 namespace vko
 {

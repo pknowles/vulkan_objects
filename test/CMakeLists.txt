@@ -15,19 +15,18 @@ if(NOT GTest_FOUND)
 endif()
 
 FetchContent_Declare(
-    volk
-    GIT_REPOSITORY https://github.com/zeux/volk.git
-    GIT_TAG 21ceafb55b7ca55b15aee758a8541c06e29780cd # 1.3.270
+    glfw
+    GIT_REPOSITORY https://github.com/glfw/glfw.git
+    GIT_TAG 3.4
     GIT_SHALLOW TRUE
 )
-FetchContent_MakeAvailable(volk)
-
+FetchContent_MakeAvailable(glfw)
 
 # Unit tests
 add_executable(unit_tests
   src/test.cpp
   )
-target_link_libraries(unit_tests vulkan_objects gtest_main)
+target_link_libraries(unit_tests vulkan_objects glfw gtest_main)
 
 if(MSVC)
   target_compile_options(unit_tests PRIVATE /W4 /WX)

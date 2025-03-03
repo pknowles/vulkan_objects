@@ -4,19 +4,18 @@
 #include <tuple>
 #include <vector>
 #include <vko/exceptions.hpp>
-#include <vko/gen_structures.hpp>
 #include <vko/gen_functions.hpp>
+#include <vko/gen_structures.hpp>
 #include <vulkan/vulkan_core.h>
 
-namespace vko
-{
+namespace vko {
 
 template <typename T>
 struct function_traits;
 
 template <typename R, typename... Args>
-struct function_traits<R(*)(Args...)> {
-    using args = std::tuple<Args...>;
+struct function_traits<R (*)(Args...)> {
+    using args   = std::tuple<Args...>;
     using result = R;
 
     // Number of arguments
@@ -29,10 +28,10 @@ struct function_traits<R(*)(Args...)> {
     };
 };
 
-template<class T>
+template <class T>
 using function_args_t = typename function_traits<T>::args;
 
-template<class T>
+template <class T>
 using function_result_t = typename function_traits<T>::result;
 
 template <class T>
@@ -46,9 +45,8 @@ auto toVector(EnumerateFunc enumerateFunc, const Args&... args) {
     using Result = std::remove_pointer_t<tuple_last_t<function_args_t<EnumerateFunc>>>;
 
     uint32_t count = 0;
-    if constexpr(std::is_same_v<function_result_t<EnumerateFunc>, VkResult>) {
-        if(VkResult err = enumerateFunc(args..., &count, nullptr); err != VK_SUCCESS)
-            throw Exception(toString(err));
+    if constexpr (std::is_same_v<function_result_t<EnumerateFunc>, VkResult>) {
+        check(enumerateFunc(args..., &count, nullptr));
     } else {
         enumerateFunc(args..., &count, nullptr);
     }
@@ -56,8 +54,7 @@ auto toVector(EnumerateFunc enumerateFunc, const Args&... args) {
     // TODO: do we really need to check for VK_INCOMPLETE? Just sounds like
     // polling to avoid a race condition between these calls.
     if constexpr (std::is_same_v<function_result_t<EnumerateFunc>, VkResult>) {
-        if (VkResult err = enumerateFunc(args..., &count, result.data()); err != VK_SUCCESS)
-            throw Exception(toString(err));
+        check(enumerateFunc(args..., &count, result.data()));
     } else {
         enumerateFunc(args..., &count, result.data());
     }
@@ -73,9 +70,8 @@ auto get(GetFunc getFunc, const Args&... args) {
     Result result{};
     if constexpr (requires { struct_traits<Result>::sType; })
         result.sType = struct_traits<Result>::sType;
-    if constexpr(std::is_same_v<function_result_t<GetFunc>, VkResult>) {
-        if(VkResult err = getFunc(args..., &result); err != VK_SUCCESS)
-            throw Exception(toString(err));
+    if constexpr (std::is_same_v<function_result_t<GetFunc>, VkResult>) {
+        check(getFunc(args..., &result));
     } else {
         getFunc(args..., &result);
     }
