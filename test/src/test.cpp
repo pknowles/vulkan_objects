@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <array>
 #include <gtest/gtest.h>
-#include <vko/adaptors.hpp>
+#include <vko/adapters.hpp>
+#include <vko/command_recording.hpp>
 #include <vko/dynamic_library.hpp>
 #include <vko/functions.hpp>
-#include <vko/handles.hpp>
-#include <vulkan/vulkan_core.h>
 #include <vko/glfw_objects.hpp>
+#include <vko/handles.hpp>
+#include <vko/swapchain.hpp>
+#include <vulkan/vulkan_core.h>
 
 // Dangerous internal pointers encapsulated in a non-copyable non-movable
 // app-specific struct
@@ -187,6 +189,7 @@ TEST(Integration, WindowSystemIntegration) {
     // Create a VkDevice
     vko::Device device(TestDeviceCreateInfo(queueFamilyIndex), instance, physicalDevice);
 
+    // vko::simple::TimelineQueue queue(queueFamilyIndex, 0, device);
     VkQueue queue = vko::get(device.vkGetDeviceQueue, device, queueFamilyIndex, 0);
 
     // Test the first device call
@@ -201,33 +204,65 @@ TEST(Integration, WindowSystemIntegration) {
     };
     vko::CommandPool commandPool(commandPoolCreateInfo, device);
 
-    vko::glfw::Window window = vko::glfw::createWindow(800, 600, "Vulkan Window");
+    vko::glfw::Window     window = vko::glfw::createWindow(800, 600, "Vulkan Window");
     vko::glfw::SurfaceKHR surface(platformSupport, window.get(), instance);
-    std::optional<vko::SwapchainKHR> swapchain;
-    auto                             renderToWindow = [&]() {
+
+    for (;;) {
         int width, height;
         glfwGetWindowSize(window.get(), &width, &height);
-        swapchain = vko::SwapchainKHR(VkSwapchainCreateInfoKHR{
-            .sType=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-            .pNext=nullptr,
-            .flags=0,
-            .surface=surface,
-            .minImageCount=3,
-            .imageFormat=VK_FORMAT_R8G8B8A8_UNORM,
-            .imageColorSpace=VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
-            .imageExtent=VkExtent2D{uint32_t(width), uint32_t(height)},
-            .imageArrayLayers=1,
-            .imageUsage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-            .imageSharingMode=VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount=1,
-            .pQueueFamilyIndices=&queueFamilyIndex,
-            .preTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
-            .compositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, // <- spec bug?
-            .presentMode=VK_PRESENT_MODE_MAILBOX_KHR,
-            .clipped=VK_FALSE,
-            .oldSwapchain=swapchain ? *swapchain : (VkSwapchainKHR)VK_NULL_HANDLE,
-        }, device);
-        std::vector<VkImage> swapchainImages = vko::toVector(device.vkGetSwapchainImagesKHR, device, *swapchain);
-    };
-    renderToWindow();
+        vko::simple::Swapchain swapchain{surface, VkExtent2D{uint32_t(width), uint32_t(height)},
+                                         queueFamilyIndex, VK_NULL_HANDLE, device};
+
+        auto [imageIndex, reuseImageSemaphore] = swapchain.acquire(0ULL, device);
+        VkSemaphore renderingFinished          = swapchain.renderFinishedSemaphores[imageIndex];
+
+        {
+            vko::simple::ImmediateCommandBuffer cmd(commandPool, queue, device);
+            cmd.addWait(reuseImageSemaphore, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            cmd.addSignal(renderingFinished);
+
+            VkImageMemoryBarrier imagePresentBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                                     nullptr,
+                                                     0U,
+                                                     VK_ACCESS_TRANSFER_WRITE_BIT,
+                                                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                                     VK_IMAGE_LAYOUT_GENERAL,
+                                                     0U,
+                                                     0U,
+                                                     swapchain.images[imageIndex],
+                                                     {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
+            device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U,
+                                        nullptr, 1U, &imagePresentBarrier);
+
+            VkClearColorValue       clearColorValue{.float32 = {1.0f, 1.0f, 0.0f, 1.0f}};
+            VkImageSubresourceRange subresourceRange{.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                                                     .baseMipLevel   = 0,
+                                                     .levelCount     = 1,
+                                                     .baseArrayLayer = 0,
+                                                     .layerCount     = 1};
+            device.vkCmdClearColorImage(cmd, swapchain.images[imageIndex],
+                                        VK_IMAGE_LAYOUT_UNDEFINED, &clearColorValue, 1,
+                                        &subresourceRange);
+
+            VkImageMemoryBarrier imageAttachmentBarrier{
+                VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                nullptr,
+                VK_ACCESS_TRANSFER_WRITE_BIT,
+                0U,
+                VK_IMAGE_LAYOUT_GENERAL,
+                VK_IMAGE_LAYOUT_UNDEFINED,
+                0U,
+                0U,
+                swapchain.images[imageIndex],
+                {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
+            device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0U, 0U,
+                                        nullptr, 0U, nullptr, 1U, &imageAttachmentBarrier);
+        }
+
+        swapchain.present(queue, imageIndex, renderingFinished, device);
+        device.vkQueueWaitIdle(queue);
+        break;
+    }
 }

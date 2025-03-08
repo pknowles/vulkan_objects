@@ -8,6 +8,7 @@ add_subdirectory(generate)
 
 set(generated_directory "${CMAKE_CURRENT_BINARY_DIR}/src_gen")
 set(generated_sources
+  src/include/vko/gen_exceptions.hpp.txt
   src/include/vko/gen_functions.hpp.txt
   src/include/vko/gen_handles.hpp.txt
   src/include/vko/gen_structures.hpp.txt

@@ -1,0 +1,37 @@
+// Copyright (c) 2025 Pyarelal Knowles, MIT License
+// This file was generated from {{ template_filename }}. Do not edit directly.
+{# Ignore that. This is the original! #}
+#pragma once
+
+#include <vulkan/vulkan_core.h>
+
+namespace vko
+{
+
+constexpr inline std::string_view to_string(VkResult result)
+{
+    switch (result) 
+    {
+## for result in findall("//enums[@name='VkResult']/enum/@name")
+    case {{ result }}: return "{{ result }}";
+## endfor
+    default: break;
+    }
+    return "<invalid result>";
+}
+
+constexpr inline void check(VkResult result)
+{
+    if (result != VK_SUCCESS) 
+    {
+        switch (result) 
+        {
+## for result in findall("//enums[@name='VkResult']/enum/@name")
+        case {{ result }}: throw ResultException<{{ result }}>();
+## endfor
+        default: Exception("Invalid VkResult " + std::to_string(result));
+        }
+    }
+}
+
+}  // namespace vko

@@ -49,7 +49,7 @@ template <> struct CreateHandle<{{ handle.type }}, PFN_{{ handle.create }}, {{ h
         requires std::constructible_from<{{ handle.parent }}, FunctionsAndParent>
     {{ handle.type }} operator()(const {{ handle.createInfo }}& createInfo, const FunctionsAndParent& vk) { return (*this)(createInfo, vk, vk); }
     template <class Functions>
-    {{ handle.type }} operator()(const {{ handle.createInfo }}& createInfo, const Functions& vk, {{ handle.parent }} parent) {
+    {{ handle.type }} operator()(const {{ handle.createInfo }}& createInfo, {{ handle.parent }} parent, const Functions& vk) {
         {{ handle.type }} handle;
         check(vk.{{ handle.create }}(parent, &createInfo, nullptr, &handle));
         return handle;

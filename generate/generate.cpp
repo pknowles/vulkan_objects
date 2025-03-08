@@ -348,8 +348,13 @@ int main(int argc, char** argv) {
 
     inja::json handles = inja::json::array();
     {
+#if 0
         std::regex createFunc("vk(Create|Allocate)(.*)([A-Z]{2,})?");
         std::regex destroyFunc("vk(Destroy|Free)(.*)([A-Z]{2,})?");
+#else
+        std::regex createFunc("vk(Create)(.*)([A-Z]{2,})?");
+        std::regex destroyFunc("vk(Destroy)(.*)([A-Z]{2,})?");
+#endif
         std::regex typeBaseStrip("^Vk|[A-Z]{2,}$");
         std::regex suffixPattern("[A-Z]{2,}$");
         std::regex pluralStrip("(.*)(ies|es|s)$");

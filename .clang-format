@@ -1,7 +1,9 @@
 AccessModifierOffset: -4
+AlignConsecutiveAssignments: true
 AlignConsecutiveDeclarations: true
 AlwaysBreakTemplateDeclarations: Yes
 BasedOnStyle: LLVM
+BreakConstructorInitializers: BeforeComma
 ColumnLimit: 100
 IndentPPDirectives: BeforeHash
 IndentWidth: 4

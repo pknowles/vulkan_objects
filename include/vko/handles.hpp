@@ -49,8 +49,8 @@ public:
 template <>
 struct CreateHandle<VkDevice, PFN_vkCreateDevice, VkDeviceCreateInfo> {
     template <class Functions>
-    VkDevice operator()(const VkDeviceCreateInfo& createInfo, const Functions& vk,
-                        VkPhysicalDevice physicalDevice) {
+    VkDevice operator()(const VkDeviceCreateInfo& createInfo, VkPhysicalDevice physicalDevice,
+                        const Functions& vk) {
         VkDevice handle;
         check(vk.vkCreateDevice(physicalDevice, &createInfo, nullptr, &handle));
         return handle;
@@ -59,10 +59,10 @@ struct CreateHandle<VkDevice, PFN_vkCreateDevice, VkDeviceCreateInfo> {
 
 template <>
 struct DestroyFunc<VkDevice> {
-    DestroyFunc(VkDevice handle, const InstanceCommands& vk, VkPhysicalDevice /* fake "parent", not needed for destruction */)
+    DestroyFunc(VkDevice handle, VkPhysicalDevice /* fake "parent", not needed for destruction */,
+                const InstanceCommands& vk)
         : destroy(reinterpret_cast<PFN_vkDestroyDevice>(
-              vk.vkGetDeviceProcAddr(handle, "vkDestroyDevice")))
-    {
+              vk.vkGetDeviceProcAddr(handle, "vkDestroyDevice"))) {
         if (!destroy)
             throw Exception("Driver's vkGetDeviceProcAddr(vkDestroyDevice) returned null");
     }
@@ -82,10 +82,76 @@ class Device : public DeviceHandle, public DeviceCommands {
 public:
     Device(const VkDeviceCreateInfo& createInfo, const InstanceCommands& vk,
            VkPhysicalDevice physicalDevice)
-        : Device(DeviceHandle(createInfo, vk, physicalDevice), vk.vkGetDeviceProcAddr) {}
+        : Device(DeviceHandle(createInfo, physicalDevice, vk), vk.vkGetDeviceProcAddr) {}
     Device(DeviceHandle&& handle, PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr)
         : DeviceHandle(std::move(handle)),
           DeviceCommands(*this, vkGetDeviceProcAddr) {}
+};
+
+template <>
+struct CreateHandleVector<VkCommandBuffer, PFN_vkAllocateCommandBuffers,
+                          VkCommandBufferAllocateInfo> {
+    template <class FunctionsAndParent>
+        requires std::constructible_from<VkDevice, FunctionsAndParent>
+    std::vector<VkCommandBuffer> operator()(const VkCommandBufferAllocateInfo& createInfo,
+                                            const FunctionsAndParent&          vk) {
+        return (*this)(createInfo, vk, vk);
+    }
+    template <class Functions>
+    std::vector<VkCommandBuffer> operator()(const VkCommandBufferAllocateInfo& createInfo,
+                                            VkDevice device, const Functions& vk) {
+        std::vector<VkCommandBuffer> handles(createInfo.commandBufferCount);
+        check(vk.vkAllocateCommandBuffers(device, &createInfo, handles.data()));
+        return handles;
+    }
+};
+
+template <>
+struct DestroyVectorFunc<VkCommandBuffer> {
+    DestroyVectorFunc(const VkCommandBufferAllocateInfo& createInfo, VkDevice device,
+                      const DeviceCommands& vk)
+        : destroy(vk.vkFreeCommandBuffers)
+        , device(device)
+        , commandPool(createInfo.commandPool) {}
+    void operator()(const std::vector<VkCommandBuffer>& handles) const {
+        destroy(device, commandPool, uint32_t(handles.size()), handles.data());
+    }
+    PFN_vkFreeCommandBuffers destroy;
+    VkDevice                 device;
+    VkCommandPool            commandPool;
+};
+
+// An array of VkCommandBuffer. Exposes an array directly because that's what
+// the API provides.
+using CommandBuffers =
+    HandleVector<VkCommandBuffer, PFN_vkAllocateCommandBuffers, VkCommandBufferAllocateInfo>;
+
+// Utility to expose CommandBuffers as a single VkCommandBuffer
+// TODO: special case to avoid the std::vector heap allocation
+class CommandBuffer {
+public:
+    template <class FunctionsAndParent>
+        requires std::constructible_from<VkDevice, FunctionsAndParent>
+    CommandBuffer(const void* pNext, VkCommandPool commandPool, VkCommandBufferLevel level,
+                  const FunctionsAndParent& vk)
+        : CommandBuffer(pNext, commandPool, level, vk, vk) {}
+    template <class Functions>
+    CommandBuffer(const void* pNext, VkCommandPool commandPool, VkCommandBufferLevel level,
+                  VkDevice device, const Functions& vk)
+        : m_commandBuffers(
+              VkCommandBufferAllocateInfo{
+                  .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                  .pNext              = pNext,
+                  .commandPool        = commandPool,
+                  .level              = level,
+                  .commandBufferCount = 1,
+              },
+              device, vk) {}
+    operator VkCommandBuffer() const { return m_commandBuffers[0]; }
+    const VkCommandBuffer* ptr() const { return &m_commandBuffers[0]; }
+
+private:
+    CommandBuffers m_commandBuffers;
 };
 
 } // namespace vko

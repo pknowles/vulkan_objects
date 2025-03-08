@@ -16,9 +16,21 @@
 
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
+
+// ffs, x11
+#ifdef GLFW_EXPOSE_NATIVE_X11
+    #undef None
+namespace vko {
+namespace glfw {
+static constexpr auto None = 0L;
+}
+} // namespace vko
+#endif
+
 #include <span>
 #include <vko/exceptions.hpp>
 #include <vko/functions.hpp>
+#include <vko/handles.hpp>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
 

@@ -5,6 +5,7 @@
 #include <concepts>
 #include <exception>
 #include <stdexcept>
+#include <vulkan/vulkan_core.h>
 
 namespace vko {
 
@@ -23,4 +24,15 @@ private:
     std::string m_what;
 };
 
+constexpr inline std::string_view to_string(VkResult result);
+
+template <VkResult result>
+class ResultException : public Exception {
+public:
+    ResultException()
+        : Exception("Vulkan error: " + std::string(to_string(result))) {}
+};
+
 } // namespace vko
+
+#include <vko/gen_exceptions.hpp>
