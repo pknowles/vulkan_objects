@@ -10,6 +10,7 @@
 #include <vko/glfw_objects.hpp>
 #include <vko/handles.hpp>
 #include <vko/swapchain.hpp>
+#include <vko/timeline_queue.hpp>
 #include <vulkan/vulkan_core.h>
 
 // Dangerous internal pointers encapsulated in a non-copyable non-movable

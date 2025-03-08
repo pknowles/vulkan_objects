@@ -3,6 +3,7 @@
 
 #include "vulkan/vulkan_core.h"
 #include <vko/handles.hpp>
+#include <vko/timeline_queue.hpp>
 
 namespace vko {
 
@@ -32,7 +33,11 @@ private:
     PFN_vkEndCommandBuffer vkEndCommandBuffer;
 };
 
-class ImmediateCommandBuffer {
+template <class Queue>
+class ImmediateCommandBuffer;
+
+template <>
+class ImmediateCommandBuffer<VkQueue> {
 public:
     template <class FunctionsAndParent>
     ImmediateCommandBuffer(VkCommandPool commandPool, VkQueue queue, const FunctionsAndParent& vk)
@@ -84,6 +89,50 @@ private:
     PFN_vkQueueSubmit                 vkQueueSubmit;
     PFN_vkQueueWaitIdle               vkQueueWaitIdle;
 };
+
+template <class Device>
+ImmediateCommandBuffer(VkCommandPool commandPool, VkQueue queue,
+                       const Device& vk) -> ImmediateCommandBuffer<VkQueue>;
+
+template <>
+class ImmediateCommandBuffer<TimelineQueue> {
+public:
+    template <class FunctionsAndParent>
+    ImmediateCommandBuffer(VkCommandPool commandPool, TimelineQueue& queue,
+                           const FunctionsAndParent& vk)
+        : ImmediateCommandBuffer(commandPool, queue, vk, vk) {}
+    template <class Functions>
+    ImmediateCommandBuffer(VkCommandPool commandPool, TimelineQueue& queue, VkDevice device,
+                           const Functions& vk)
+        : m_commandBuffer(
+              CommandBuffer(nullptr, commandPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, device, vk),
+              VkCommandBufferBeginInfo{
+                  .sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                  .pNext            = nullptr,
+                  .flags            = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                  .pInheritanceInfo = nullptr,
+              },
+              vk)
+        , m_queue(queue)
+        , vkQueueWaitIdle(vk.vkQueueWaitIdle) {}
+    ~ImmediateCommandBuffer() {
+        SynchronizedCommandBuffer readyCmd(m_commandBuffer.end());
+        // TODO: stageMask??
+        readyCmd.stageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
+        m_queue.submit({&readyCmd});
+        vkQueueWaitIdle(m_queue);
+    }
+    operator VkCommandBuffer() const { return m_commandBuffer; }
+
+private:
+    RecordingCommandBuffer m_commandBuffer;
+    TimelineQueue&         m_queue;
+    PFN_vkQueueWaitIdle    vkQueueWaitIdle;
+};
+
+template <class Device>
+ImmediateCommandBuffer(VkCommandPool commandPool, TimelineQueue queue,
+                       const Device& vk) -> ImmediateCommandBuffer<TimelineQueue>;
 
 } // namespace simple
 
