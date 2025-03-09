@@ -94,7 +94,7 @@ TEST(Integration, InitHappyPath) {
                                                      VK_QUEUE_TRANSFER_BIT)) != 0;
                 });
             // Don't really care. Purely for demonstration
-            return features2.features.shaderInt64 == true && anyHasAll;
+            return features2.features.shaderInt64 == VK_TRUE && anyHasAll;
         });
     ASSERT_NE(physicalDeviceIt, physicalDevices.end());
     VkPhysicalDevice physicalDevice = *physicalDeviceIt;
@@ -109,7 +109,7 @@ TEST(Integration, InitHappyPath) {
                     (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)) != 0;
         });
     ASSERT_NE(queuePropertiesIt, queueProperties.end());
-    uint32_t queueFamilyIndex(std::distance(queueProperties.begin(), queuePropertiesIt));
+    uint32_t queueFamilyIndex = uint32_t(std::distance(queueProperties.begin(), queuePropertiesIt));
 
     // Create a VkDevice
     vko::Device device(TestDeviceCreateInfo(queueFamilyIndex), instance, physicalDevice);
@@ -185,7 +185,7 @@ TEST(Integration, WindowSystemIntegration) {
                     (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)) != 0;
         });
     ASSERT_NE(queuePropertiesIt, queueProperties.end());
-    uint32_t queueFamilyIndex(std::distance(queueProperties.begin(), queuePropertiesIt));
+    uint32_t queueFamilyIndex = uint32_t(std::distance(queueProperties.begin(), queuePropertiesIt));
 
     // Create a VkDevice
     vko::Device device(TestDeviceCreateInfo(queueFamilyIndex), instance, physicalDevice);

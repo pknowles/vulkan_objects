@@ -19,6 +19,7 @@ add_custom_target(vulkan_objects_generated)
 add_library(vulkan_objects
   src/functions.cpp
   ${generated_directory}/src/gen_functions.cpp
+  ${generated_sources} # Just so these appear in visual studio
   )
 target_compile_features(vulkan_objects PUBLIC cxx_std_20)
 target_include_directories(vulkan_objects PUBLIC include "${generated_directory}/src/include")
@@ -30,6 +31,7 @@ set(VULKAN_OBJECTS_SPEC_TAG "v1.4.307" CACHE STRING "GIT tag from https://github
 # Platform-specific window manager enablement
 if(WIN32)
   target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_WIN32_KHR)
+  target_compile_definitions(vulkan_objects PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 elseif(ANDROID)
   target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_ANDROID_KHR)
 elseif(APPLE)

@@ -26,7 +26,7 @@ struct DestroyFunc{
         requires std::constructible_from<Parent, FunctionsAndParent>
     DestroyFunc(T handle, const FunctionsAndParent& vk) : DestroyFunc(handle, vk, vk) {
     }
-    DestroyFunc(T /* instance/device are special :( */, const handle_traits<T>::table& table, Parent parent)
+    DestroyFunc(T /* instance/device are special :( */, const typename handle_traits<T>::table& table, Parent parent)
         : destroy(table.*handle_traits<T>::table_destroy),
           parent(parent) {}
     void operator()(T handle) const { destroy(parent, handle, nullptr); }

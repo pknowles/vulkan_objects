@@ -4,6 +4,7 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 // This file was generated from gen_functions.cpp.txt. Do not edit directly.
 
+#include <array>
 #include <memory>
 #include <ranges>
 #include <vko/dynamic_library.hpp>

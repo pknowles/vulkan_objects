@@ -146,12 +146,12 @@ struct PlatformSupport {
 #endif
         }
     }
-    bool win32;
-    bool wayland;
-    bool xcb;
-    bool xlib;
-    bool macos;
-    bool android;
+    bool win32   = false;
+    bool wayland = false;
+    bool xcb     = false;
+    bool xlib    = false;
+    bool macos   = false;
+    bool android = false;
 };
 
 inline const char* platformSurfaceExtension([[maybe_unused]] PlatformSupport support) {
@@ -196,6 +196,7 @@ inline bool physicalDevicePresentationSupport([[maybe_unused]] InstanceCommands&
         throw makeLastErrorException("glfwGetPlatform failed");
     switch (platform) {
 #if VK_KHR_win32_surface
+    case GLFW_PLATFORM_WIN32:
         return vk.vkGetPhysicalDeviceWin32PresentationSupportKHR(physicalDevice, queueFamilyIndex) ==
                VK_TRUE;
 #endif
@@ -259,9 +260,12 @@ class SurfaceKHR {
 public:
 #if VK_KHR_win32_surface
     template <class... Args>
-    SurfaceKHR(GLFWwindow* window, const Args& ...args)
+    SurfaceKHR(PlatformSupport, GLFWwindow* window, const Args&... args)
         : m_surface(VkWin32SurfaceCreateInfoKHR{.sType=VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,.pNext=nullptr,
-                                                .flags= 0, .hinstance=, .hwnd=glfwGetWin32Window(window)}, args...) {}
+                                          .flags = 0,
+                                          .hinstance = GetModuleHandle(nullptr), // GLFW loads its own module/.hinstance with GetModuleHandleExW()
+                                          .hwnd      = glfwGetWin32Window(window)},
+              args...) {}
     operator VkSurfaceKHR() const { return m_surface; }
 
 private:
@@ -269,7 +273,7 @@ private:
 #endif
 #if VK_KHR_wayland_surface
     template <class... Args>
-    SurfaceKHR(GLFWwindow* window, const Args& ...args)
+    SurfaceKHR(PlatformSupport, GLFWwindow* window, const Args& ...args)
         : m_surface(WaylandSurfaceCreateInfoKHR{.sType=VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,.pNext=nullptr,
                                                 .flags= 0, .display=CHECK_GLFW_NE(glfwGetWaylandDisplay(), (wl_display*)0, .surface=CHECK_GLFW_NE(glfwGetWaylandWindow(window), (wl_surface*)0}, args...) {}
     operator VkSurfaceKHR() const { return m_surface; }

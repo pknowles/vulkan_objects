@@ -4,6 +4,7 @@
 #pragma once
 
 #include <vulkan/vulkan_core.h>
+#include <string>
 
 namespace vko
 {
@@ -29,7 +30,7 @@ constexpr inline void check(VkResult result)
 ## for result in findall("//enums[@name='VkResult']/enum/@name")
         case {{ result }}: throw ResultException<{{ result }}>();
 ## endfor
-        default: Exception("Invalid VkResult " + std::to_string(result));
+        default: throw Exception("Invalid VkResult " + std::to_string(result));
         }
     }
 }
