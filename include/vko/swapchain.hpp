@@ -13,27 +13,29 @@ namespace simple {
 // Swapchain with images and views created
 struct Swapchain {
     // Simple/default create info. Use the other constructor to override
-    Swapchain(VkSurfaceKHR surface, VkExtent2D extent, uint32_t queueFamilyIndex,
-              VkSwapchainKHR oldSwapchain, const Device& device)
+    Swapchain(VkSurfaceKHR surface, VkSurfaceFormatKHR surfaceFormat, VkExtent2D extent,
+              uint32_t queueFamilyIndex, VkPresentModeKHR presentMode, VkSwapchainKHR oldSwapchain,
+              const Device& device)
         : Swapchain(
               VkSwapchainCreateInfoKHR{
-                  .sType                 = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-                  .pNext                 = nullptr,
-                  .flags                 = 0,
-                  .surface               = surface,
-                  .minImageCount         = 3,
-                  .imageFormat           = VK_FORMAT_R8G8B8A8_UNORM,
-                  .imageColorSpace       = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
-                  .imageExtent           = extent,
-                  .imageArrayLayers      = 1,
-                  .imageUsage            = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                  .sType            = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+                  .pNext            = nullptr,
+                  .flags            = 0,
+                  .surface          = surface,
+                  .minImageCount    = 2,
+                  .imageFormat      = surfaceFormat.format,
+                  .imageColorSpace  = surfaceFormat.colorSpace,
+                  .imageExtent      = extent,
+                  .imageArrayLayers = 1,
+                  .imageUsage =
+                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                   .imageSharingMode      = VK_SHARING_MODE_EXCLUSIVE,
                   .queueFamilyIndexCount = 1,
                   .pQueueFamilyIndices   = &queueFamilyIndex,
                   .preTransform          = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
                   .compositeAlpha =
                       VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, // (enum type, not uint bitfield)
-                  .presentMode  = VK_PRESENT_MODE_MAILBOX_KHR,
+                  .presentMode  = presentMode,
                   .clipped      = VK_FALSE,
                   .oldSwapchain = oldSwapchain,
               },
@@ -46,6 +48,7 @@ struct Swapchain {
               device)
         , images(vko::toVector(device.vkGetSwapchainImagesKHR, device, swapchain)) {
         imageViews.reserve(images.size());
+        presented.resize(images.size(), false);
         renderFinishedSemaphores.reserve(images.size());
         for (auto& image : images) {
             imageViews.emplace_back(
@@ -113,6 +116,7 @@ struct Swapchain {
             .pResults{nullptr},
         };
         check(device.vkQueuePresentKHR(queue, &presentInfo));
+        presented[index] = true;
     }
 
     SwapchainKHR           swapchain;
@@ -120,7 +124,49 @@ struct Swapchain {
     std::vector<VkImage>   images; // non-owning
     std::vector<ImageView> imageViews;
     std::vector<Semaphore> renderFinishedSemaphores;
+    std::vector<bool>      presented; // first-use flag, implying VK_IMAGE_LAYOUT_UNDEFINED
 };
+
+inline void clearSwapchainImage(VkCommandBuffer commandBuffer, VkImage image,
+                                VkImageLayout srcLayout, VkImageLayout dstLayout,
+                                VkClearColorValue clearColorValue,
+                                const Device& device) {
+    VkImageMemoryBarrier imagePresentBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                             nullptr,
+                                             0U,
+                                             VK_ACCESS_TRANSFER_WRITE_BIT,
+                                             srcLayout,
+                                             VK_IMAGE_LAYOUT_GENERAL,
+                                             0U,
+                                             0U,
+                                             image,
+                                             {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
+    device.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U, nullptr, 1U,
+                                &imagePresentBarrier);
+
+    VkImageSubresourceRange subresourceRange{.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                                             .baseMipLevel   = 0,
+                                             .levelCount     = 1,
+                                             .baseArrayLayer = 0,
+                                             .layerCount     = 1};
+    device.vkCmdClearColorImage(commandBuffer, image, VK_IMAGE_LAYOUT_GENERAL, &clearColorValue, 1,
+                                &subresourceRange);
+
+    VkImageMemoryBarrier imageAttachmentBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                                nullptr,
+                                                VK_ACCESS_TRANSFER_WRITE_BIT,
+                                                0U,
+                                                VK_IMAGE_LAYOUT_GENERAL,
+                                                dstLayout,
+                                                0U,
+                                                0U,
+                                                image,
+                                                {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
+    device.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0U, 0U, nullptr, 0U,
+                                nullptr, 1U, &imageAttachmentBarrier);
+}
 
 } // namespace simple
 

@@ -65,6 +65,26 @@ FetchContent_MakeAvailable(vulkan_headers)
 set(VULKAN_SPEC_XML ${vulkan_headers_SOURCE_DIR}/registry/vk.xml)
 target_link_libraries(vulkan_objects PUBLIC Vulkan::Headers)
 
+# I don't even want to know. This brings in so much extra stuff, but vulkan dev
+# without validation layers is impossible and the philosophy of this project is
+# it works out of the box with no manual dependencies. Pre-built binaries don't
+# come with debug info, which can be really handy when hitting obscure
+# validation layer errors. We gotta have it.
+include(ExternalProject)
+FetchContent_Declare(
+  vvl
+  GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-ValidationLayers.git
+  GIT_TAG ${VULKAN_OBJECTS_SPEC_TAG}
+  GIT_SHALLOW TRUE
+)
+set(UPDATE_DEPS ON)
+set(BUILD_TESTS_backup ${BUILD_TESTS})
+set(BUILD_TESTS OFF)
+FetchContent_MakeAvailable(vvl)
+set(BUILD_TESTS ${BUILD_TESTS_backup})
+add_dependencies(vulkan_objects vvl)
+target_compile_definitions(vulkan_objects PRIVATE VVL_DEVELOP_PATH="$<TARGET_FILE_DIR:vvl>")
+
 function(add_generated_file source)
   get_filename_component(source_directory "${source}" DIRECTORY)
   get_filename_component(output_name "${source}" NAME_WLE)

@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
+// TODO: Move to cmake. It's bad practice to define configuration macros in a
+// header
 #if defined(VK_USE_PLATFORM_METAL_EXT) || defined(VK_USE_PLATFORM_MACOS_MVK)
 #define GLFW_EXPOSE_NATIVE_COCOA // ??
 #endif
@@ -16,23 +18,24 @@
 
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
-
-// ffs, x11
-#ifdef GLFW_EXPOSE_NATIVE_X11
-    #undef None
-namespace vko {
-namespace glfw {
-static constexpr auto None = 0L;
-}
-} // namespace vko
-#endif
-
 #include <span>
 #include <vko/exceptions.hpp>
 #include <vko/functions.hpp>
 #include <vko/handles.hpp>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
+
+// *shakes fist at Xlib*
+#ifdef GLFW_EXPOSE_NATIVE_X11
+    #pragma push_macro("None")
+    #undef None
+namespace vko {
+namespace glfw {
+static constexpr auto None = 0L;
+}
+} // namespace vko
+    #pragma pop_macro("None")
+#endif
 
 namespace vko {
 namespace glfw {

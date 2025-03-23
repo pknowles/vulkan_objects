@@ -10,20 +10,41 @@
 #include <vko/dynamic_library.hpp>
 #include <vko/functions.hpp>
 
+#if _WIN32
+    #include <errhandlingapi.h>
+    #include <processenv.h>
+#else
+    #include <stdlib.h>
+    #include <string.h>
+#endif
+
 namespace vko
 {
 
 struct FindVulkanImpl
 {
-    FindVulkanImpl()
-    {
-        #ifdef _WIN32
+    FindVulkanImpl() {
+#if defined(VVL_DEVELOP_PATH)
+
+    #if _WIN32
+        if (GetEnvironmentVariableA("VK_ADD_LAYER_PATH", nullptr, 0) == ERROR_ENVVAR_NOT_FOUND &&
+            !SetEnvironmentVariableA("VK_ADD_LAYER_PATH", VVL_DEVELOP_PATH)) {
+            fprintf(stderr, "Failed to set VK_ADD_LAYER_PATH: %d\n", GetLastError());
+        }
+    #else
+        if (int result = setenv("VK_ADD_LAYER_PATH", VVL_DEVELOP_PATH, 0); result != 0) {
+            fprintf(stderr, "Failed to set VK_ADD_LAYER_PATH: %s\n", strerror(errno));
+        }
+    #endif
+#endif
+
+#ifdef _WIN32
         std::array libs = {"vulkan-1.dll"};
-        #elif defined(__APPLE__)
+#elif defined(__APPLE__)
         std::array libs = {"libvulkan.1.dylib"};
-        #else
+#else
         std::array libs = {"libvulkan.so.1", "libvulkan.so"};
-        #endif
+#endif
         std::string loaded;
         std::string errors;
         for(auto lib : libs)

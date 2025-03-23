@@ -2,7 +2,7 @@
 
 #include <algorithm>
 #include <array>
-#include <gtest/gtest.h>
+#include <debugbreak.h>
 #include <vko/adapters.hpp>
 #include <vko/command_recording.hpp>
 #include <vko/dynamic_library.hpp>
@@ -12,6 +12,18 @@
 #include <vko/swapchain.hpp>
 #include <vko/timeline_queue.hpp>
 #include <vulkan/vulkan_core.h>
+
+#ifdef VK_USE_PLATFORM_XLIB_KHR
+    #pragma push_macro("None")
+    #pragma push_macro("Bool")
+    #undef None
+    #undef Bool
+#endif
+#include <gtest/gtest.h>
+#ifdef VK_USE_PLATFORM_XLIB_KHR
+    #pragma pop_macro("Bool")
+    #pragma pop_macro("None")
+#endif
 
 // Dangerous internal pointers encapsulated in a non-copyable non-movable
 // app-specific struct
@@ -130,26 +142,29 @@ TEST(Integration, InitHappyPath) {
 }
 
 struct WindowInstanceCreateInfo {
-    std::array<const char*, 2> requiredExtensions;
+    std::vector<const char*>   requiredLayers;
+    std::array<const char*, 3> requiredExtensions;
     VkApplicationInfo          applicationInfo;
     VkInstanceCreateInfo instanceCreateInfo;
     WindowInstanceCreateInfo(vko::glfw::PlatformSupport support)
-        : requiredExtensions{VK_KHR_SURFACE_EXTENSION_NAME,
-                             vko::glfw::platformSurfaceExtension(support)},
-          applicationInfo{.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-                          .pNext = nullptr,
-                          .pApplicationName = "vulkan_objects test application",
+        : requiredLayers{"VK_LAYER_KHRONOS_validation"} // only when !defined(NDEBUG) in a real app
+        , requiredExtensions{VK_KHR_SURFACE_EXTENSION_NAME,
+                             vko::glfw::platformSurfaceExtension(support),
+                             VK_EXT_DEBUG_UTILS_EXTENSION_NAME}
+        , applicationInfo{.sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                          .pNext              = nullptr,
+                          .pApplicationName   = "vulkan_objects test application",
                           .applicationVersion = 0,
-                          .pEngineName = nullptr,
-                          .engineVersion = 0,
-                          .apiVersion = VK_API_VERSION_1_4},
-          instanceCreateInfo{.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-                             .pNext = nullptr,
-                             .flags = 0,
-                             .pApplicationInfo = &applicationInfo,
-                             .enabledLayerCount = 0,
-                             .ppEnabledLayerNames = nullptr,
-                             .enabledExtensionCount = uint32_t(requiredExtensions.size()),
+                          .pEngineName        = nullptr,
+                          .engineVersion      = 0,
+                          .apiVersion         = VK_API_VERSION_1_4}
+        , instanceCreateInfo{.sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                             .pNext                   = nullptr,
+                             .flags                   = 0,
+                             .pApplicationInfo        = &applicationInfo,
+                             .enabledLayerCount       = uint32_t(requiredLayers.size()),
+                             .ppEnabledLayerNames     = requiredLayers.data(),
+                             .enabledExtensionCount   = uint32_t(requiredExtensions.size()),
                              .ppEnabledExtensionNames = requiredExtensions.data()} {}
     operator VkInstanceCreateInfo&() { return instanceCreateInfo; }
     WindowInstanceCreateInfo(const WindowInstanceCreateInfo& other) = delete;
@@ -157,13 +172,49 @@ struct WindowInstanceCreateInfo {
 };
 
 TEST(Integration, WindowSystemIntegration) {
-    vko::VulkanLibrary                 library;
-    vko::GlobalCommands                globalCommands(library.loader());
-    vko::glfw::PlatformSupport         platformSupport(
-        vko::toVector(globalCommands.vkEnumerateInstanceExtensionProperties, nullptr));
+    vko::VulkanLibrary  library;
+    vko::GlobalCommands globalCommands(library.loader());
+    auto                instanceExtensions =
+        vko::toVector(globalCommands.vkEnumerateInstanceExtensionProperties, nullptr);
+    auto instanceLayers = vko::toVector(globalCommands.vkEnumerateInstanceLayerProperties);
+    EXPECT_NE(std::ranges::find_if(instanceLayers,
+                                   [](const VkLayerProperties& layer) {
+                                       return std::string_view(layer.layerName) ==
+                                              "VK_LAYER_KHRONOS_validation";
+                                   }),
+              instanceLayers.end());
+    vko::glfw::PlatformSupport platformSupport(instanceExtensions);
     vko::glfw::ScopedInit glfwInit;
     vko::Instance instance(vko::InstanceHandle(WindowInstanceCreateInfo(platformSupport), globalCommands),
                            library.loader());
+
+    vko::DebugUtilsMessengerEXT debugMessenger(
+        VkDebugUtilsMessengerCreateInfoEXT{
+            .sType           = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+            .pNext           = nullptr,
+            .flags           = 0,
+            .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+            .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                           VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                           VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+            .pfnUserCallback = [](VkDebugUtilsMessageSeverityFlagBitsEXT severityBits,
+                                  VkDebugUtilsMessageTypeFlagsEXT,
+                                  const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+                                  void*) -> VkBool32 {
+                std::cout << pCallbackData->pMessage << std::endl;
+                VkFlags breakOnSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                          VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+                if ((severityBits & breakOnSeverity) != 0) {
+                    debug_break();
+                }
+                return VK_FALSE;
+            },
+            .pUserData = nullptr},
+        instance);
+
     std::vector<VkPhysicalDevice> physicalDevices =
         vko::toVector(instance.vkEnumeratePhysicalDevices, instance);
     auto physicalDeviceIt =
@@ -207,12 +258,37 @@ TEST(Integration, WindowSystemIntegration) {
 
     vko::glfw::Window     window = vko::glfw::createWindow(800, 600, "Vulkan Window");
     vko::glfw::SurfaceKHR surface(platformSupport, window.get(), instance);
+    auto                  surfaceFormats =
+        vko::toVector(instance.vkGetPhysicalDeviceSurfaceFormatsKHR, physicalDevice, surface);
+    auto surfaceFormatIt =
+        std::ranges::find_if(surfaceFormats, [](const VkSurfaceFormatKHR& format) {
+            return format.format == VK_FORMAT_B8G8R8A8_SRGB &&
+                   format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+        });
+    ASSERT_NE(surfaceFormatIt, surfaceFormats.end());
+    VkSurfaceFormatKHR surfaceFormat = *surfaceFormatIt;
+    auto               surfacePresentModes =
+        vko::toVector(instance.vkGetPhysicalDeviceSurfacePresentModesKHR, physicalDevice, surface);
+    constexpr VkPresentModeKHR preferredPresentMode[] = {VK_PRESENT_MODE_MAILBOX_KHR,
+                                                         VK_PRESENT_MODE_FIFO_LATEST_READY_EXT,
+                                                         VK_PRESENT_MODE_FIFO_KHR};
+    auto                       surfacePresentModeIt   = std::ranges::find_if(
+        preferredPresentMode, [&surfacePresentModes](const VkPresentModeKHR& mode) {
+            return std::ranges::count(surfacePresentModes, mode) > 0;
+        });
+    ASSERT_NE(surfacePresentModeIt, std::end(preferredPresentMode));
+    VkPresentModeKHR surfacePresentMode = *surfacePresentModeIt;
 
     for (;;) {
         int width, height;
         glfwGetWindowSize(window.get(), &width, &height);
-        vko::simple::Swapchain swapchain{surface, VkExtent2D{uint32_t(width), uint32_t(height)},
-                                         queueFamilyIndex, VK_NULL_HANDLE, device};
+        vko::simple::Swapchain swapchain{surface,
+                                         surfaceFormat,
+                                         VkExtent2D{uint32_t(width), uint32_t(height)},
+                                         queueFamilyIndex,
+                                         surfacePresentMode,
+                                         VK_NULL_HANDLE,
+                                         device};
 
         auto [imageIndex, reuseImageSemaphore] = swapchain.acquire(0ULL, device);
         VkSemaphore renderingFinished          = swapchain.renderFinishedSemaphores[imageIndex];
@@ -221,45 +297,12 @@ TEST(Integration, WindowSystemIntegration) {
             vko::simple::ImmediateCommandBuffer cmd(commandPool, queue, device);
             cmd.addWait(reuseImageSemaphore, VK_PIPELINE_STAGE_TRANSFER_BIT);
             cmd.addSignal(renderingFinished);
-
-            VkImageMemoryBarrier imagePresentBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                                     nullptr,
-                                                     0U,
-                                                     VK_ACCESS_TRANSFER_WRITE_BIT,
-                                                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                                                     VK_IMAGE_LAYOUT_GENERAL,
-                                                     0U,
-                                                     0U,
-                                                     swapchain.images[imageIndex],
-                                                     {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
-            device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U,
-                                        nullptr, 1U, &imagePresentBarrier);
-
-            VkClearColorValue       clearColorValue{.float32 = {1.0f, 1.0f, 0.0f, 1.0f}};
-            VkImageSubresourceRange subresourceRange{.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                                                     .baseMipLevel   = 0,
-                                                     .levelCount     = 1,
-                                                     .baseArrayLayer = 0,
-                                                     .layerCount     = 1};
-            device.vkCmdClearColorImage(cmd, swapchain.images[imageIndex],
-                                        VK_IMAGE_LAYOUT_UNDEFINED, &clearColorValue, 1,
-                                        &subresourceRange);
-
-            VkImageMemoryBarrier imageAttachmentBarrier{
-                VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                nullptr,
-                VK_ACCESS_TRANSFER_WRITE_BIT,
-                0U,
-                VK_IMAGE_LAYOUT_GENERAL,
-                VK_IMAGE_LAYOUT_UNDEFINED,
-                0U,
-                0U,
-                swapchain.images[imageIndex],
-                {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
-            device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0U, 0U,
-                                        nullptr, 0U, nullptr, 1U, &imageAttachmentBarrier);
+            vko::simple::clearSwapchainImage(
+                cmd, swapchain.images[imageIndex],
+                swapchain.presented[imageIndex] ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                                                : VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                VkClearColorValue{.float32 = {1.0f, 1.0f, 0.0f, 1.0f}}, device);
         }
 
         swapchain.present(queue, imageIndex, renderingFinished, device);
