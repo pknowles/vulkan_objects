@@ -7,11 +7,6 @@
 #endif
 
 #include <vko/gen_functions.hpp>
-#include <vulkan/vulkan.h>
-
-// DANGER: Unless we include all the platform-specific headers via vulkan.h,
-// some files would see different definitions of the function tables.
-// Unfortunately, this makes things slow. Pre-compiled headers should help.
 
 namespace vko
 {
