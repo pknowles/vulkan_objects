@@ -27,6 +27,7 @@ target_compile_definitions(vulkan_objects PUBLIC VK_NO_PROTOTYPES)
 add_dependencies(vulkan_objects vulkan_objects_generated)
 
 set(VULKAN_OBJECTS_SPEC_TAG "v1.4.307" CACHE STRING "GIT tag from https://github.com/KhronosGroup/Vulkan-Headers/tags")
+set(VULKAN_OBJECTS_VMA_TAG "v3.2.1" CACHE STRING "GIT tag from https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/tags")
 
 # Platform-specific window manager enablement
 if(WIN32)
@@ -70,7 +71,6 @@ target_link_libraries(vulkan_objects PUBLIC Vulkan::Headers)
 # it works out of the box with no manual dependencies. Pre-built binaries don't
 # come with debug info, which can be really handy when hitting obscure
 # validation layer errors. We gotta have it.
-include(ExternalProject)
 FetchContent_Declare(
   vvl
   GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-ValidationLayers.git
@@ -84,6 +84,19 @@ FetchContent_MakeAvailable(vvl)
 set(BUILD_TESTS ${BUILD_TESTS_backup})
 add_dependencies(vulkan_objects vvl)
 target_compile_definitions(vulkan_objects PRIVATE VVL_DEVELOP_PATH="$<TARGET_FILE_DIR:vvl>")
+
+include(FetchContent)
+FetchContent_Declare(
+  VulkanMemoryAllocator
+  GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+  GIT_TAG ${VULKAN_OBJECTS_VMA_TAG}
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(VulkanMemoryAllocator)
+add_library(vma_static src/vma_impl.cpp)
+target_compile_definitions(vma_static PUBLIC VMA_STATIC_VULKAN_FUNCTIONS=0 VMA_DYNAMIC_VULKAN_FUNCTIONS=1)
+target_link_libraries(vma_static PUBLIC Vulkan::Headers GPUOpen::VulkanMemoryAllocator)
+target_link_libraries(vulkan_objects PUBLIC vma_static)
 
 function(add_generated_file source)
   get_filename_component(source_directory "${source}" DIRECTORY)

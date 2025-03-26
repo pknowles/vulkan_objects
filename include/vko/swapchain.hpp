@@ -129,8 +129,8 @@ struct Swapchain {
 
 inline void clearSwapchainImage(VkCommandBuffer commandBuffer, VkImage image,
                                 VkImageLayout srcLayout, VkImageLayout dstLayout,
-                                VkClearColorValue clearColorValue,
-                                const Device& device) {
+                                VkAccessFlags dstAccess, VkPipelineStageFlags dstStage,
+                                VkClearColorValue clearColorValue, const Device& device) {
     VkImageMemoryBarrier imagePresentBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                                              nullptr,
                                              0U,
@@ -156,16 +156,15 @@ inline void clearSwapchainImage(VkCommandBuffer commandBuffer, VkImage image,
     VkImageMemoryBarrier imageAttachmentBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                                                 nullptr,
                                                 VK_ACCESS_TRANSFER_WRITE_BIT,
-                                                0U,
+                                                dstAccess,
                                                 VK_IMAGE_LAYOUT_GENERAL,
                                                 dstLayout,
                                                 0U,
                                                 0U,
                                                 image,
                                                 {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
-    device.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0U, 0U, nullptr, 0U,
-                                nullptr, 1U, &imageAttachmentBarrier);
+    device.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, dstStage, 0U, 0U,
+                                nullptr, 0U, nullptr, 1U, &imageAttachmentBarrier);
 }
 
 } // namespace simple

@@ -4,11 +4,13 @@
 #include <array>
 #include <debugbreak.h>
 #include <vko/adapters.hpp>
+#include <vko/array.hpp>
 #include <vko/command_recording.hpp>
 #include <vko/dynamic_library.hpp>
 #include <vko/functions.hpp>
 #include <vko/glfw_objects.hpp>
 #include <vko/handles.hpp>
+#include <vko/image.hpp>
 #include <vko/swapchain.hpp>
 #include <vko/timeline_queue.hpp>
 #include <vulkan/vulkan_core.h>
@@ -145,6 +147,11 @@ struct WindowInstanceCreateInfo {
     std::vector<const char*>   requiredLayers;
     std::array<const char*, 3> requiredExtensions;
     VkApplicationInfo          applicationInfo;
+    const VkBool32               verboseValue = true;
+    const VkLayerSettingEXT      layerSetting = {"VK_LAYER_KHRONOS_validation", "validate_sync",
+                                                 VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &verboseValue};
+    VkLayerSettingsCreateInfoEXT layerSettingsCreateInfo = {
+        VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT, nullptr, 1, &layerSetting};
     VkInstanceCreateInfo instanceCreateInfo;
     WindowInstanceCreateInfo(vko::glfw::PlatformSupport support)
         : requiredLayers{"VK_LAYER_KHRONOS_validation"} // only when !defined(NDEBUG) in a real app
@@ -159,7 +166,7 @@ struct WindowInstanceCreateInfo {
                           .engineVersion      = 0,
                           .apiVersion         = VK_API_VERSION_1_4}
         , instanceCreateInfo{.sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-                             .pNext                   = nullptr,
+                             .pNext                   = &layerSettingsCreateInfo,
                              .flags                   = 0,
                              .pApplicationInfo        = &applicationInfo,
                              .enabledLayerCount       = uint32_t(requiredLayers.size()),
@@ -279,6 +286,80 @@ TEST(Integration, WindowSystemIntegration) {
     ASSERT_NE(surfacePresentModeIt, std::end(preferredPresentMode));
     VkPresentModeKHR surfacePresentMode = *surfacePresentModeIt;
 
+    vko::vma::Allocator  allocator(globalCommands, instance, physicalDevice, device,
+                                   VK_API_VERSION_1_4);
+    vko::Array<uint32_t> imageData(
+        allocator, 1024 * 1024, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, device);
+    uint32_t pixelIndex = 0;
+    for (uint32_t& pixel : imageData.map()) {
+        uint32_t x = pixelIndex % 1024;
+        uint32_t y = pixelIndex / 1024;
+        pixel      = (((x ^ y) & 8) != 0) ? 0xFF000000U : 0xFFFFFFFFU;
+        ++pixelIndex;
+    }
+    vko::BoundImage image(allocator,
+                          VkImageCreateInfo{.sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                            .pNext       = nullptr,
+                                            .flags       = 0,
+                                            .imageType   = VK_IMAGE_TYPE_2D,
+                                            .format      = VK_FORMAT_R8G8B8A8_UNORM,
+                                            .extent      = {1024, 1024, 1},
+                                            .mipLevels   = 1,
+                                            .arrayLayers = 1,
+                                            .samples     = VK_SAMPLE_COUNT_1_BIT,
+                                            .tiling      = VK_IMAGE_TILING_OPTIMAL,
+                                            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                                     VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                            .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
+                                            .queueFamilyIndexCount = 0,
+                                            .pQueueFamilyIndices   = nullptr,
+                                            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED},
+                          device, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, device);
+    {
+        vko::simple::ImmediateCommandBuffer cmd(commandPool, queue, device);
+        VkBufferImageCopy                   region{
+                              .bufferOffset      = 0,
+                              .bufferRowLength   = 0,
+                              .bufferImageHeight = 0,
+                              .imageSubresource  = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .imageOffset       = {0, 0, 0},
+                              .imageExtent       = {1024, 1024, 1},
+        };
+        {
+            VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                              nullptr,
+                                              0U,
+                                              VK_ACCESS_TRANSFER_WRITE_BIT,
+                                              VK_IMAGE_LAYOUT_UNDEFINED,
+                                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                              0U,
+                                              0U,
+                                              image,
+                                              {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
+            device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U,
+                                        nullptr, 1U, &imageBarrier);
+        }
+        device.vkCmdCopyBufferToImage(cmd, imageData, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                      1, &region);
+        {
+            VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                              nullptr,
+                                              VK_ACCESS_TRANSFER_WRITE_BIT,
+                                              VK_ACCESS_TRANSFER_READ_BIT,
+                                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                              VK_IMAGE_LAYOUT_GENERAL,
+                                              0U,
+                                              0U,
+                                              image,
+                                              {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
+            device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U,
+                                        nullptr, 1U, &imageBarrier);
+        }
+    }
+
     for (;;) {
         int width, height;
         glfwGetWindowSize(window.get(), &width, &height);
@@ -295,14 +376,41 @@ TEST(Integration, WindowSystemIntegration) {
 
         {
             vko::simple::ImmediateCommandBuffer cmd(commandPool, queue, device);
-            cmd.addWait(reuseImageSemaphore, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            cmd.addWait(reuseImageSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
             cmd.addSignal(renderingFinished);
             vko::simple::clearSwapchainImage(
                 cmd, swapchain.images[imageIndex],
                 swapchain.presented[imageIndex] ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
                                                 : VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VkClearColorValue{.float32 = {1.0f, 1.0f, 0.0f, 1.0f}}, device);
+
+            VkImageCopy region{
+                .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                .srcOffset      = {0, 0, 0},
+                .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                .dstOffset      = {0, 0, 0},
+                .extent = {uint32_t(std::min(1024, width)), uint32_t(std::min(1024, height)), 1},
+            };
+            device.vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, swapchain.images[imageIndex],
+                                  VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+
+            {
+                VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                                  nullptr,
+                                                  VK_ACCESS_TRANSFER_WRITE_BIT,
+                                                  0U,
+                                                  VK_IMAGE_LAYOUT_GENERAL,
+                                                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                                  0U,
+                                                  0U,
+                                                  swapchain.images[imageIndex],
+                                                  {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
+                device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0U, 0U,
+                                            nullptr, 0U, nullptr, 1U, &imageBarrier);
+            }
         }
 
         swapchain.present(queue, imageIndex, renderingFinished, device);

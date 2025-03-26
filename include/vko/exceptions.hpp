@@ -11,8 +11,8 @@ namespace vko {
 
 class Exception : public std::exception {
 public:
-    template<class Str>
-        requires std::constructible_from<std::string, Str>
+    template <class Str>
+        requires std::constructible_from<std::string, std::decay_t<Str>>
     Exception(Str&& message)
         : m_what(std::forward<Str>(message)) {}
 
