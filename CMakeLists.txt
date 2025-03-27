@@ -98,6 +98,24 @@ target_compile_definitions(vma_static PUBLIC VMA_STATIC_VULKAN_FUNCTIONS=0 VMA_D
 target_link_libraries(vma_static PUBLIC Vulkan::Headers GPUOpen::VulkanMemoryAllocator)
 target_link_libraries(vulkan_objects PUBLIC vma_static)
 
+include(FetchContent)
+FetchContent_Declare(
+  slang
+  GIT_REPOSITORY https://github.com/shader-slang/slang.git
+  GIT_TAG v2025.6.3
+  GIT_SHALLOW TRUE
+)
+set(SLANG_USE_SYSTEM_VULKAN_HEADERS ON CACHE BOOL "" FORCE)
+set(SLANG_ENABLE_DXIL OFF CACHE BOOL "" FORCE)
+set(SLANG_ENABLE_SLANGD OFF CACHE BOOL "" FORCE)
+set(SLANG_ENABLE_SLANGC OFF CACHE BOOL "" FORCE)
+set(SLANG_ENABLE_SLANGRT OFF CACHE BOOL "" FORCE)
+set(SLANG_ENABLE_SLANG_GLSLANG OFF CACHE BOOL "" FORCE)
+set(SLANG_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(SLANG_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(slang)
+target_link_libraries(vulkan_objects PUBLIC slang)
+
 function(add_generated_file source)
   get_filename_component(source_directory "${source}" DIRECTORY)
   get_filename_component(output_name "${source}" NAME_WLE)

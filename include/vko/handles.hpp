@@ -154,4 +154,46 @@ private:
     CommandBuffers m_commandBuffers;
 };
 
+// An array of VkShaderEXT. Exposes an array directly because that's what the
+// API provides.
+using ShadersEXT =
+    HandleVector<VkShaderEXT, PFN_vkCreateShadersEXT, std::span<VkShaderCreateInfoEXT>>;
+
+template <>
+struct CreateHandleVector<VkShaderEXT, PFN_vkCreateShadersEXT, std::span<VkShaderCreateInfoEXT>> {
+    template <class FunctionsAndParent>
+        requires std::constructible_from<VkDevice, FunctionsAndParent>
+    std::vector<VkShaderEXT> operator()(const std::span<VkShaderCreateInfoEXT>& createInfo,
+                                        const FunctionsAndParent&               vk) {
+        return (*this)(createInfo, vk, vk);
+    }
+    template <class Functions>
+    std::vector<VkShaderEXT> operator()(const std::span<VkShaderCreateInfoEXT>& createInfo,
+                                        VkDevice device, const Functions& vk) {
+        std::vector<VkShaderEXT> handles(createInfo.size());
+        check(vk.vkCreateShadersEXT(device, uint32_t(createInfo.size()), createInfo.data(), nullptr,
+                                    handles.data()));
+        return handles;
+    }
+};
+
+template <>
+struct DestroyVectorFunc<VkShaderEXT> {
+    template <class FunctionsAndParent>
+        requires std::constructible_from<VkDevice, FunctionsAndParent>
+    DestroyVectorFunc(const std::span<VkShaderCreateInfoEXT>& createInfo,
+                      const FunctionsAndParent&               vk)
+        : DestroyVectorFunc(createInfo, vk, vk) {}
+    DestroyVectorFunc(const std::span<VkShaderCreateInfoEXT>&, VkDevice device,
+                      const DeviceCommands& vk)
+        : destroy(vk.vkDestroyShaderEXT)
+        , device(device) {}
+    void operator()(const std::vector<VkShaderEXT>& handles) const {
+        for (auto handle : handles)
+            destroy(device, handle, nullptr);
+    }
+    PFN_vkDestroyShaderEXT destroy;
+    VkDevice               device;
+};
+
 } // namespace vko
