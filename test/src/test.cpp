@@ -11,6 +11,7 @@
 #include <vko/glfw_objects.hpp>
 #include <vko/handles.hpp>
 #include <vko/image.hpp>
+#include <vko/slang_compiler.hpp>
 #include <vko/swapchain.hpp>
 #include <vko/timeline_queue.hpp>
 #include <vulkan/vulkan_core.h>
@@ -58,30 +59,50 @@ struct TestInstanceCreateInfo {
 struct TestDeviceCreateInfo {
     std::array<const char*, 2>              deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
                                                                 VK_EXT_SHADER_OBJECT_EXTENSION_NAME};
-    float                                   queuePriority = 1.0f;
+    float                                   queuePriority    = 1.0f;
     VkDeviceQueueCreateInfo                 queueCreateInfo;
-    VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeature;
-    VkDeviceCreateInfo                      deviceCreateInfo;
+    VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeature = {
+        .sType        = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
+        .pNext        = nullptr,
+        .shaderObject = VK_TRUE,
+    };
+    VkPhysicalDeviceVulkan13Features vulkan13Feature = {
+        .sType              = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .pNext              = &shaderObjectFeature,
+        .robustImageAccess  = VK_FALSE,
+        .inlineUniformBlock = VK_FALSE,
+        .descriptorBindingInlineUniformBlockUpdateAfterBind = VK_FALSE,
+        .pipelineCreationCacheControl                       = VK_FALSE,
+        .privateData                                        = VK_FALSE,
+        .shaderDemoteToHelperInvocation                     = VK_FALSE,
+        .shaderTerminateInvocation                          = VK_FALSE,
+        .subgroupSizeControl                                = VK_FALSE,
+        .computeFullSubgroups                               = VK_FALSE,
+        .synchronization2                                   = VK_FALSE,
+        .textureCompressionASTC_HDR                         = VK_FALSE,
+        .shaderZeroInitializeWorkgroupMemory                = VK_FALSE,
+        .dynamicRendering        = VK_TRUE, // yay no default initializers
+        .shaderIntegerDotProduct = VK_FALSE,
+        .maintenance4            = VK_FALSE,
+    };
+    VkDeviceCreateInfo deviceCreateInfo;
     TestDeviceCreateInfo(uint32_t queueFamilyIndex)
-        : queueCreateInfo{.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                          .pNext = nullptr,
-                          .flags = 0,
+        : queueCreateInfo{.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                          .pNext            = nullptr,
+                          .flags            = 0,
                           .queueFamilyIndex = queueFamilyIndex,
-                          .queueCount = 1,
-                          .pQueuePriorities = &queuePriority},
-          shaderObjectFeature{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
-                              .pNext = nullptr,
-                              .shaderObject = VK_TRUE},
-          deviceCreateInfo{.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-                           .pNext = &shaderObjectFeature,
-                           .flags = 0,
-                           .queueCreateInfoCount = 1U,
-                           .pQueueCreateInfos = &queueCreateInfo,
-                           .enabledLayerCount = 0,
-                           .ppEnabledLayerNames = 0,
-                           .enabledExtensionCount = uint32_t(deviceExtensions.size()),
+                          .queueCount       = 1,
+                          .pQueuePriorities = &queuePriority}
+        , deviceCreateInfo{.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                           .pNext                   = &vulkan13Feature,
+                           .flags                   = 0,
+                           .queueCreateInfoCount    = 1U,
+                           .pQueueCreateInfos       = &queueCreateInfo,
+                           .enabledLayerCount       = 0,
+                           .ppEnabledLayerNames     = 0,
+                           .enabledExtensionCount   = uint32_t(deviceExtensions.size()),
                            .ppEnabledExtensionNames = deviceExtensions.data(),
-                           .pEnabledFeatures = nullptr} {}
+                           .pEnabledFeatures        = nullptr} {}
     operator VkDeviceCreateInfo&() { return deviceCreateInfo; }
     TestDeviceCreateInfo(const TestDeviceCreateInfo& other) = delete;
     TestDeviceCreateInfo operator=(const TestDeviceCreateInfo& other) = delete;
@@ -360,6 +381,67 @@ TEST(Integration, WindowSystemIntegration) {
         }
     }
 
+    vko::slang::GlobalSession globalSession;
+    slang::TargetDesc         targets[]     = {{
+                    .format  = SLANG_SPIRV,
+                    .profile = globalSession->findProfile("spirv_1_6"),
+    }};
+    const char*               searchPaths[] = {"test/shaders"};
+    vko::slang::Session       session(globalSession,
+                                      slang::SessionDesc{
+                                          .targets         = targets,
+                                          .targetCount     = SlangInt(std::size(targets)),
+                                          .searchPaths     = searchPaths,
+                                          .searchPathCount = SlangInt(std::size(searchPaths)),
+
+                                });
+    vko::slang::Module        rasterTriangleModule(session, "rasterTriangle");
+    ::slang::IComponentType*  entrypoints[] = {
+        vko::slang::EntryPoint(rasterTriangleModule, "vsMain"),
+        vko::slang::EntryPoint(rasterTriangleModule, "psMain"),
+    };
+    vko::slang::Composition rasterTriangleComposition(session, entrypoints);
+    vko::slang::Program     rasterTriangleProgram(rasterTriangleComposition);
+    vko::slang::Code        vsCode(rasterTriangleProgram, 0, 0);
+    vko::slang::Code        psCode(rasterTriangleProgram, 1, 0);
+    VkShaderCreateInfoEXT   rasterTriangleShaderInfos[]{
+        {
+              .sType                  = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
+              .pNext                  = nullptr,
+              .flags                  = 0,
+              .stage                  = VK_SHADER_STAGE_VERTEX_BIT,
+              .nextStage              = 0,
+              .codeType               = VK_SHADER_CODE_TYPE_SPIRV_EXT,
+              .codeSize               = uint32_t(vsCode.size()),
+              .pCode                  = vsCode.data(),
+              .pName                  = "main",
+              .setLayoutCount         = 0,
+              .pSetLayouts            = nullptr,
+              .pushConstantRangeCount = 0,
+              .pPushConstantRanges    = nullptr,
+              .pSpecializationInfo    = nullptr,
+        },
+        {
+              .sType                  = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
+              .pNext                  = nullptr,
+              .flags                  = 0,
+              .stage                  = VK_SHADER_STAGE_FRAGMENT_BIT,
+              .nextStage              = 0,
+              .codeType               = VK_SHADER_CODE_TYPE_SPIRV_EXT,
+              .codeSize               = uint32_t(psCode.size()),
+              .pCode                  = psCode.data(),
+              .pName                  = "main",
+              .setLayoutCount         = 0,
+              .pSetLayouts            = nullptr,
+              .pushConstantRangeCount = 0,
+              .pPushConstantRanges    = nullptr,
+              .pSpecializationInfo    = nullptr,
+        },
+    };
+    vko::ShadersEXT       rasterTriangleShaders(rasterTriangleShaderInfos, device);
+    VkShaderStageFlagBits rasterTriangleShadersStages[] = {VK_SHADER_STAGE_VERTEX_BIT,
+                                                           VK_SHADER_STAGE_FRAGMENT_BIT};
+
     for (;;) {
         int width, height;
         glfwGetWindowSize(window.get(), &width, &height);
@@ -400,14 +482,89 @@ TEST(Integration, WindowSystemIntegration) {
                 VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                                                   nullptr,
                                                   VK_ACCESS_TRANSFER_WRITE_BIT,
-                                                  0U,
+                                                  VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                                                   VK_IMAGE_LAYOUT_GENERAL,
-                                                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                                   0U,
                                                   0U,
                                                   swapchain.images[imageIndex],
                                                   {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
                 device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0U, 0U,
+                                            nullptr, 0U, nullptr, 1U, &imageBarrier);
+            }
+
+            VkRenderingAttachmentInfo renderingAttachmentInfo{
+                .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .pNext              = nullptr,
+                .imageView          = swapchain.imageViews[imageIndex],
+                .imageLayout        = VK_IMAGE_LAYOUT_GENERAL,
+                .resolveMode        = VK_RESOLVE_MODE_NONE,
+                .resolveImageView   = VK_NULL_HANDLE,
+                .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .loadOp             = VK_ATTACHMENT_LOAD_OP_LOAD,
+                .storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
+                .clearValue         = {},
+            };
+            VkRenderingInfo renderingInfo{
+                .sType                = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                .pNext                = nullptr,
+                .flags                = 0,
+                .renderArea           = {{0U, 0U}, {uint32_t(width), uint32_t(height)}},
+                .layerCount           = 1U,
+                .viewMask             = 0,
+                .colorAttachmentCount = 1U,
+                .pColorAttachments    = &renderingAttachmentInfo,
+                .pDepthAttachment     = nullptr,
+                .pStencilAttachment   = nullptr,
+            };
+            device.vkCmdBeginRendering(cmd, &renderingInfo);
+            device.vkCmdBindShadersEXT(cmd, 2U, rasterTriangleShadersStages,
+                                       rasterTriangleShaders.data());
+
+            VkViewport            viewport{0.0F, 0.0F, float(width), float(height), 0.0F, 1.0F};
+            VkRect2D              scissor{{0, 0}, {uint32_t(width), uint32_t(height)}};
+            VkSampleMask          sampleMask   = 0xFU;
+            VkBool32              blendEnabled = VK_FALSE;
+            VkColorComponentFlags colorComponents =
+                VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                VK_COLOR_COMPONENT_A_BIT;
+
+            device.vkCmdSetVertexInputEXT(cmd, 0U, nullptr, 0U, nullptr);
+            device.vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+            device.vkCmdSetPrimitiveRestartEnable(cmd, VK_FALSE);
+            device.vkCmdSetViewportWithCount(cmd, 1U, &viewport);
+            device.vkCmdSetScissorWithCount(cmd, 1U, &scissor);
+            device.vkCmdSetRasterizerDiscardEnable(cmd, VK_FALSE);
+            device.vkCmdSetRasterizationSamplesEXT(cmd, VK_SAMPLE_COUNT_1_BIT);
+            device.vkCmdSetSampleMaskEXT(cmd, VK_SAMPLE_COUNT_1_BIT, &sampleMask);
+            device.vkCmdSetAlphaToCoverageEnableEXT(cmd, VK_FALSE);
+            device.vkCmdSetPolygonModeEXT(cmd, VK_POLYGON_MODE_FILL);
+            device.vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
+            device.vkCmdSetFrontFace(cmd, VK_FRONT_FACE_CLOCKWISE);
+            device.vkCmdSetDepthTestEnable(cmd, VK_FALSE);
+            device.vkCmdSetDepthWriteEnable(cmd, VK_FALSE);
+            device.vkCmdSetDepthBiasEnable(cmd, VK_FALSE);
+            device.vkCmdSetStencilTestEnable(cmd, VK_FALSE);
+            device.vkCmdSetColorBlendEnableEXT(cmd, 0U, 1U, &blendEnabled);
+            device.vkCmdSetColorWriteMaskEXT(cmd, 0U, 1U, &colorComponents);
+
+            device.vkCmdDraw(cmd, 3U, 1U, 0U, 0U);
+            device.vkCmdEndRendering(cmd);
+
+            {
+                VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                                  nullptr,
+                                                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                                  0U,
+                                                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                                  0U,
+                                                  0U,
+                                                  swapchain.images[imageIndex],
+                                                  {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
+                device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0U, 0U,
                                             nullptr, 0U, nullptr, 1U, &imageBarrier);
             }

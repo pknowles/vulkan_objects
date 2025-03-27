@@ -12,6 +12,8 @@
 // DANGER: Unless we include all the platform-specific headers via vulkan.h,
 // some files would see different definitions of the function tables.
 // Unfortunately, this makes things slow. Pre-compiled headers should help.
+// Double-unfortunately this forces X11/Xlib.h to be exposed to anything needing
+// to call a vulkan function, which defines None, Status and Bool. *shakes fist*
 #include <vulkan/vulkan.h>
 
 namespace vko

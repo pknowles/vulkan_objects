@@ -39,11 +39,13 @@ template<> struct handle_traits<{{ command.handle }}> { using table = GlobalComm
     {% if "Vk" + handle.name != handle.parent %}{# Don't generate code for special case VkInstance and VkDevice handles #}
     {% set parent=substr(handle.parent, 2) %}
         {% if handle.create %}
-using {{ handle.name }} = Handle<{{ handle.type }}, PFN_{{ handle.create }}, {{ handle.createInfo }}>;
             {% if handle.createPlural %}
+// Plurals not implemented yet
+//using {{ handle.name }} = Handle<{{ handle.type }}, PFN_{{ handle.create }}, {{ handle.createInfo }}>;
 //template<> {{ handle.type }} createHandle<{{ handle.type }}, {{ parent }}Commands, {{ handle.parent }}, PFN_{{ handle.create }}, {{ handle.createInfo }}>(const {{ parent }}Commands& vk, {{ handle.parent }} parent, const {{ handle.createInfo }}& createInfo) {
 //    {{ handle.type }} handle; check(vk.{{ handle.create }}(parent, 1, &createInfo, nullptr, &handle)); return handle; }
             {% else %}
+using {{ handle.name }} = Handle<{{ handle.type }}, PFN_{{ handle.create }}, {{ handle.createInfo }}>;
 template <> struct CreateHandle<{{ handle.type }}, PFN_{{ handle.create }}, {{ handle.createInfo }}> {
     template <class FunctionsAndParent>
         requires std::constructible_from<{{ handle.parent }}, FunctionsAndParent>
