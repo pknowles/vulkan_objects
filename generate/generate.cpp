@@ -67,6 +67,15 @@ struct std::hash<SortedStrings>
   }
 };
 
+template <typename Map>
+typename Map::mapped_type valueOr(const Map& map, const typename Map::key_type& key,
+                                  const typename Map::mapped_type& fallback) {
+    if (auto it = map.find(key); it != map.end()) {
+        return it->second;
+    }
+    return fallback;
+}
+
 // *sigh*. almost
 auto split(std::string_view str, char delim)
 {
@@ -155,6 +164,19 @@ int main(int argc, char** argv) {
             return EXIT_FAILURE;
         }
     }
+
+    // These objects need to be bound to VkDeviceMemory before they're usable.
+    // It's wasteful to use the primary name on the native object when a vko
+    // utility could have it instead. I doubt people want to write
+    // vko::BoundImage everywhere and the same name in a separate namespace
+    // would just be confusing. Yes, this is breaking from the rules listed in
+    // the readme and yes I'll probably regret this.
+    std::unordered_map<std::string_view, std::string_view> handlesRemap{
+        {"Buffer", "BufferOnly"},
+        {"Image", "ImageOnly"},
+        {"VideoSessionKHR", "VideoSessionKHROnly"},
+        {"AccelerationStructureNV", "AccelerationStructureNVOnly"},
+    };
 
     inja::Environment env;
     env.set_trim_blocks(true);
@@ -443,7 +465,7 @@ int main(int argc, char** argv) {
                 if(!createInfoNode)
                 {
                     inja::json obj = inja::json::object();
-                    obj["name"] = objectName;
+                    obj["name"]    = valueOr(handlesRemap, objectName, objectName);
                     obj["create"] = createFuncName;
                     obj["failure"] = "Could not find CreateInfo";
                     handles.push_back(obj);
@@ -453,7 +475,7 @@ int main(int argc, char** argv) {
                 std::string_view createInfo = createInfoNode.node().value();
 
                 inja::json obj = inja::json::object();
-                obj["name"] = objectName;
+                obj["name"]          = valueOr(handlesRemap, objectName, objectName);
                 obj["type"] = type;
                 obj["suffix"] = createMatch[3].str();
                 obj["parent"] = commandRootParents[destroyFunc->second.name];

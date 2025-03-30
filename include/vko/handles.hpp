@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
+#include <span>
 #include <vko/gen_handles.hpp>
 
 namespace vko
@@ -194,6 +195,142 @@ struct DestroyVectorFunc<VkShaderEXT> {
     }
     PFN_vkDestroyShaderEXT destroy;
     VkDevice               device;
+};
+
+// An array of RayTracingPipelinesKHR. Exposes an array directly because that's what the
+// API provides.
+using RayTracingPipelinesKHR = HandleVector<VkPipeline, PFN_vkCreateRayTracingPipelinesKHR,
+                                            std::span<const VkRayTracingPipelineCreateInfoKHR>>;
+
+template <>
+struct CreateHandleVector<VkPipeline, PFN_vkCreateRayTracingPipelinesKHR,
+                          std::span<const VkRayTracingPipelineCreateInfoKHR>> {
+    template <class FunctionsAndParent>
+        requires std::constructible_from<VkDevice, FunctionsAndParent>
+    std::vector<VkPipeline>
+    operator()(const std::span<const VkRayTracingPipelineCreateInfoKHR>& createInfo,
+               const FunctionsAndParent&                                 vk) {
+        return (*this)(createInfo, vk, vk);
+    }
+    template <class Functions>
+    std::vector<VkPipeline>
+    operator()(const std::span<const VkRayTracingPipelineCreateInfoKHR>& createInfo,
+               VkDevice device, const Functions& vk) {
+        std::vector<VkPipeline> handles(createInfo.size());
+        check(vk.vkCreateRayTracingPipelinesKHR(device, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                                uint32_t(createInfo.size()), createInfo.data(),
+                                                nullptr, handles.data()));
+        return handles;
+    }
+};
+
+template <>
+struct DestroyVectorFunc<VkPipeline> {
+    template <class FunctionsAndParent>
+        requires std::constructible_from<VkDevice, FunctionsAndParent>
+    DestroyVectorFunc(const std::span<const VkRayTracingPipelineCreateInfoKHR>& createInfo,
+                      const FunctionsAndParent&                                 vk)
+        : DestroyVectorFunc(createInfo, vk, vk) {}
+
+    template <class DeviceCommands>
+    DestroyVectorFunc(const std::span<const VkRayTracingPipelineCreateInfoKHR>&, VkDevice device,
+                      const DeviceCommands& vk)
+        : destroy(vk.vkDestroyPipeline)
+        , device(device) {}
+    void operator()(const std::vector<VkPipeline>& handles) const {
+        for (auto handle : handles)
+            destroy(device, handle, nullptr);
+    }
+    PFN_vkDestroyPipeline destroy;
+    VkDevice              device;
+};
+
+// Utility to expose RayTracingPipelinesKHR as a single VkPipeline
+// TODO: special case to avoid the std::vector heap allocation
+class RayTracingPipelineKHR {
+public:
+    template <class FunctionsAndParent>
+        requires std::constructible_from<VkDevice, FunctionsAndParent>
+    RayTracingPipelineKHR(const VkRayTracingPipelineCreateInfoKHR& createInfo,
+                          const FunctionsAndParent&                vk)
+        : RayTracingPipelineKHR(createInfo, vk, vk) {}
+    template <class Functions>
+    RayTracingPipelineKHR(const VkRayTracingPipelineCreateInfoKHR& createInfo, VkDevice device,
+                          const Functions& vk)
+        : m_pipelines(std::span{&createInfo, 1}, device, vk) {}
+    operator VkPipeline() const { return m_pipelines[0]; }
+    const VkPipeline* ptr() const { return &m_pipelines[0]; }
+
+private:
+    RayTracingPipelinesKHR m_pipelines;
+};
+
+// An array of RayTracingPipelinesKHR. Exposes an array directly because that's what the
+// API provides.
+using DescriptorSets =
+    HandleVector<VkDescriptorSet, PFN_vkAllocateDescriptorSets, VkDescriptorSetAllocateInfo>;
+
+template <>
+struct CreateHandleVector<VkDescriptorSet, PFN_vkAllocateDescriptorSets,
+                          VkDescriptorSetAllocateInfo> {
+    template <class FunctionsAndParent>
+        requires std::constructible_from<VkDevice, FunctionsAndParent>
+    std::vector<VkDescriptorSet> operator()(const VkDescriptorSetAllocateInfo& createInfo,
+                                            const FunctionsAndParent&          vk) {
+        return (*this)(createInfo, vk, vk);
+    }
+    template <class Functions>
+    std::vector<VkDescriptorSet> operator()(const VkDescriptorSetAllocateInfo& createInfo,
+                                            VkDevice device, const Functions& vk) {
+        std::vector<VkDescriptorSet> handles(createInfo.descriptorSetCount);
+        check(vk.vkAllocateDescriptorSets(device, &createInfo, handles.data()));
+        return handles;
+    }
+};
+
+template <>
+struct DestroyVectorFunc<VkDescriptorSet> {
+    template <class FunctionsAndParent>
+        requires std::constructible_from<VkDevice, FunctionsAndParent>
+    DestroyVectorFunc(const VkDescriptorSetAllocateInfo& allocateInfo, const FunctionsAndParent& vk)
+        : DestroyVectorFunc(allocateInfo, vk, vk) {}
+
+    template <class DeviceCommands>
+    DestroyVectorFunc(const VkDescriptorSetAllocateInfo& allocateInfo, VkDevice device,
+                      const DeviceCommands& vk)
+        : destroy(vk.vkFreeDescriptorSets)
+        , device(device)
+        , descriptorPool(allocateInfo.descriptorPool) {}
+    void operator()(const std::vector<VkDescriptorSet>& handles) const {
+        destroy(device, descriptorPool, uint32_t(handles.size()), handles.data());
+    }
+    PFN_vkFreeDescriptorSets destroy;
+    VkDevice                 device;
+    VkDescriptorPool         descriptorPool;
+};
+
+class DescriptorSet {
+public:
+    template <class FunctionsAndParent>
+        requires std::constructible_from<VkDevice, FunctionsAndParent>
+    DescriptorSet(const void* pNext, VkDescriptorPool descriptorPool,
+                  VkDescriptorSetLayout setLayout, const FunctionsAndParent& vk)
+        : DescriptorSet(pNext, descriptorPool, setLayout, vk, vk) {}
+    template <class Functions>
+    DescriptorSet(const void* pNext, VkDescriptorPool descriptorPool,
+                  VkDescriptorSetLayout setLayout, VkDevice device, const Functions& vk)
+        : m_descriptorSets(
+              VkDescriptorSetAllocateInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                          .pNext = pNext,
+                                          .descriptorPool     = descriptorPool,
+                                          .descriptorSetCount = 1,
+                                          .pSetLayouts        = &setLayout},
+              device, vk) {}
+    operator VkDescriptorSet() const { return m_descriptorSets[0]; }
+    const VkDescriptorSet* ptr() const { return &m_descriptorSets[0]; }
+
+private:
+    DescriptorSets m_descriptorSets;
 };
 
 } // namespace vko

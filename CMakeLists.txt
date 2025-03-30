@@ -80,6 +80,9 @@ FetchContent_Declare(
 set(UPDATE_DEPS ON)
 set(BUILD_TESTS_backup ${BUILD_TESTS})
 set(BUILD_TESTS OFF)
+# TODO: would be nice if UPDATE_DEPS doesn't duplicate the giant spirv-tools
+# binaries to the install directory :(
+set(SKIP_SPIRV_TOOLS_INSTALL ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(vvl)
 set(BUILD_TESTS ${BUILD_TESTS_backup})
 add_dependencies(vulkan_objects vvl)
@@ -112,7 +115,11 @@ set(SLANG_ENABLE_SLANGC OFF CACHE BOOL "" FORCE)
 set(SLANG_ENABLE_SLANGRT OFF CACHE BOOL "" FORCE)
 set(SLANG_ENABLE_SLANG_GLSLANG OFF CACHE BOOL "" FORCE)
 set(SLANG_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(SLANG_ENABLE_GFX OFF CACHE BOOL "" FORCE)
+set(SLANG_ENABLE_REPLAYER OFF CACHE BOOL "" FORCE)
+set(SLANG_ENABLE_SLANG_RHI OFF CACHE BOOL "" FORCE)
 set(SLANG_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SLANG_ENABLE_SPLIT_DEBUG_INFO OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(slang)
 target_link_libraries(vulkan_objects PUBLIC slang)
 
