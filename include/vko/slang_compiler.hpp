@@ -70,7 +70,7 @@ public:
         if (!module) {
             throw Exception("Slang loadModule returned null");
         }
-        m_module = Slang::ComPtr<T>{Slang::INIT_ATTACH, module};
+        m_module = Slang::ComPtr<T>{/*Slang::INIT_ATTACH,*/ module};
     }
     Module(::slang::ISession* session, const char* moduleName, const char* path,
            const char* string) {

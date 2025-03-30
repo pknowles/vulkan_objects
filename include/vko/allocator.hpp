@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
+#include <memory>
 #include <vk_mem_alloc.h>
 #include <vko/exceptions.hpp>
 
@@ -92,10 +93,11 @@ public:
 
     template <class GlobalFunctions, class Instance>
     Allocator(const GlobalFunctions& globalFunctions, const Instance& instance,
-              VkPhysicalDevice physicalDevice, VkDevice device, uint32_t vulkanApiVersion)
+              VkPhysicalDevice physicalDevice, VkDevice device, uint32_t vulkanApiVersion,
+              VkBuildAccelerationStructureFlagsKHR flags)
         : Allocator(
               VmaAllocatorCreateInfo{
-                  .flags                          = 0,
+                  .flags                          = flags,
                   .physicalDevice                 = physicalDevice,
                   .device                         = device,
                   .preferredLargeHeapBlockSize    = 0,

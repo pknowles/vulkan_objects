@@ -13,6 +13,13 @@ namespace vko {
 template <typename T>
 struct function_traits;
 
+// Dangerous class to allow making a pointer to a temporary. Only works if the
+// pointer is not kept longer than the expression.
+template <class T>
+const T* tmpPtr(const T& t) {
+    return &t;
+}
+
 template <typename R, typename... Args>
 struct function_traits<R (*)(Args...)> {
     using args   = std::tuple<Args...>;

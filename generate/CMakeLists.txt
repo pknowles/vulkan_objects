@@ -21,6 +21,9 @@ if(NOT TARGET inja)
     GIT_TAG v3.4.0
     GIT_SHALLOW TRUE
   )
+  set(INJA_INSTALL OFF CACHE BOOL "" FORCE)
+  set(INJA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(inja)
 endif()
 

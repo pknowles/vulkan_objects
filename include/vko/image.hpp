@@ -23,7 +23,7 @@ public:
     const VkImage* ptr() const { return m_image.ptr(); }
 
 private:
-    Image      m_image;
+    ImageOnly  m_image;
     Allocation m_allocation;
 };
 
