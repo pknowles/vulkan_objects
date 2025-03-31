@@ -7,15 +7,16 @@
 #include <vko/acceleration_structures.hpp>
 #include <vko/adapters.hpp>
 #include <vko/allocator.hpp>
-#include <vko/array.hpp>
 #include <vko/bindings.hpp>
+#include <vko/bound_buffer.hpp>
+#include <vko/bound_image.hpp>
 #include <vko/command_recording.hpp>
 #include <vko/dynamic_library.hpp>
 #include <vko/functions.hpp>
 #include <vko/glfw_objects.hpp>
 #include <vko/handles.hpp>
-#include <vko/image.hpp>
 #include <vko/ray_tracing.hpp>
+#include <vko/shortcuts.hpp>
 #include <vko/slang_compiler.hpp>
 #include <vko/swapchain.hpp>
 #include <vko/timeline_queue.hpp>
@@ -34,14 +35,14 @@
 #endif
 
 template <class T, class DeviceAndCommands>
-vko::Array<T> uploadImmediate(vko::vma::Allocator& allocator, VkCommandPool pool, VkQueue queue,
-                              const DeviceAndCommands& device, std::span<std::add_const_t<T>> data,
-                              VkBufferUsageFlags usage) {
-    vko::Array<T> staging(
+vko::BoundBuffer<T> uploadImmediate(vko::vma::Allocator& allocator, VkCommandPool pool,
+                                    VkQueue queue, const DeviceAndCommands& device,
+                                    std::span<std::add_const_t<T>> data, VkBufferUsageFlags usage) {
+    vko::BoundBuffer<T> staging(
         device, data.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, allocator);
-    vko::Array<T> result(device, data.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
-                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator);
+    vko::BoundBuffer<T> result(device, data.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
+                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator);
     {
         vko::simple::ImmediateCommandBuffer cmd(device, pool, queue);
         std::ranges::copy(data, staging.map().begin());
@@ -336,7 +337,7 @@ TEST(Integration, WindowSystemIntegration) {
 
     vko::vma::Allocator  allocator(globalCommands, instance, physicalDevice, device,
                                    VK_API_VERSION_1_4, 0);
-    vko::Array<uint32_t> imageData(
+    vko::BoundBuffer<uint32_t> imageData(
         device, 1024 * 1024, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, allocator);
     uint32_t pixelIndex = 0;
@@ -374,38 +375,30 @@ TEST(Integration, WindowSystemIntegration) {
                               .imageOffset       = {0, 0, 0},
                               .imageExtent       = {1024, 1024, 1},
         };
-        {
-            VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                              nullptr,
-                                              0U,
-                                              VK_ACCESS_TRANSFER_WRITE_BIT,
-                                              VK_IMAGE_LAYOUT_UNDEFINED,
-                                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                              0U,
-                                              0U,
-                                              image,
-                                              {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
-            device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U,
-                                        nullptr, 1U, &imageBarrier);
-        }
+        vko::cmdImageBarrier(device, cmd, image,
+                             {
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 0U,
+                                 VK_IMAGE_LAYOUT_UNDEFINED,
+                             },
+                             {
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_ACCESS_TRANSFER_WRITE_BIT,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             });
         device.vkCmdCopyBufferToImage(cmd, imageData, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                       1, &region);
-        {
-            VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                              nullptr,
-                                              VK_ACCESS_TRANSFER_WRITE_BIT,
-                                              VK_ACCESS_TRANSFER_READ_BIT,
-                                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                              VK_IMAGE_LAYOUT_GENERAL,
-                                              0U,
-                                              0U,
-                                              image,
-                                              {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
-            device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U,
-                                        nullptr, 1U, &imageBarrier);
-        }
+        vko::cmdImageBarrier(device, cmd, image,
+                             {
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_ACCESS_TRANSFER_WRITE_BIT,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             },
+                             {
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_ACCESS_TRANSFER_READ_BIT,
+                                 VK_IMAGE_LAYOUT_GENERAL,
+                             });
     }
 
     vko::slang::GlobalSession globalSession;
@@ -503,23 +496,18 @@ TEST(Integration, WindowSystemIntegration) {
             };
             device.vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, swapchain.images[imageIndex],
                                   VK_IMAGE_LAYOUT_GENERAL, 1, &region);
-
-            {
-                VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                                  nullptr,
-                                                  VK_ACCESS_TRANSFER_WRITE_BIT,
-                                                  VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                                                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                                                  VK_IMAGE_LAYOUT_GENERAL,
-                                                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                                  0U,
-                                                  0U,
-                                                  swapchain.images[imageIndex],
-                                                  {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
-                device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0U, 0U,
-                                            nullptr, 0U, nullptr, 1U, &imageBarrier);
-            }
+            vko::cmdImageBarrier(
+                device, cmd, swapchain.images[imageIndex],
+                {
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                },
+                {
+                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                });
 
             VkRenderingAttachmentInfo renderingAttachmentInfo{
                 .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -548,52 +536,20 @@ TEST(Integration, WindowSystemIntegration) {
             device.vkCmdBeginRendering(cmd, &renderingInfo);
             device.vkCmdBindShadersEXT(cmd, 2U, rasterTriangleShadersStages,
                                        rasterTriangleShaders.data());
-
-            VkViewport            viewport{0.0F, 0.0F, float(width), float(height), 0.0F, 1.0F};
-            VkRect2D              scissor{{0, 0}, {uint32_t(width), uint32_t(height)}};
-            VkSampleMask          sampleMask   = 0xFU;
-            VkBool32              blendEnabled = VK_FALSE;
-            VkColorComponentFlags colorComponents =
-                VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
-                VK_COLOR_COMPONENT_A_BIT;
-
-            device.vkCmdSetVertexInputEXT(cmd, 0U, nullptr, 0U, nullptr);
-            device.vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-            device.vkCmdSetPrimitiveRestartEnable(cmd, VK_FALSE);
-            device.vkCmdSetViewportWithCount(cmd, 1U, &viewport);
-            device.vkCmdSetScissorWithCount(cmd, 1U, &scissor);
-            device.vkCmdSetRasterizerDiscardEnable(cmd, VK_FALSE);
-            device.vkCmdSetRasterizationSamplesEXT(cmd, VK_SAMPLE_COUNT_1_BIT);
-            device.vkCmdSetSampleMaskEXT(cmd, VK_SAMPLE_COUNT_1_BIT, &sampleMask);
-            device.vkCmdSetAlphaToCoverageEnableEXT(cmd, VK_FALSE);
-            device.vkCmdSetPolygonModeEXT(cmd, VK_POLYGON_MODE_FILL);
-            device.vkCmdSetCullMode(cmd, VK_CULL_MODE_NONE);
-            device.vkCmdSetFrontFace(cmd, VK_FRONT_FACE_CLOCKWISE);
-            device.vkCmdSetDepthTestEnable(cmd, VK_FALSE);
-            device.vkCmdSetDepthWriteEnable(cmd, VK_FALSE);
-            device.vkCmdSetDepthBiasEnable(cmd, VK_FALSE);
-            device.vkCmdSetStencilTestEnable(cmd, VK_FALSE);
-            device.vkCmdSetColorBlendEnableEXT(cmd, 0U, 1U, &blendEnabled);
-            device.vkCmdSetColorWriteMaskEXT(cmd, 0U, 1U, &colorComponents);
-
+            vko::cmdDynamicRenderingDefaults(device, cmd, uint32_t(width), uint32_t(height));
             device.vkCmdDraw(cmd, 3U, 1U, 0U, 0U);
             device.vkCmdEndRendering(cmd);
-
-            {
-                VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                                  nullptr,
-                                                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                                                  0U,
-                                                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                                                  0U,
-                                                  0U,
-                                                  swapchain.images[imageIndex],
-                                                  {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
-                device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0U, 0U,
-                                            nullptr, 0U, nullptr, 1U, &imageBarrier);
-            }
+            vko::cmdImageBarrier(device, cmd, swapchain.images[imageIndex],
+                                 {
+                                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                     VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                 },
+                                 {
+                                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                     0U,
+                                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                 });
         }
 
         swapchain.present(device, queue, imageIndex, renderingFinished);
@@ -833,26 +789,24 @@ TEST(Integration, HelloTriangleRayTracing) {
                                      });
     {
         vko::simple::ImmediateCommandBuffer cmd(device, commandPool, queue);
-        VkImageMemoryBarrier                imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                          nullptr,
-                                          VK_ACCESS_TRANSFER_WRITE_BIT,
-                                          VK_ACCESS_SHADER_WRITE_BIT,
-                                          VK_IMAGE_LAYOUT_UNDEFINED,
-                                          VK_IMAGE_LAYOUT_GENERAL,
-                                          0U,
-                                          0U,
-                                          image,
-                                                         {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
-        device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                    VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0U, 0U, nullptr,
-                                    0U, nullptr, 1U, &imageBarrier);
+        vko::cmdImageBarrier(device, cmd, image,
+                             {
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_ACCESS_TRANSFER_WRITE_BIT,
+                                 VK_IMAGE_LAYOUT_UNDEFINED,
+                             },
+                             {
+                                 VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                                 VK_ACCESS_SHADER_WRITE_BIT,
+                                 VK_IMAGE_LAYOUT_GENERAL,
+                             });
     }
 
-    vko::Array<uint32_t> triangles = uploadImmediate<uint32_t>(
+    vko::BoundBuffer<uint32_t> triangles = uploadImmediate<uint32_t>(
         allocator, commandPool, queue, device, std::to_array({0U, 1U, 2U, 0U, 2U, 3U}),
         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
-    vko::Array<float> vertices = uploadImmediate<float>(
+    vko::BoundBuffer<float> vertices = uploadImmediate<float>(
         allocator, commandPool, queue, device,
         std::to_array({-1.0f, 0.0f, -1.0f, -1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, -1.0f}),
         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
@@ -870,10 +824,10 @@ TEST(Integration, HelloTriangleRayTracing) {
     vko::as::Input blasInput = vko::as::createBlasInput(
         simpleGeometryInputs, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
                                   VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_DATA_ACCESS_KHR);
-    vko::as::Sizes       blasSizes(device, blasInput);
-    vko::as::AS          blas(device, blasInput.type, *blasSizes, 0, allocator);
+    vko::as::Sizes                 blasSizes(device, blasInput);
+    vko::as::AccelerationStructure blas(device, blasInput.type, *blasSizes, 0, allocator);
     VkTransformMatrixKHR identity{.matrix = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
-    vko::Array<VkAccelerationStructureInstanceKHR> instances =
+    vko::BoundBuffer<VkAccelerationStructureInstanceKHR> instances =
         uploadImmediate<VkAccelerationStructureInstanceKHR>(
             allocator, commandPool, queue, device,
             std::to_array({VkAccelerationStructureInstanceKHR{
@@ -890,37 +844,28 @@ TEST(Integration, HelloTriangleRayTracing) {
         vko::as::createTlasInput(uint32_t(instances.size()), instances.address(device),
                                  VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
                                      VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_DATA_ACCESS_KHR);
-    vko::as::Sizes        tlasSizes(device, tlasInput);
-    vko::as::AS           tlas(device, tlasInput.type, *tlasSizes, 0, allocator);
-    vko::Array<std::byte> scratch(
+    vko::as::Sizes                 tlasSizes(device, tlasInput);
+    vko::as::AccelerationStructure tlas(device, tlasInput.type, *tlasSizes, 0, allocator);
+    vko::BoundBuffer<std::byte>    scratch(
         device, std::max(blasSizes->buildScratchSize, tlasSizes->buildScratchSize),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator);
     {
         vko::simple::ImmediateCommandBuffer cmd(device, commandPool, queue);
         vko::as::cmdBuild(device, cmd, blas, blasInput, false, scratch);
-        {
-            VkMemoryBarrier barrier{.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                                    .pNext         = nullptr,
-                                    .srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-                                    .dstAccessMask =
-                                        VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-                                        VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR};
-            device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                                        VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0,
-                                        1, &barrier, 0, nullptr, 0, nullptr);
-        }
+        vko::cmdMemoryBarrier(device, cmd,
+                              {VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                               VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR},
+                              {VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                               VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                                   VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR});
         vko::as::cmdBuild(device, cmd, tlas, tlasInput, false, scratch);
-        {
-            VkMemoryBarrier barrier{.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                                    .pNext         = nullptr,
-                                    .srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-                                                     VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
-                                    .dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR};
-            device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                                        VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0,
-                                        1, &barrier, 0, nullptr, 0, nullptr);
-        }
+        vko::cmdMemoryBarrier(device, cmd,
+                              {VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                               VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                                   VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR},
+                              {VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                               VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR});
     }
 
     vko::slang::GlobalSession globalSession;
@@ -1041,21 +986,17 @@ TEST(Integration, HelloTriangleRayTracing) {
                                       sizeof(pushConstant), &pushConstant);
             device.vkCmdTraceRaysKHR(cmd, &sbt.raygenTableOffset, &sbt.missTableOffset,
                                      &sbt.hitTableOffset, &sbt.callableTableOffset, 1024, 1024, 1);
-            {
-                VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                                  nullptr,
-                                                  VK_ACCESS_SHADER_WRITE_BIT,
-                                                  VK_ACCESS_TRANSFER_READ_BIT,
-                                                  VK_IMAGE_LAYOUT_UNDEFINED,
-                                                  VK_IMAGE_LAYOUT_GENERAL,
-                                                  0U,
-                                                  0U,
-                                                  image,
-                                                  {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
-                device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-                                            VK_PIPELINE_STAGE_TRANSFER_BIT, 0U, 0U, nullptr, 0U,
-                                            nullptr, 1U, &imageBarrier);
-            }
+            vko::cmdImageBarrier(device, cmd, image,
+                                 {
+                                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+                                     VK_ACCESS_SHADER_WRITE_BIT,
+                                     VK_IMAGE_LAYOUT_UNDEFINED,
+                                 },
+                                 {
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     VK_ACCESS_TRANSFER_READ_BIT,
+                                     VK_IMAGE_LAYOUT_GENERAL,
+                                 });
 
             VkImageCopy region{
                 .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
@@ -1066,22 +1007,17 @@ TEST(Integration, HelloTriangleRayTracing) {
             };
             device.vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, swapchain.images[imageIndex],
                                   VK_IMAGE_LAYOUT_GENERAL, 1, &region);
-
-            {
-                VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                                  nullptr,
-                                                  VK_ACCESS_TRANSFER_WRITE_BIT,
-                                                  0U,
-                                                  VK_IMAGE_LAYOUT_GENERAL,
-                                                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                                                  0U,
-                                                  0U,
-                                                  swapchain.images[imageIndex],
-                                                  {VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U}};
-                device.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0U, 0U,
-                                            nullptr, 0U, nullptr, 1U, &imageBarrier);
-            }
+            vko::cmdImageBarrier(device, cmd, swapchain.images[imageIndex],
+                                 {
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     VK_ACCESS_TRANSFER_WRITE_BIT,
+                                     VK_IMAGE_LAYOUT_GENERAL,
+                                 },
+                                 {
+                                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                     0U,
+                                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                 });
         }
 
         swapchain.present(device, queue, imageIndex, renderingFinished);

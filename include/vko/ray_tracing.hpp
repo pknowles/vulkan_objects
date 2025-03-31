@@ -7,7 +7,7 @@
 #include <span>
 #include <vko/adapters.hpp>
 #include <vko/allocator.hpp>
-#include <vko/array.hpp>
+#include <vko/bound_buffer.hpp>
 #include <vko/command_recording.hpp>
 #include <vko/handles.hpp>
 
@@ -149,7 +149,7 @@ struct ShaderBindingTablesStaging {
         assert(raygenTableOffset->stride == raygenTableOffset->size);
     }
 
-    Array<std::byte>                   tables;
+    BoundBuffer<std::byte>             tables;
     std::optional<StridedOffsetRegion> raygenTableOffset;
     std::optional<StridedOffsetRegion> missTableOffset;
     std::optional<StridedOffsetRegion> hitTableOffset;
@@ -186,7 +186,7 @@ struct ShaderBindingTables {
         };
         device.vkCmdCopyBuffer(cmd, staging.tables, tables, 1, &bufferCopy);
     }
-    Array<std::byte>                tables;
+    BoundBuffer<std::byte>          tables;
     VkStridedDeviceAddressRegionKHR raygenTableOffset;
     VkStridedDeviceAddressRegionKHR missTableOffset;
     VkStridedDeviceAddressRegionKHR hitTableOffset;

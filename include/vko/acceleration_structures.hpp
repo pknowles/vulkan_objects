@@ -35,7 +35,7 @@
 
 #include "vulkan/vulkan_core.h"
 #include <assert.h>
-#include <vko/array.hpp>
+#include <vko/bound_buffer.hpp>
 #include <vko/handles.hpp>
 
 namespace vko {
@@ -107,12 +107,12 @@ private:
 // This can be a top or bottom level acceleration structure depending on the
 // 'type' passed to the constructor. To use the acceleration structure it must
 // first be given to BuiltAS.
-class AS {
+class AccelerationStructure {
 public:
     template <class DeviceAndCommands, class Allocator = vma::Allocator>
-    AS(const DeviceAndCommands& device, VkAccelerationStructureTypeKHR type,
-       const VkAccelerationStructureBuildSizesInfoKHR& size,
-       VkAccelerationStructureCreateFlagsKHR flags, Allocator& allocator)
+    AccelerationStructure(const DeviceAndCommands& device, VkAccelerationStructureTypeKHR type,
+                          const VkAccelerationStructureBuildSizesInfoKHR& size,
+                          VkAccelerationStructureCreateFlagsKHR flags, Allocator& allocator)
         : m_type(type)
         , m_size(size)
         , m_buffer(device, m_size.accelerationStructureSize,
@@ -146,24 +146,26 @@ public:
 private:
     VkAccelerationStructureTypeKHR           m_type;
     VkAccelerationStructureBuildSizesInfoKHR m_size;
-    Array<std::byte>                         m_buffer;
+    BoundBuffer<std::byte>                   m_buffer;
     AccelerationStructureKHR                 m_accelerationStructure;
     VkDeviceAddress                          m_address;
 };
 
 template <class DeviceAndCommands>
-void cmdBuild(const DeviceAndCommands& device, VkCommandBuffer cmd, const AS& accelerationStructure,
-              const Input& input, bool update, Array<std::byte>& scratchBuffer) {
+void cmdBuild(const DeviceAndCommands& device, VkCommandBuffer cmd,
+              const AccelerationStructure& accelerationStructure, const Input& input, bool update,
+              BoundBuffer<std::byte>& scratchBuffer) {
     cmdBuild(device, cmd, accelerationStructure, input.flags, input.geometries, input.rangeInfos,
              update, scratchBuffer);
 }
 
 template <class DeviceAndCommands>
-void cmdBuild(const DeviceAndCommands& device, VkCommandBuffer cmd, const AS& accelerationStructure,
+void cmdBuild(const DeviceAndCommands& device, VkCommandBuffer cmd,
+              const AccelerationStructure&                              accelerationStructure,
               VkBuildAccelerationStructureFlagsKHR                      flags,
               std::span<const VkAccelerationStructureGeometryKHR>       geometries,
               std::span<const VkAccelerationStructureBuildRangeInfoKHR> rangeInfos, bool update,
-              Array<std::byte>& scratchBuffer) {
+              BoundBuffer<std::byte>& scratchBuffer) {
     assert(geometries.size() == rangeInfos.size());
     assert(!update || !!(flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR));
     VkBuildAccelerationStructureModeKHR mode  = update

@@ -165,17 +165,16 @@ int main(int argc, char** argv) {
         }
     }
 
-    // These objects need to be bound to VkDeviceMemory before they're usable.
-    // It's wasteful to use the primary name on the native object when a vko
-    // utility could have it instead. I doubt people want to write
-    // vko::BoundImage everywhere and the same name in a separate namespace
-    // would just be confusing. Yes, this is breaking from the rules listed in
-    // the readme and yes I'll probably regret this.
+    // It'd be nice to reserve 'Buffer' and 'Image' for more commonly used
+    // "bound" variants, but I guess it's better not to deviate when wrapping
+    // the vulkan API.
     std::unordered_map<std::string_view, std::string_view> handlesRemap{
+#if 0
         {"Buffer", "BufferOnly"},
         {"Image", "ImageOnly"},
         {"VideoSessionKHR", "VideoSessionKHROnly"},
         {"AccelerationStructureNV", "AccelerationStructureNVOnly"},
+#endif
     };
 
     inja::Environment env;

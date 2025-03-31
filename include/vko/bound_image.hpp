@@ -29,7 +29,7 @@ public:
     VkImage        object() const { return m_image; }
 
 private:
-    ImageOnly  m_image;
+    Image      m_image;
     Allocation m_allocation;
 };
 

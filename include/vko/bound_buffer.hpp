@@ -8,18 +8,18 @@
 namespace vko {
 
 template <class T, class Allocator>
-class ArrayMapping {
+class BufferMapping {
 public:
     using Allocation = typename Allocator::AllocationType;
     using Map        = typename Allocator::MapType;
-    ArrayMapping(const Allocation& allocation, VkDeviceSize elementCount)
+    BufferMapping(const Allocation& allocation, VkDeviceSize elementCount)
         : m_map(allocation.map())
         , m_size(elementCount) {}
     T*     begin() const { return reinterpret_cast<T*>(m_map.data()); }
     T*     end() const { return reinterpret_cast<T*>(m_map.data()) + m_size; }
     T*     data() const { return reinterpret_cast<T*>(m_map.data()); }
     size_t size() const { return m_size; }
-    T& operator[](size_t index) const { return data()[index]; }
+    T&     operator[](size_t index) const { return data()[index]; }
 
 private:
     Map          m_map;
@@ -27,20 +27,21 @@ private:
 };
 
 template <class T, class Allocator = vma::Allocator>
-class Array {
+class BoundBuffer {
 public:
     using Allocation = typename Allocator::AllocationType;
     template <class DeviceAndCommands, class AllocationCreateInfo>
-    Array(const DeviceAndCommands& device, VkDeviceSize elementCount, VkBufferUsageFlags usage,
-          const AllocationCreateInfo& allocationCreateInfo, Allocator& allocator)
-        : Array(device, device, elementCount, nullptr, 0, usage, VK_SHARING_MODE_EXCLUSIVE, {},
-                allocationCreateInfo, allocator) {}
+    BoundBuffer(const DeviceAndCommands& device, VkDeviceSize elementCount,
+                VkBufferUsageFlags usage, const AllocationCreateInfo& allocationCreateInfo,
+                Allocator& allocator)
+        : BoundBuffer(device, device, elementCount, nullptr, 0, usage, VK_SHARING_MODE_EXCLUSIVE,
+                      {}, allocationCreateInfo, allocator) {}
 
     template <class DeviceCommands, class AllocationCreateInfo>
-    Array(const DeviceCommands& vk, VkDevice device, VkDeviceSize elementCount, const void* pNext,
-          VkBufferCreateFlags flags, VkBufferUsageFlags usage, VkSharingMode sharingMode,
-          std::span<const uint32_t>   queueFamilyIndices,
-          const AllocationCreateInfo& allocationCreateInfo, Allocator& allocator)
+    BoundBuffer(const DeviceCommands& vk, VkDevice device, VkDeviceSize elementCount,
+                const void* pNext, VkBufferCreateFlags flags, VkBufferUsageFlags usage,
+                VkSharingMode sharingMode, std::span<const uint32_t> queueFamilyIndices,
+                const AllocationCreateInfo& allocationCreateInfo, Allocator& allocator)
         : m_size(elementCount)
         , m_buffer(vk, device,
                    VkBufferCreateInfo{
@@ -57,9 +58,9 @@ public:
         , m_allocation(allocator.create(m_buffer, allocationCreateInfo)) {}
 
     operator VkBuffer() const { return m_buffer; }
-    const VkBuffer*            ptr() const { return m_buffer.ptr(); }
-    VkDeviceSize               size() const { return m_size; }
-    ArrayMapping<T, Allocator> map() const { return {m_allocation, m_size}; }
+    const VkBuffer*             ptr() const { return m_buffer.ptr(); }
+    VkDeviceSize                size() const { return m_size; }
+    BufferMapping<T, Allocator> map() const { return {m_allocation, m_size}; }
 
     template <class DeviceAndCommands>
     VkDeviceAddress address(const DeviceAndCommands& device) const {
@@ -71,7 +72,7 @@ public:
 
 private:
     VkDeviceSize m_size;
-    BufferOnly   m_buffer;
+    Buffer       m_buffer;
     Allocation   m_allocation;
 };
 
