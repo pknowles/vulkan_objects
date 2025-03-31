@@ -14,9 +14,9 @@ namespace simple {
 // recording command buffer
 class RecordingCommandBuffer {
 public:
-    template <class Functions>
-    RecordingCommandBuffer(CommandBuffer&& commandBuffer, const VkCommandBufferBeginInfo& beginInfo,
-                           const Functions& vk)
+    template <class DeviceCommands>
+    RecordingCommandBuffer(const DeviceCommands& vk, CommandBuffer&& commandBuffer,
+                           const VkCommandBufferBeginInfo& beginInfo)
         : m_commandBuffer(std::move(commandBuffer))
         , vkEndCommandBuffer(vk.vkEndCommandBuffer) {
         check(vk.vkBeginCommandBuffer(m_commandBuffer, &beginInfo));
@@ -39,21 +39,20 @@ class ImmediateCommandBuffer;
 template <>
 class ImmediateCommandBuffer<VkQueue> {
 public:
-    template <class FunctionsAndParent>
-    ImmediateCommandBuffer(VkCommandPool commandPool, VkQueue queue, const FunctionsAndParent& vk)
-        : ImmediateCommandBuffer(commandPool, queue, vk, vk) {}
-    template <class Functions>
-    ImmediateCommandBuffer(VkCommandPool commandPool, VkQueue queue, VkDevice device,
-                           const Functions& vk)
+    template <class DeviceAndCommands>
+    ImmediateCommandBuffer(const DeviceAndCommands& vk, VkCommandPool commandPool, VkQueue queue)
+        : ImmediateCommandBuffer(vk, vk, commandPool, queue) {}
+    template <class DeviceCommands>
+    ImmediateCommandBuffer(const DeviceCommands& vk, VkDevice device, VkCommandPool commandPool,
+                           VkQueue queue)
         : m_commandBuffer(
-              CommandBuffer(nullptr, commandPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, device, vk),
+              vk, CommandBuffer(vk, device, nullptr, commandPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY),
               VkCommandBufferBeginInfo{
                   .sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                   .pNext            = nullptr,
                   .flags            = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
                   .pInheritanceInfo = nullptr,
-              },
-              vk)
+              })
         , m_queue(queue)
         , vkQueueSubmit(vk.vkQueueSubmit)
         , vkQueueWaitIdle(vk.vkQueueWaitIdle) {}
@@ -90,20 +89,20 @@ private:
     PFN_vkQueueWaitIdle               vkQueueWaitIdle;
 };
 
-template <class Device>
-ImmediateCommandBuffer(VkCommandPool commandPool, VkQueue queue,
-                       const Device& vk) -> ImmediateCommandBuffer<VkQueue>;
+template <class DeviceAndCommands>
+ImmediateCommandBuffer(const DeviceAndCommands& vk, VkCommandPool commandPool,
+                       VkQueue queue) -> ImmediateCommandBuffer<VkQueue>;
 
 template <>
 class ImmediateCommandBuffer<TimelineQueue> {
 public:
-    template <class FunctionsAndParent>
-    ImmediateCommandBuffer(VkCommandPool commandPool, TimelineQueue& queue,
-                           const FunctionsAndParent& vk)
-        : ImmediateCommandBuffer(commandPool, queue, vk, vk) {}
-    template <class Functions>
+    template <class DeviceAndCommands>
+    ImmediateCommandBuffer(const DeviceAndCommands& vk, VkCommandPool commandPool,
+                           TimelineQueue& queue)
+        : ImmediateCommandBuffer(vk, vk, commandPool, queue) {}
+    template <class Commands>
     ImmediateCommandBuffer(VkCommandPool commandPool, TimelineQueue& queue, VkDevice device,
-                           const Functions& vk)
+                           const Commands& vk)
         : m_commandBuffer(
               CommandBuffer(nullptr, commandPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, device, vk),
               VkCommandBufferBeginInfo{
@@ -130,9 +129,9 @@ private:
     PFN_vkQueueWaitIdle    vkQueueWaitIdle;
 };
 
-template <class Device>
-ImmediateCommandBuffer(VkCommandPool commandPool, TimelineQueue queue,
-                       const Device& vk) -> ImmediateCommandBuffer<TimelineQueue>;
+template <class DeviceAndCommands>
+ImmediateCommandBuffer(const DeviceAndCommands& vk, VkCommandPool commandPool,
+                       TimelineQueue queue) -> ImmediateCommandBuffer<TimelineQueue>;
 
 } // namespace simple
 

@@ -32,6 +32,8 @@ template<> struct handle_traits<{{ command.handle }}> { using table = GlobalComm
 ## for handle in handles
 {% if handle.failure %}
 // Skipping {{ handle.name }} for {{ handle.create }}: {{ handle.failure }}
+{% else if not handle.createInfo %}
+// Skipping {{ handle.name }} for {{ handle.create }}: Could not find CreateInfo
 {% else %}
     {% if handle.create in platform_commands %}
 #if defined({{ join(handle.extensions, ") || defined(") }})
@@ -40,18 +42,13 @@ template<> struct handle_traits<{{ command.handle }}> { using table = GlobalComm
     {% set parent=substr(handle.parent, 2) %}
         {% if handle.create %}
             {% if handle.createPlural %}
-// Plurals not implemented yet
-//using {{ handle.name }} = Handle<{{ handle.type }}, PFN_{{ handle.create }}, {{ handle.createInfo }}>;
-//template<> {{ handle.type }} createHandle<{{ handle.type }}, {{ parent }}Commands, {{ handle.parent }}, PFN_{{ handle.create }}, {{ handle.createInfo }}>(const {{ parent }}Commands& vk, {{ handle.parent }} parent, const {{ handle.createInfo }}& createInfo) {
-//    {{ handle.type }} handle; check(vk.{{ handle.create }}(parent, 1, &createInfo, nullptr, &handle)); return handle; }
+// Skipping {{ handle.name }} for {{ handle.create }}: Plurals not implemented yet
             {% else %}
-using {{ handle.name }} = Handle<{{ handle.type }}, PFN_{{ handle.create }}, {{ handle.createInfo }}>;
-template <> struct CreateHandle<{{ handle.type }}, PFN_{{ handle.create }}, {{ handle.createInfo }}> {
-    template <class FunctionsAndParent>
-        requires std::constructible_from<{{ handle.parent }}, FunctionsAndParent>
-    {{ handle.type }} operator()(const {{ handle.createInfo }}& createInfo, const FunctionsAndParent& vk) { return (*this)(createInfo, vk, vk); }
-    template <class Functions>
-    {{ handle.type }} operator()(const {{ handle.createInfo }}& createInfo, {{ handle.parent }} parent, const Functions& vk) {
+using {{ handle.name }} = Handle<{{ handle.type }}, PFN_{{ handle.create }}>;
+template <> struct CreateHandle<{{ handle.type }}, PFN_{{ handle.create }}> {
+    using CreateInfo = {{ handle.createInfo }};
+    template <class {{ parent }}Commands>
+    {{ handle.type }} operator()(const {{ parent }}Commands& vk, {{ handle.parent }} parent, const {{ handle.createInfo }}& createInfo) {
         {{ handle.type }} handle;
         check(vk.{{ handle.create }}(parent, &createInfo, nullptr, &handle));
         return handle;
@@ -59,7 +56,7 @@ template <> struct CreateHandle<{{ handle.type }}, PFN_{{ handle.create }}, {{ h
 };
             {% endif %}
         {% else %}
-using {{ handle.name }} = Handle<{{ handle.type }}>;
+using {{ handle.name }} = Handle<{{ handle.type }}>; {{ handle.createPlural }} {{ handle.failure}} {{ handle.create }}
         {% endif %}
     {% endif %}
     {% if handle.create in platform_commands %}

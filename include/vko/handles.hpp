@@ -7,100 +7,134 @@
 namespace vko
 {
 
-template <>
-struct CreateHandle<VkInstance, PFN_vkCreateInstance, VkInstanceCreateInfo> {
-    template <class Functions>
-    VkInstance operator()(const VkInstanceCreateInfo& createInfo, const Functions& vk) {
-        VkInstance handle;
-        check(vk.vkCreateInstance(&createInfo, nullptr, &handle));
-        return handle;
-    }
-};
+// Special case handle for VkInstance
+class InstanceHandle {
+public:
+    using CreateInfo = VkInstanceCreateInfo;
 
-template <>
-struct DestroyFunc<VkInstance> {
-    template <class Functions>
-    DestroyFunc(VkInstance handle, const Functions& vk)
-        : destroy(reinterpret_cast<PFN_vkDestroyInstance>(
-              vk.vkGetInstanceProcAddr(handle, "vkDestroyInstance"))) {
-        if (!destroy)
+    template <class GlobalCommands>
+    InstanceHandle(const GlobalCommands& vk, const VkInstanceCreateInfo& createInfo) {
+        check(vk.vkCreateInstance(&createInfo, nullptr, &m_handle));
+
+        m_destroy = reinterpret_cast<PFN_vkDestroyInstance>(
+            vk.vkGetInstanceProcAddr(m_handle, "vkDestroyInstance"));
+
+        // WARNING: this leaks the VkInstance. IMO this is a spec bug. Should
+        // not have to have a valid instance before loading the destroy
+        // function.
+        if (!m_destroy)
             throw Exception("Driver's vkGetInstanceProcAddr(vkDestroyInstance) returned null");
     }
-    void                  operator()(VkInstance handle) const { destroy(handle, nullptr); }
-    PFN_vkDestroyInstance destroy;
-};
 
-// Special case VkInstance
-// For whatever reason, vulkan breaks create/destroy symmetry here. The destroy
-// function must be loaded in InstanceCommands, but we don't have access to that
-// here. Instead, we re-load the function per object (assuming there won't be
-// many). The real fix would be in the vulkan spec.
-using InstanceHandle = Handle<VkInstance, PFN_vkCreateInstance, VkInstanceCreateInfo>;
+    ~InstanceHandle() { destroy(); }
+    InstanceHandle(const InstanceHandle& other) = delete;
+    InstanceHandle(InstanceHandle&& other) noexcept
+        : m_handle(std::move(other.m_handle))
+        , m_destroy(std::move(other.m_destroy)) {
+        other.m_handle = VK_NULL_HANDLE;
+    }
+    InstanceHandle& operator=(const InstanceHandle& other) = delete;
+    InstanceHandle& operator=(InstanceHandle&& other) {
+        destroy();
+        m_destroy      = std::move(other.m_destroy);
+        m_handle       = std::move(other.m_handle);
+        other.m_handle = VK_NULL_HANDLE;
+        return *this;
+    }
+    operator VkInstance() const { return m_handle; }
+    explicit          operator bool() const { return m_handle != VK_NULL_HANDLE; }
+    const VkInstance* ptr() const { return &m_handle; }
+
+private:
+    void destroy() {
+        if (m_handle != VK_NULL_HANDLE)
+            m_destroy(m_handle, nullptr);
+    }
+    VkInstance            m_handle = VK_NULL_HANDLE;
+    PFN_vkDestroyInstance m_destroy;
+};
 
 // Convenience class to combine the instance handle and its function pointers
 class Instance : public InstanceHandle, public InstanceCommands {
 public:
-    Instance(const VkInstanceCreateInfo& createInfo, const GlobalCommands& vk)
-        : Instance(InstanceHandle(createInfo, vk), vk.vkGetInstanceProcAddr) {}
+    Instance(const GlobalCommands& vk, const VkInstanceCreateInfo& createInfo)
+        : Instance(InstanceHandle(vk, createInfo), vk.vkGetInstanceProcAddr) {}
     Instance(InstanceHandle&& handle, PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr)
         : InstanceHandle(std::move(handle)),
           InstanceCommands(*this, vkGetInstanceProcAddr) {}
 };
 
-template <>
-struct CreateHandle<VkDevice, PFN_vkCreateDevice, VkDeviceCreateInfo> {
-    template <class Functions>
-    VkDevice operator()(const VkDeviceCreateInfo& createInfo, VkPhysicalDevice physicalDevice,
-                        const Functions& vk) {
-        VkDevice handle;
-        check(vk.vkCreateDevice(physicalDevice, &createInfo, nullptr, &handle));
-        return handle;
-    }
-};
+// Special case handle for VkDevice
+class DeviceHandle {
+public:
+    using CreateInfo = VkDeviceCreateInfo;
 
-template <>
-struct DestroyFunc<VkDevice> {
-    DestroyFunc(VkDevice handle, VkPhysicalDevice /* fake "parent", not needed for destruction */,
-                const InstanceCommands& vk)
-        : destroy(reinterpret_cast<PFN_vkDestroyDevice>(
-              vk.vkGetDeviceProcAddr(handle, "vkDestroyDevice"))) {
-        if (!destroy)
+    template <class InstanceCommands>
+    DeviceHandle(const InstanceCommands& vk, VkPhysicalDevice physicalDevice,
+                 const VkDeviceCreateInfo& createInfo) {
+        check(vk.vkCreateDevice(physicalDevice, &createInfo, nullptr, &m_handle));
+
+        m_destroy = reinterpret_cast<PFN_vkDestroyDevice>(
+            vk.vkGetDeviceProcAddr(m_handle, "vkDestroyDevice"));
+
+        // WARNING: this leaks the VkDevice. IMO this is a spec bug. Should not
+        // have to have a valid device before loading the destroy function.
+        if (!m_destroy)
             throw Exception("Driver's vkGetDeviceProcAddr(vkDestroyDevice) returned null");
     }
-    void                  operator()(VkDevice handle) const { destroy(handle, nullptr); }
-    PFN_vkDestroyDevice destroy;
-};
 
-// Special case VkDevice
-// For whatever reason, vulkan breaks create/destroy symmetry here. The destroy
-// function must be loaded in InstanceCommands, but we don't have access to that
-// here. Instead, we re-load the function per object (assuming there won't be
-// many). The real fix would be in the vulkan spec.
-using DeviceHandle = Handle<VkDevice, PFN_vkCreateDevice, VkDeviceCreateInfo>;
+    ~DeviceHandle() { destroy(); }
+    DeviceHandle(const DeviceHandle& other) = delete;
+    DeviceHandle(DeviceHandle&& other) noexcept
+        : m_handle(std::move(other.m_handle))
+        , m_destroy(std::move(other.m_destroy)) {
+        other.m_handle = VK_NULL_HANDLE;
+    }
+    DeviceHandle& operator=(const DeviceHandle& other) = delete;
+    DeviceHandle& operator=(DeviceHandle&& other) {
+        destroy();
+        m_destroy      = std::move(other.m_destroy);
+        m_handle       = std::move(other.m_handle);
+        other.m_handle = VK_NULL_HANDLE;
+        return *this;
+    }
+    operator VkDevice() const { return m_handle; }
+    explicit        operator bool() const { return m_handle != VK_NULL_HANDLE; }
+    const VkDevice* ptr() const { return &m_handle; }
+
+private:
+    void destroy() {
+        if (m_handle != VK_NULL_HANDLE)
+            m_destroy(m_handle, nullptr);
+    }
+    VkDevice            m_handle = VK_NULL_HANDLE;
+    PFN_vkDestroyDevice m_destroy;
+};
 
 // Convenience class to combine the device handle and its function pointers
 class Device : public DeviceHandle, public DeviceCommands {
 public:
-    Device(const VkDeviceCreateInfo& createInfo, const InstanceCommands& vk,
-           VkPhysicalDevice physicalDevice)
-        : Device(DeviceHandle(createInfo, physicalDevice, vk), vk.vkGetDeviceProcAddr) {}
+    Device(const InstanceCommands& vk, VkPhysicalDevice physicalDevice,
+           const VkDeviceCreateInfo& createInfo)
+        : Device(DeviceHandle(vk, physicalDevice, createInfo), vk.vkGetDeviceProcAddr) {}
     Device(DeviceHandle&& handle, PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr)
         : DeviceHandle(std::move(handle)),
           DeviceCommands(*this, vkGetDeviceProcAddr) {}
 };
 
 template <>
-struct CreateHandleVector<VkCommandBuffer, PFN_vkAllocateCommandBuffers,
-                          VkCommandBufferAllocateInfo> {
-    template <class FunctionsAndParent>
-        requires std::constructible_from<VkDevice, FunctionsAndParent>
-    std::vector<VkCommandBuffer> operator()(const VkCommandBufferAllocateInfo& createInfo,
-                                            const FunctionsAndParent&          vk) {
-        return (*this)(createInfo, vk, vk);
+struct CreateHandleVector<VkCommandBuffer, PFN_vkAllocateCommandBuffers> {
+    using CreateInfo = VkCommandBufferAllocateInfo;
+
+    template <class DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
+    std::vector<VkCommandBuffer> operator()(const DeviceAndCommands&           vk,
+                                            const VkCommandBufferAllocateInfo& createInfo) {
+        return (*this)(vk, vk, createInfo);
     }
-    template <class Functions>
-    std::vector<VkCommandBuffer> operator()(const VkCommandBufferAllocateInfo& createInfo,
-                                            VkDevice device, const Functions& vk) {
+    template <class DeviceCommands>
+    std::vector<VkCommandBuffer> operator()(const DeviceCommands& vk, VkDevice device,
+                                            const VkCommandBufferAllocateInfo& createInfo) {
         std::vector<VkCommandBuffer> handles(createInfo.commandBufferCount);
         check(vk.vkAllocateCommandBuffers(device, &createInfo, handles.data()));
         return handles;
@@ -109,8 +143,8 @@ struct CreateHandleVector<VkCommandBuffer, PFN_vkAllocateCommandBuffers,
 
 template <>
 struct DestroyVectorFunc<VkCommandBuffer> {
-    DestroyVectorFunc(const VkCommandBufferAllocateInfo& createInfo, VkDevice device,
-                      const DeviceCommands& vk)
+    DestroyVectorFunc(const DeviceCommands& vk, VkDevice device,
+                      const VkCommandBufferAllocateInfo& createInfo)
         : destroy(vk.vkFreeCommandBuffers)
         , device(device)
         , commandPool(createInfo.commandPool) {}
@@ -124,30 +158,28 @@ struct DestroyVectorFunc<VkCommandBuffer> {
 
 // An array of VkCommandBuffer. Exposes an array directly because that's what
 // the API provides.
-using CommandBuffers =
-    HandleVector<VkCommandBuffer, PFN_vkAllocateCommandBuffers, VkCommandBufferAllocateInfo>;
+using CommandBuffers = HandleVector<VkCommandBuffer, PFN_vkAllocateCommandBuffers>;
 
 // Utility to expose CommandBuffers as a single VkCommandBuffer
 // TODO: special case to avoid the std::vector heap allocation
 class CommandBuffer {
 public:
-    template <class FunctionsAndParent>
-        requires std::constructible_from<VkDevice, FunctionsAndParent>
-    CommandBuffer(const void* pNext, VkCommandPool commandPool, VkCommandBufferLevel level,
-                  const FunctionsAndParent& vk)
-        : CommandBuffer(pNext, commandPool, level, vk, vk) {}
-    template <class Functions>
-    CommandBuffer(const void* pNext, VkCommandPool commandPool, VkCommandBufferLevel level,
-                  VkDevice device, const Functions& vk)
-        : m_commandBuffers(
-              VkCommandBufferAllocateInfo{
-                  .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                  .pNext              = pNext,
-                  .commandPool        = commandPool,
-                  .level              = level,
-                  .commandBufferCount = 1,
-              },
-              device, vk) {}
+    template <class DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
+    CommandBuffer(const DeviceAndCommands& vk, const void* pNext, VkCommandPool commandPool,
+                  VkCommandBufferLevel level)
+        : CommandBuffer(vk, vk, pNext, commandPool, level) {}
+    template <class Commands>
+    CommandBuffer(const Commands& vk, VkDevice device, const void* pNext, VkCommandPool commandPool,
+                  VkCommandBufferLevel level)
+        : m_commandBuffers(vk, device,
+                           VkCommandBufferAllocateInfo{
+                               .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                               .pNext              = pNext,
+                               .commandPool        = commandPool,
+                               .level              = level,
+                               .commandBufferCount = 1,
+                           }) {}
     operator VkCommandBuffer() const { return m_commandBuffers[0]; }
     const VkCommandBuffer* ptr() const { return &m_commandBuffers[0]; }
 
@@ -157,20 +189,21 @@ private:
 
 // An array of VkShaderEXT. Exposes an array directly because that's what the
 // API provides.
-using ShadersEXT =
-    HandleVector<VkShaderEXT, PFN_vkCreateShadersEXT, std::span<VkShaderCreateInfoEXT>>;
+using ShadersEXT = HandleVector<VkShaderEXT, PFN_vkCreateShadersEXT>;
 
 template <>
-struct CreateHandleVector<VkShaderEXT, PFN_vkCreateShadersEXT, std::span<VkShaderCreateInfoEXT>> {
-    template <class FunctionsAndParent>
-        requires std::constructible_from<VkDevice, FunctionsAndParent>
-    std::vector<VkShaderEXT> operator()(const std::span<VkShaderCreateInfoEXT>& createInfo,
-                                        const FunctionsAndParent&               vk) {
-        return (*this)(createInfo, vk, vk);
+struct CreateHandleVector<VkShaderEXT, PFN_vkCreateShadersEXT> {
+    using CreateInfo = std::span<const VkShaderCreateInfoEXT>;
+
+    template <class DeviceAndCommands>
+    // requires std::constructible_from<VkDevice, DeviceAndCommands>
+    std::vector<VkShaderEXT> operator()(const DeviceAndCommands&               vk,
+                                        std::span<const VkShaderCreateInfoEXT> createInfo) {
+        return (*this)(vk, vk, createInfo);
     }
-    template <class Functions>
-    std::vector<VkShaderEXT> operator()(const std::span<VkShaderCreateInfoEXT>& createInfo,
-                                        VkDevice device, const Functions& vk) {
+    template <class DeviceCommands>
+    std::vector<VkShaderEXT> operator()(const DeviceCommands& vk, VkDevice device,
+                                        std::span<const VkShaderCreateInfoEXT> createInfo) {
         std::vector<VkShaderEXT> handles(createInfo.size());
         check(vk.vkCreateShadersEXT(device, uint32_t(createInfo.size()), createInfo.data(), nullptr,
                                     handles.data()));
@@ -180,13 +213,13 @@ struct CreateHandleVector<VkShaderEXT, PFN_vkCreateShadersEXT, std::span<VkShade
 
 template <>
 struct DestroyVectorFunc<VkShaderEXT> {
-    template <class FunctionsAndParent>
-        requires std::constructible_from<VkDevice, FunctionsAndParent>
-    DestroyVectorFunc(const std::span<VkShaderCreateInfoEXT>& createInfo,
-                      const FunctionsAndParent&               vk)
-        : DestroyVectorFunc(createInfo, vk, vk) {}
-    DestroyVectorFunc(const std::span<VkShaderCreateInfoEXT>&, VkDevice device,
-                      const DeviceCommands& vk)
+    template <class DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
+    DestroyVectorFunc(const DeviceAndCommands&               vk,
+                      std::span<const VkShaderCreateInfoEXT> createInfo)
+        : DestroyVectorFunc(vk, vk, createInfo) {}
+    DestroyVectorFunc(const DeviceCommands& vk, VkDevice device,
+                      const std::span<const VkShaderCreateInfoEXT>&)
         : destroy(vk.vkDestroyShaderEXT)
         , device(device) {}
     void operator()(const std::vector<VkShaderEXT>& handles) const {
@@ -199,23 +232,23 @@ struct DestroyVectorFunc<VkShaderEXT> {
 
 // An array of RayTracingPipelinesKHR. Exposes an array directly because that's what the
 // API provides.
-using RayTracingPipelinesKHR = HandleVector<VkPipeline, PFN_vkCreateRayTracingPipelinesKHR,
-                                            std::span<const VkRayTracingPipelineCreateInfoKHR>>;
+using RayTracingPipelinesKHR = HandleVector<VkPipeline, PFN_vkCreateRayTracingPipelinesKHR>;
 
 template <>
-struct CreateHandleVector<VkPipeline, PFN_vkCreateRayTracingPipelinesKHR,
-                          std::span<const VkRayTracingPipelineCreateInfoKHR>> {
-    template <class FunctionsAndParent>
-        requires std::constructible_from<VkDevice, FunctionsAndParent>
+struct CreateHandleVector<VkPipeline, PFN_vkCreateRayTracingPipelinesKHR> {
+    using CreateInfo = std::span<const VkRayTracingPipelineCreateInfoKHR>;
+
+    template <class DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
     std::vector<VkPipeline>
-    operator()(const std::span<const VkRayTracingPipelineCreateInfoKHR>& createInfo,
-               const FunctionsAndParent&                                 vk) {
-        return (*this)(createInfo, vk, vk);
+    operator()(const DeviceAndCommands&                           vk,
+               std::span<const VkRayTracingPipelineCreateInfoKHR> createInfo) {
+        return (*this)(vk, vk, createInfo);
     }
-    template <class Functions>
+    template <class Commands>
     std::vector<VkPipeline>
-    operator()(const std::span<const VkRayTracingPipelineCreateInfoKHR>& createInfo,
-               VkDevice device, const Functions& vk) {
+    operator()(const Commands& vk, VkDevice device,
+               std::span<const VkRayTracingPipelineCreateInfoKHR> createInfo) {
         std::vector<VkPipeline> handles(createInfo.size());
         check(vk.vkCreateRayTracingPipelinesKHR(device, VK_NULL_HANDLE, VK_NULL_HANDLE,
                                                 uint32_t(createInfo.size()), createInfo.data(),
@@ -226,15 +259,15 @@ struct CreateHandleVector<VkPipeline, PFN_vkCreateRayTracingPipelinesKHR,
 
 template <>
 struct DestroyVectorFunc<VkPipeline> {
-    template <class FunctionsAndParent>
-        requires std::constructible_from<VkDevice, FunctionsAndParent>
-    DestroyVectorFunc(const std::span<const VkRayTracingPipelineCreateInfoKHR>& createInfo,
-                      const FunctionsAndParent&                                 vk)
-        : DestroyVectorFunc(createInfo, vk, vk) {}
+    template <class DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
+    DestroyVectorFunc(const DeviceAndCommands&                           vk,
+                      std::span<const VkRayTracingPipelineCreateInfoKHR> createInfo)
+        : DestroyVectorFunc(vk, vk, createInfo) {}
 
     template <class DeviceCommands>
-    DestroyVectorFunc(const std::span<const VkRayTracingPipelineCreateInfoKHR>&, VkDevice device,
-                      const DeviceCommands& vk)
+    DestroyVectorFunc(const DeviceCommands& vk, VkDevice device,
+                      std::span<const VkRayTracingPipelineCreateInfoKHR>)
         : destroy(vk.vkDestroyPipeline)
         , device(device) {}
     void operator()(const std::vector<VkPipeline>& handles) const {
@@ -249,15 +282,15 @@ struct DestroyVectorFunc<VkPipeline> {
 // TODO: special case to avoid the std::vector heap allocation
 class RayTracingPipelineKHR {
 public:
-    template <class FunctionsAndParent>
-        requires std::constructible_from<VkDevice, FunctionsAndParent>
-    RayTracingPipelineKHR(const VkRayTracingPipelineCreateInfoKHR& createInfo,
-                          const FunctionsAndParent&                vk)
-        : RayTracingPipelineKHR(createInfo, vk, vk) {}
-    template <class Functions>
-    RayTracingPipelineKHR(const VkRayTracingPipelineCreateInfoKHR& createInfo, VkDevice device,
-                          const Functions& vk)
-        : m_pipelines(std::span{&createInfo, 1}, device, vk) {}
+    template <class DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
+    RayTracingPipelineKHR(const DeviceAndCommands&                 vk,
+                          const VkRayTracingPipelineCreateInfoKHR& createInfo)
+        : RayTracingPipelineKHR(vk, vk, createInfo) {}
+    template <class DeviceCommands>
+    RayTracingPipelineKHR(const DeviceCommands& vk, VkDevice device,
+                          const VkRayTracingPipelineCreateInfoKHR& createInfo)
+        : m_pipelines(vk, device, std::span{&createInfo, 1}) {}
     operator VkPipeline() const { return m_pipelines[0]; }
     const VkPipeline* ptr() const { return &m_pipelines[0]; }
 
@@ -267,21 +300,21 @@ private:
 
 // An array of RayTracingPipelinesKHR. Exposes an array directly because that's what the
 // API provides.
-using DescriptorSets =
-    HandleVector<VkDescriptorSet, PFN_vkAllocateDescriptorSets, VkDescriptorSetAllocateInfo>;
+using DescriptorSets = HandleVector<VkDescriptorSet, PFN_vkAllocateDescriptorSets>;
 
 template <>
-struct CreateHandleVector<VkDescriptorSet, PFN_vkAllocateDescriptorSets,
-                          VkDescriptorSetAllocateInfo> {
-    template <class FunctionsAndParent>
-        requires std::constructible_from<VkDevice, FunctionsAndParent>
-    std::vector<VkDescriptorSet> operator()(const VkDescriptorSetAllocateInfo& createInfo,
-                                            const FunctionsAndParent&          vk) {
-        return (*this)(createInfo, vk, vk);
+struct CreateHandleVector<VkDescriptorSet, PFN_vkAllocateDescriptorSets> {
+    using CreateInfo = VkDescriptorSetAllocateInfo;
+
+    template <class DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
+    std::vector<VkDescriptorSet> operator()(const DeviceAndCommands&           vk,
+                                            const VkDescriptorSetAllocateInfo& createInfo) {
+        return (*this)(vk, vk, createInfo);
     }
-    template <class Functions>
-    std::vector<VkDescriptorSet> operator()(const VkDescriptorSetAllocateInfo& createInfo,
-                                            VkDevice device, const Functions& vk) {
+    template <class DeviceCommands>
+    std::vector<VkDescriptorSet> operator()(const DeviceCommands& vk, VkDevice device,
+                                            const VkDescriptorSetAllocateInfo& createInfo) {
         std::vector<VkDescriptorSet> handles(createInfo.descriptorSetCount);
         check(vk.vkAllocateDescriptorSets(device, &createInfo, handles.data()));
         return handles;
@@ -290,14 +323,14 @@ struct CreateHandleVector<VkDescriptorSet, PFN_vkAllocateDescriptorSets,
 
 template <>
 struct DestroyVectorFunc<VkDescriptorSet> {
-    template <class FunctionsAndParent>
-        requires std::constructible_from<VkDevice, FunctionsAndParent>
-    DestroyVectorFunc(const VkDescriptorSetAllocateInfo& allocateInfo, const FunctionsAndParent& vk)
-        : DestroyVectorFunc(allocateInfo, vk, vk) {}
+    template <class DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
+    DestroyVectorFunc(const DeviceAndCommands& vk, const VkDescriptorSetAllocateInfo& allocateInfo)
+        : DestroyVectorFunc(vk, vk, allocateInfo) {}
 
     template <class DeviceCommands>
-    DestroyVectorFunc(const VkDescriptorSetAllocateInfo& allocateInfo, VkDevice device,
-                      const DeviceCommands& vk)
+    DestroyVectorFunc(const DeviceCommands& vk, VkDevice device,
+                      const VkDescriptorSetAllocateInfo& allocateInfo)
         : destroy(vk.vkFreeDescriptorSets)
         , device(device)
         , descriptorPool(allocateInfo.descriptorPool) {}
@@ -311,21 +344,21 @@ struct DestroyVectorFunc<VkDescriptorSet> {
 
 class DescriptorSet {
 public:
-    template <class FunctionsAndParent>
-        requires std::constructible_from<VkDevice, FunctionsAndParent>
-    DescriptorSet(const void* pNext, VkDescriptorPool descriptorPool,
-                  VkDescriptorSetLayout setLayout, const FunctionsAndParent& vk)
-        : DescriptorSet(pNext, descriptorPool, setLayout, vk, vk) {}
-    template <class Functions>
-    DescriptorSet(const void* pNext, VkDescriptorPool descriptorPool,
-                  VkDescriptorSetLayout setLayout, VkDevice device, const Functions& vk)
+    template <class DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
+    DescriptorSet(const DeviceAndCommands& vk, const void* pNext, VkDescriptorPool descriptorPool,
+                  VkDescriptorSetLayout setLayout)
+        : DescriptorSet(vk, vk, pNext, descriptorPool, setLayout) {}
+    template <class DeviceCommands>
+    DescriptorSet(const DeviceCommands& vk, VkDevice device, const void* pNext,
+                  VkDescriptorPool descriptorPool, VkDescriptorSetLayout setLayout)
         : m_descriptorSets(
+              vk, device,
               VkDescriptorSetAllocateInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                                           .pNext = pNext,
                                           .descriptorPool     = descriptorPool,
                                           .descriptorSetCount = 1,
-                                          .pSetLayouts        = &setLayout},
-              device, vk) {}
+                                          .pSetLayouts        = &setLayout}) {}
     operator VkDescriptorSet() const { return m_descriptorSets[0]; }
     const VkDescriptorSet* ptr() const { return &m_descriptorSets[0]; }
 

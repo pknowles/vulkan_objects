@@ -30,31 +30,30 @@ template <class T, class Allocator = vma::Allocator>
 class Array {
 public:
     using Allocation = typename Allocator::AllocationType;
-    template <class AllocationCreateInfo, class Device>
-    Array(Allocator& allocator, VkDeviceSize elementCount, VkBufferUsageFlags usage,
-          const AllocationCreateInfo& allocationCreateInfo, const Device& device)
-        : Array(allocator, elementCount, nullptr, 0, usage, VK_SHARING_MODE_EXCLUSIVE, {}, device,
-                allocationCreateInfo, device) {}
+    template <class DeviceAndCommands, class AllocationCreateInfo>
+    Array(const DeviceAndCommands& device, VkDeviceSize elementCount, VkBufferUsageFlags usage,
+          const AllocationCreateInfo& allocationCreateInfo, Allocator& allocator)
+        : Array(device, device, elementCount, nullptr, 0, usage, VK_SHARING_MODE_EXCLUSIVE, {},
+                allocationCreateInfo, allocator) {}
 
-    template <class AllocationCreateInfo, class DeviceCommands>
-    Array(Allocator& allocator, VkDeviceSize elementCount, const void* pNext,
+    template <class DeviceCommands, class AllocationCreateInfo>
+    Array(const DeviceCommands& vk, VkDevice device, VkDeviceSize elementCount, const void* pNext,
           VkBufferCreateFlags flags, VkBufferUsageFlags usage, VkSharingMode sharingMode,
-          std::span<const uint32_t> queueFamilyIndices, VkDevice device,
-          const AllocationCreateInfo& allocationCreateInfo, const DeviceCommands& deviceCommands)
+          std::span<const uint32_t>   queueFamilyIndices,
+          const AllocationCreateInfo& allocationCreateInfo, Allocator& allocator)
         : m_size(elementCount)
-        , m_buffer(
-              VkBufferCreateInfo{
-                  .sType                 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-                  .pNext                 = pNext,
-                  .flags                 = flags,
-                  .size                  = sizeof(T) * elementCount,
-                  .usage                 = usage,
-                  .sharingMode           = sharingMode,
-                  .queueFamilyIndexCount = uint32_t(queueFamilyIndices.size()),
-                  .pQueueFamilyIndices =
-                      queueFamilyIndices.empty() ? nullptr : queueFamilyIndices.data(),
-              },
-              device, deviceCommands)
+        , m_buffer(vk, device,
+                   VkBufferCreateInfo{
+                       .sType                 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                       .pNext                 = pNext,
+                       .flags                 = flags,
+                       .size                  = sizeof(T) * elementCount,
+                       .usage                 = usage,
+                       .sharingMode           = sharingMode,
+                       .queueFamilyIndexCount = uint32_t(queueFamilyIndices.size()),
+                       .pQueueFamilyIndices =
+                           queueFamilyIndices.empty() ? nullptr : queueFamilyIndices.data(),
+                   })
         , m_allocation(allocator.create(m_buffer, allocationCreateInfo)) {}
 
     operator VkBuffer() const { return m_buffer; }

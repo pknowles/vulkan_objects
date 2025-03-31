@@ -38,12 +38,12 @@ vko::Array<T> uploadImmediate(vko::vma::Allocator& allocator, VkCommandPool pool
                               const DeviceAndCommands& device, std::span<std::add_const_t<T>> data,
                               VkBufferUsageFlags usage) {
     vko::Array<T> staging(
-        allocator, data.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, device);
-    vko::Array<T> result(allocator, data.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
-                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, device);
+        device, data.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, allocator);
+    vko::Array<T> result(device, data.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
+                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator);
     {
-        vko::simple::ImmediateCommandBuffer cmd(pool, queue, device);
+        vko::simple::ImmediateCommandBuffer cmd(device, pool, queue);
         std::ranges::copy(data, staging.map().begin());
         VkBufferCopy bufferCopy{
             .srcOffset = 0,
@@ -138,8 +138,7 @@ struct TestDeviceCreateInfo {
 TEST(Integration, InitHappyPath) {
     vko::VulkanLibrary           library;
     vko::GlobalCommands          globalCommands(library.loader());
-    vko::Instance instance(vko::InstanceHandle(TestInstanceCreateInfo(), globalCommands),
-                           library.loader());
+    vko::Instance                instance(globalCommands, TestInstanceCreateInfo());
 
     // Pick a VkPhysicalDevice
     std::vector<VkPhysicalDevice> physicalDevices =
@@ -174,7 +173,7 @@ TEST(Integration, InitHappyPath) {
     uint32_t queueFamilyIndex = uint32_t(std::distance(queueProperties.begin(), queuePropertiesIt));
 
     // Create a VkDevice
-    vko::Device device(TestDeviceCreateInfo(queueFamilyIndex), instance, physicalDevice);
+    vko::Device device(instance, physicalDevice, TestDeviceCreateInfo(queueFamilyIndex));
 
     VkQueue queue = vko::get(device.vkGetDeviceQueue, device, queueFamilyIndex, 0);
 
@@ -188,7 +187,7 @@ TEST(Integration, InitHappyPath) {
         .flags = 0,
         .queueFamilyIndex = queueFamilyIndex,
     };
-    vko::CommandPool commandPool(commandPoolCreateInfo, device);
+    vko::CommandPool commandPool(device, commandPoolCreateInfo);
 }
 
 struct WindowInstanceCreateInfo {
@@ -242,10 +241,10 @@ TEST(Integration, WindowSystemIntegration) {
               instanceLayers.end());
     vko::glfw::PlatformSupport platformSupport(instanceExtensions);
     vko::glfw::ScopedInit glfwInit;
-    vko::Instance instance(vko::InstanceHandle(WindowInstanceCreateInfo(platformSupport), globalCommands),
-                           library.loader());
+    vko::Instance              instance(globalCommands, WindowInstanceCreateInfo(platformSupport));
 
     vko::DebugUtilsMessengerEXT debugMessenger(
+        instance,
         VkDebugUtilsMessengerCreateInfoEXT{
             .sType           = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
             .pNext           = nullptr,
@@ -269,8 +268,7 @@ TEST(Integration, WindowSystemIntegration) {
                 }
                 return VK_FALSE;
             },
-            .pUserData = nullptr},
-        instance);
+            .pUserData = nullptr});
 
     std::vector<VkPhysicalDevice> physicalDevices =
         vko::toVector(instance.vkEnumeratePhysicalDevices, instance);
@@ -296,9 +294,9 @@ TEST(Integration, WindowSystemIntegration) {
     uint32_t queueFamilyIndex = uint32_t(std::distance(queueProperties.begin(), queuePropertiesIt));
 
     // Create a VkDevice
-    vko::Device device(TestDeviceCreateInfo(queueFamilyIndex), instance, physicalDevice);
+    vko::Device device(instance, physicalDevice, TestDeviceCreateInfo(queueFamilyIndex));
 
-    // vko::simple::TimelineQueue queue(queueFamilyIndex, 0, device);
+    // vko::simple::TimelineQueue queue(device, queueFamilyIndex, 0);
     VkQueue queue = vko::get(device.vkGetDeviceQueue, device, queueFamilyIndex, 0);
 
     // Test the first device call
@@ -311,10 +309,10 @@ TEST(Integration, WindowSystemIntegration) {
         .flags = 0,
         .queueFamilyIndex = queueFamilyIndex,
     };
-    vko::CommandPool commandPool(commandPoolCreateInfo, device);
+    vko::CommandPool commandPool(device, commandPoolCreateInfo);
 
     vko::glfw::Window     window = vko::glfw::createWindow(800, 600, "Vulkan Window");
-    vko::glfw::SurfaceKHR surface(platformSupport, window.get(), instance);
+    vko::glfw::SurfaceKHR surface(instance, platformSupport, window.get());
     auto                  surfaceFormats =
         vko::toVector(instance.vkGetPhysicalDeviceSurfaceFormatsKHR, physicalDevice, surface);
     auto surfaceFormatIt =
@@ -339,8 +337,8 @@ TEST(Integration, WindowSystemIntegration) {
     vko::vma::Allocator  allocator(globalCommands, instance, physicalDevice, device,
                                    VK_API_VERSION_1_4, 0);
     vko::Array<uint32_t> imageData(
-        allocator, 1024 * 1024, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, device);
+        device, 1024 * 1024, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, allocator);
     uint32_t pixelIndex = 0;
     for (uint32_t& pixel : imageData.map()) {
         uint32_t x = pixelIndex % 1024;
@@ -348,7 +346,7 @@ TEST(Integration, WindowSystemIntegration) {
         pixel      = (((x ^ y) & 8) != 0) ? 0xFF000000U : 0xFFFFFFFFU;
         ++pixelIndex;
     }
-    vko::BoundImage image(allocator,
+    vko::BoundImage image(device,
                           VkImageCreateInfo{.sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                                             .pNext       = nullptr,
                                             .flags       = 0,
@@ -365,9 +363,9 @@ TEST(Integration, WindowSystemIntegration) {
                                             .queueFamilyIndexCount = 0,
                                             .pQueueFamilyIndices   = nullptr,
                                             .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED},
-                          device, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, device);
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator);
     {
-        vko::simple::ImmediateCommandBuffer cmd(commandPool, queue, device);
+        vko::simple::ImmediateCommandBuffer cmd(device, commandPool, queue);
         VkBufferImageCopy                   region{
                               .bufferOffset      = 0,
                               .bufferRowLength   = 0,
@@ -467,35 +465,34 @@ TEST(Integration, WindowSystemIntegration) {
               .pSpecializationInfo    = nullptr,
         },
     };
-    vko::ShadersEXT       rasterTriangleShaders(rasterTriangleShaderInfos, device);
+    vko::ShadersEXT       rasterTriangleShaders(device, device, rasterTriangleShaderInfos);
     VkShaderStageFlagBits rasterTriangleShadersStages[] = {VK_SHADER_STAGE_VERTEX_BIT,
                                                            VK_SHADER_STAGE_FRAGMENT_BIT};
 
     for (;;) {
         int width, height;
         glfwGetWindowSize(window.get(), &width, &height);
-        vko::simple::Swapchain swapchain{surface,
-                                         surfaceFormat,
-                                         VkExtent2D{uint32_t(width), uint32_t(height)},
-                                         queueFamilyIndex,
-                                         surfacePresentMode,
-                                         VK_NULL_HANDLE,
-                                         device};
+        vko::simple::Swapchain swapchain{
+            device,           surface,
+            surfaceFormat,    VkExtent2D{uint32_t(width), uint32_t(height)},
+            queueFamilyIndex, surfacePresentMode,
+            VK_NULL_HANDLE,
+        };
 
-        auto [imageIndex, reuseImageSemaphore] = swapchain.acquire(0ULL, device);
+        auto [imageIndex, reuseImageSemaphore] = swapchain.acquire(device, 0ULL);
         VkSemaphore renderingFinished          = swapchain.renderFinishedSemaphores[imageIndex];
 
         {
-            vko::simple::ImmediateCommandBuffer cmd(commandPool, queue, device);
+            vko::simple::ImmediateCommandBuffer cmd(device, commandPool, queue);
             cmd.addWait(reuseImageSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
             cmd.addSignal(renderingFinished);
             vko::simple::clearSwapchainImage(
-                cmd, swapchain.images[imageIndex],
+                device, cmd, swapchain.images[imageIndex],
                 swapchain.presented[imageIndex] ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
                                                 : VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VkClearColorValue{.float32 = {1.0f, 1.0f, 0.0f, 1.0f}}, device);
+                VkClearColorValue{.float32 = {1.0f, 1.0f, 0.0f, 1.0f}});
 
             VkImageCopy region{
                 .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
@@ -599,7 +596,7 @@ TEST(Integration, WindowSystemIntegration) {
             }
         }
 
-        swapchain.present(queue, imageIndex, renderingFinished, device);
+        swapchain.present(device, queue, imageIndex, renderingFinished);
         device.vkQueueWaitIdle(queue);
         break;
     }
@@ -702,10 +699,10 @@ TEST(Integration, HelloTriangleRayTracing) {
               instanceLayers.end());
     vko::glfw::PlatformSupport platformSupport(instanceExtensions);
     vko::glfw::ScopedInit glfwInit;
-    vko::Instance instance(vko::InstanceHandle(WindowInstanceCreateInfo(platformSupport), globalCommands),
-                           library.loader());
+    vko::Instance              instance(globalCommands, WindowInstanceCreateInfo(platformSupport));
 
     vko::DebugUtilsMessengerEXT debugMessenger(
+        instance,
         VkDebugUtilsMessengerCreateInfoEXT{
             .sType           = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
             .pNext           = nullptr,
@@ -729,8 +726,7 @@ TEST(Integration, HelloTriangleRayTracing) {
                 }
                 return VK_FALSE;
             },
-            .pUserData = nullptr},
-        instance);
+            .pUserData = nullptr});
 
     std::vector<VkPhysicalDevice> physicalDevices =
         vko::toVector(instance.vkEnumeratePhysicalDevices, instance);
@@ -756,9 +752,9 @@ TEST(Integration, HelloTriangleRayTracing) {
     uint32_t queueFamilyIndex = uint32_t(std::distance(queueProperties.begin(), queuePropertiesIt));
 
     // Create a VkDevice
-    vko::Device device(RayTracingDeviceCreateInfo(queueFamilyIndex), instance, physicalDevice);
+    vko::Device device(instance, physicalDevice, RayTracingDeviceCreateInfo(queueFamilyIndex));
 
-    // vko::simple::TimelineQueue queue(queueFamilyIndex, 0, device);
+    // vko::simple::TimelineQueue queue(device, queueFamilyIndex, 0);
     VkQueue queue = vko::get(device.vkGetDeviceQueue, device, queueFamilyIndex, 0);
 
     // Test the first device call
@@ -771,10 +767,10 @@ TEST(Integration, HelloTriangleRayTracing) {
         .flags = 0,
         .queueFamilyIndex = queueFamilyIndex,
     };
-    vko::CommandPool commandPool(commandPoolCreateInfo, device);
+    vko::CommandPool commandPool(device, commandPoolCreateInfo);
 
     vko::glfw::Window     window = vko::glfw::createWindow(800, 600, "Vulkan Window");
-    vko::glfw::SurfaceKHR surface(platformSupport, window.get(), instance);
+    vko::glfw::SurfaceKHR surface(instance, platformSupport, window.get());
     auto                  surfaceFormats =
         vko::toVector(instance.vkGetPhysicalDeviceSurfaceFormatsKHR, physicalDevice, surface);
     auto surfaceFormatIt =
@@ -799,46 +795,44 @@ TEST(Integration, HelloTriangleRayTracing) {
     vko::vma::Allocator  allocator(globalCommands, instance, physicalDevice, device,
                                    VK_API_VERSION_1_4,
                                    VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT);
-    vko::BoundImage image(allocator,
-                          VkImageCreateInfo{.sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                                            .pNext       = nullptr,
-                                            .flags       = 0,
-                                            .imageType   = VK_IMAGE_TYPE_2D,
-                                            .format      = VK_FORMAT_B8G8R8A8_UNORM,
-                                            .extent      = {1024, 1024, 1},
-                                            .mipLevels   = 1,
-                                            .arrayLayers = 1,
-                                            .samples     = VK_SAMPLE_COUNT_1_BIT,
-                                            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-                                            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+    vko::BoundImage      image(device,
+                               VkImageCreateInfo{.sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                                 .pNext       = nullptr,
+                                                 .flags       = 0,
+                                                 .imageType   = VK_IMAGE_TYPE_2D,
+                                                 .format      = VK_FORMAT_B8G8R8A8_UNORM,
+                                                 .extent      = {1024, 1024, 1},
+                                                 .mipLevels   = 1,
+                                                 .arrayLayers = 1,
+                                                 .samples     = VK_SAMPLE_COUNT_1_BIT,
+                                                 .tiling      = VK_IMAGE_TILING_OPTIMAL,
+                                                 .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                                      VK_IMAGE_USAGE_STORAGE_BIT,
-                                            .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
-                                            .queueFamilyIndexCount = 0,
-                                            .pQueueFamilyIndices   = nullptr,
-                                            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED},
-                          device, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, device);
-    vko::ImageView       imageView(
-        VkImageViewCreateInfo{
-                  .sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                  .pNext      = nullptr,
-                  .flags      = 0,
-                  .image      = image,
-                  .viewType   = VK_IMAGE_VIEW_TYPE_2D,
-                  .format     = VK_FORMAT_B8G8R8A8_UNORM,
-                  .components = VkComponentMapping{},
-                  .subresourceRange =
-                VkImageSubresourceRange{
-                          .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                          .baseMipLevel   = 0,
-                          .levelCount     = 1,
-                          .baseArrayLayer = 0,
-                          .layerCount     = 1,
-                },
-        },
-        device);
+                                                 .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
+                                                 .queueFamilyIndexCount = 0,
+                                                 .pQueueFamilyIndices   = nullptr,
+                                                 .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED},
+                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator);
+    vko::ImageView       imageView(device, VkImageViewCreateInfo{
+                                               .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                               .pNext    = nullptr,
+                                               .flags    = 0,
+                                               .image    = image,
+                                               .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                               .format   = VK_FORMAT_B8G8R8A8_UNORM,
+                                               .components = VkComponentMapping{},
+                                               .subresourceRange =
+                                             VkImageSubresourceRange{
+                                                       .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                                                       .baseMipLevel   = 0,
+                                                       .levelCount     = 1,
+                                                       .baseArrayLayer = 0,
+                                                       .layerCount     = 1,
+                                             },
+                                     });
     {
-        vko::simple::ImmediateCommandBuffer cmd(commandPool, queue, device);
+        vko::simple::ImmediateCommandBuffer cmd(device, commandPool, queue);
         VkImageMemoryBarrier                imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                                           nullptr,
                                           VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -876,8 +870,8 @@ TEST(Integration, HelloTriangleRayTracing) {
     vko::as::Input blasInput = vko::as::createBlasInput(
         simpleGeometryInputs, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
                                   VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_DATA_ACCESS_KHR);
-    vko::as::Sizes       blasSizes(blasInput, device);
-    vko::as::AS          blas(allocator, blasInput.type, *blasSizes, 0, device);
+    vko::as::Sizes       blasSizes(device, blasInput);
+    vko::as::AS          blas(device, blasInput.type, *blasSizes, 0, allocator);
     VkTransformMatrixKHR identity{.matrix = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
     vko::Array<VkAccelerationStructureInstanceKHR> instances =
         uploadImmediate<VkAccelerationStructureInstanceKHR>(
@@ -896,15 +890,15 @@ TEST(Integration, HelloTriangleRayTracing) {
         vko::as::createTlasInput(uint32_t(instances.size()), instances.address(device),
                                  VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
                                      VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_DATA_ACCESS_KHR);
-    vko::as::Sizes        tlasSizes(tlasInput, device);
-    vko::as::AS           tlas(allocator, tlasInput.type, *tlasSizes, 0, device);
+    vko::as::Sizes        tlasSizes(device, tlasInput);
+    vko::as::AS           tlas(device, tlasInput.type, *tlasSizes, 0, allocator);
     vko::Array<std::byte> scratch(
-        allocator, std::max(blasSizes->buildScratchSize, tlasSizes->buildScratchSize),
+        device, std::max(blasSizes->buildScratchSize, tlasSizes->buildScratchSize),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, device);
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator);
     {
-        vko::simple::ImmediateCommandBuffer cmd(commandPool, queue, device);
-        vko::as::cmdBuild(cmd, blas, blasInput, false, scratch, device);
+        vko::simple::ImmediateCommandBuffer cmd(device, commandPool, queue);
+        vko::as::cmdBuild(device, cmd, blas, blasInput, false, scratch);
         {
             VkMemoryBarrier barrier{.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
                                     .pNext         = nullptr,
@@ -916,7 +910,7 @@ TEST(Integration, HelloTriangleRayTracing) {
                                         VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0,
                                         1, &barrier, 0, nullptr, 0, nullptr);
         }
-        vko::as::cmdBuild(cmd, tlas, tlasInput, false, scratch, device);
+        vko::as::cmdBuild(device, cmd, tlas, tlasInput, false, scratch);
         {
             VkMemoryBarrier barrier{.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
                                     .pNext         = nullptr,
@@ -958,12 +952,12 @@ TEST(Integration, HelloTriangleRayTracing) {
     vko::slang::Code        missCode(raytraceProgram, 3, 0);
     auto                    makeModule = [&](vko::slang::Code code) {
         return vko::ShaderModule(
+            device,
             VkShaderModuleCreateInfo{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                                         .pNext    = nullptr,
                                                         .flags    = 0,
                                                         .codeSize = uint32_t(code.size()),
-                                                        .pCode = reinterpret_cast<const uint32_t*>(code.data())},
-            device);
+                                                        .pCode = reinterpret_cast<const uint32_t*>(code.data())});
     };
     vko::ShaderModule rayGen     = makeModule(rayGenCode);
     vko::ShaderModule anyHit     = makeModule(anyHitCode);
@@ -989,27 +983,26 @@ TEST(Integration, HelloTriangleRayTracing) {
     vko::SingleDescriptorSet                            descriptorSet(device, bindings, 0,
                                                                       VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT);
     vko::simple::RayTracingPipeline<RtPushConstants, 4> rtPipeline(
-        std::to_array({static_cast<VkDescriptorSetLayout>(descriptorSet.layout)}), rayGen, anyHit,
-        closestHit, miss, device);
+        device, std::to_array({static_cast<VkDescriptorSetLayout>(descriptorSet.layout)}), rayGen,
+        anyHit, closestHit, miss);
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProperties =
         vko::simple::rayTracingPipelineProperties(instance, physicalDevice);
-    vko::simple::HitGroupHandles     hitGroupHandles(rtPipelineProperties, rtPipeline, 3, device);
+    vko::simple::HitGroupHandles     hitGroupHandles(device, rtPipelineProperties, rtPipeline, 3);
     vko::simple::ShaderBindingTables sbt(
-        allocator, device, commandPool, queue,
+        device, commandPool, queue,
         vko::simple::ShaderBindingTablesStaging(
             allocator, device, rtPipelineProperties, {hitGroupHandles[0]}, {hitGroupHandles[1]},
-            {hitGroupHandles[2]}, std::initializer_list<std::span<const std::byte>>{}));
+            {hitGroupHandles[2]}, std::initializer_list<std::span<const std::byte>>{}),
+        allocator);
 
     for (;;) {
         int width, height;
         glfwGetWindowSize(window.get(), &width, &height);
-        vko::simple::Swapchain swapchain{surface,
-                                         surfaceFormat,
-                                         VkExtent2D{uint32_t(width), uint32_t(height)},
-                                         queueFamilyIndex,
-                                         surfacePresentMode,
-                                         VK_NULL_HANDLE,
-                                         device};
+        vko::simple::Swapchain swapchain{
+            device,           surface,
+            surfaceFormat,    VkExtent2D{uint32_t(width), uint32_t(height)},
+            queueFamilyIndex, surfacePresentMode,
+            VK_NULL_HANDLE};
 
         vko::WriteDescriptorSetBuilder writes;
         writes.push_back<VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR>(
@@ -1024,20 +1017,20 @@ TEST(Integration, HelloTriangleRayTracing) {
         // device.vkCmdPushDescriptorSet(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
         // rtPipeline.layout(), 0U, writes.writes().size(), writes.writes().data());
 
-        auto [imageIndex, reuseImageSemaphore] = swapchain.acquire(0ULL, device);
+        auto [imageIndex, reuseImageSemaphore] = swapchain.acquire(device, 0ULL);
         VkSemaphore renderingFinished          = swapchain.renderFinishedSemaphores[imageIndex];
 
         {
-            vko::simple::ImmediateCommandBuffer cmd(commandPool, queue, device);
+            vko::simple::ImmediateCommandBuffer cmd(device, commandPool, queue);
             cmd.addWait(reuseImageSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
             cmd.addSignal(renderingFinished);
             vko::simple::clearSwapchainImage(
-                cmd, swapchain.images[imageIndex],
+                device, cmd, swapchain.images[imageIndex],
                 swapchain.presented[imageIndex] ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
                                                 : VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VkClearColorValue{.float32 = {1.0f, 1.0f, 0.0f, 1.0f}}, device);
+                VkClearColorValue{.float32 = {1.0f, 1.0f, 0.0f, 1.0f}});
 
             RtPushConstants pushConstant{0};
             device.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rtPipeline);
@@ -1091,7 +1084,7 @@ TEST(Integration, HelloTriangleRayTracing) {
             }
         }
 
-        swapchain.present(queue, imageIndex, renderingFinished, device);
+        swapchain.present(device, queue, imageIndex, renderingFinished);
         device.vkQueueWaitIdle(queue);
         break;
     }

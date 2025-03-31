@@ -32,15 +32,14 @@ inline DescriptorSetLayout makeDescriptorSetLayout(
         .bindingCount  = uint32_t(flags.size()),
         .pBindingFlags = flags.data(),
     };
-    return DescriptorSetLayout(
-        VkDescriptorSetLayoutCreateInfo{
-            .sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .pNext        = &layoutBindingFlagsCreateInfo,
-            .flags        = createFlags,
-            .bindingCount = uint32_t(bindings.size()),
-            .pBindings    = bindings.data(),
-        },
-        device);
+    return DescriptorSetLayout(device,
+                               VkDescriptorSetLayoutCreateInfo{
+                                   .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                   .pNext = &layoutBindingFlagsCreateInfo,
+                                   .flags = createFlags,
+                                   .bindingCount = uint32_t(bindings.size()),
+                                   .pBindings    = bindings.data(),
+                               });
 }
 
 struct DescriptorSetPoolSizes {
@@ -67,16 +66,14 @@ public:
     SingleDescriptorSetPool(const DeviceAndCommands&              device,
                             std::span<const VkDescriptorPoolSize> sizes,
                             VkDescriptorPoolCreateFlags           flags)
-        : m_pool(
-              VkDescriptorPoolCreateInfo{
-                  .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-                  .pNext         = nullptr,
-                  .flags         = flags,
-                  .maxSets       = 1,
-                  .poolSizeCount = uint32_t(sizes.size()),
-                  .pPoolSizes    = sizes.data(),
-              },
-              device) {}
+        : m_pool(device, VkDescriptorPoolCreateInfo{
+                             .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                             .pNext         = nullptr,
+                             .flags         = flags,
+                             .maxSets       = 1,
+                             .poolSizeCount = uint32_t(sizes.size()),
+                             .pPoolSizes    = sizes.data(),
+                         }) {}
     operator VkDescriptorPool() const { return m_pool; }
 
 private:
@@ -99,7 +96,7 @@ struct SingleDescriptorSet {
                         VkDescriptorPoolCreateFlags                   poolCreateFlags)
         : layout(makeDescriptorSetLayout(device, bindings, flags, layoutCreateFlags))
         , pool(device, bindings, poolCreateFlags)
-        , set(nullptr, pool, layout, device) {}
+        , set(device, nullptr, pool, layout) {}
     DescriptorSetLayout     layout;
     SingleDescriptorSetPool pool;
     DescriptorSet           set;

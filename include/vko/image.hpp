@@ -12,15 +12,21 @@ class BoundImage {
 public:
     using Allocation = typename Allocator::AllocationType;
 
-    template <class AllocationCreateInfo, class DeviceCommands>
-    BoundImage(Allocator& allocator, const VkImageCreateInfo& createInfo, VkDevice device,
-               const AllocationCreateInfo& allocationCreateInfo,
-               const DeviceCommands&       deviceCommands)
-        : m_image(createInfo, device, deviceCommands)
+    template <class DeviceAndCommands, class AllocationCreateInfo>
+    BoundImage(const DeviceAndCommands& vk, const VkImageCreateInfo& createInfo,
+               const AllocationCreateInfo& allocationCreateInfo, Allocator& allocator)
+        : BoundImage(vk, vk, createInfo, allocationCreateInfo, allocator) {}
+
+    template <class DeviceCommands, class AllocationCreateInfo>
+    BoundImage(const DeviceCommands& deviceCommands, VkDevice device,
+               const VkImageCreateInfo&    createInfo,
+               const AllocationCreateInfo& allocationCreateInfo, Allocator& allocator)
+        : m_image(deviceCommands, device, createInfo)
         , m_allocation(allocator.create(m_image, allocationCreateInfo)) {}
 
     operator VkImage() const { return m_image; }
     const VkImage* ptr() const { return m_image.ptr(); }
+    VkImage        object() const { return m_image; }
 
 private:
     ImageOnly  m_image;
