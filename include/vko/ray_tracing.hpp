@@ -7,7 +7,7 @@
 #include <span>
 #include <vko/adapters.hpp>
 #include <vko/allocator.hpp>
-#include <vko/array.hpp>
+#include <vko/bound_buffer.hpp>
 #include <vko/command_recording.hpp>
 #include <vko/handles.hpp>
 
@@ -39,10 +39,11 @@ rayTracingPipelineProperties(const InstanceCommands& vk, VkPhysicalDevice physic
 
 class HitGroupHandles {
 public:
-    template <class DeviceAndFunctions>
+    template <device_and_commands DeviceAndCommands>
     HitGroupHandles(
+        const DeviceAndCommands&                               device,
         const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& rayTracingPipelineProperties,
-        const VkPipeline& pipeline, size_t groupCount, const DeviceAndFunctions& device)
+        const VkPipeline& pipeline, size_t groupCount)
         : m_handleSize(rayTracingPipelineProperties.shaderGroupHandleSize) {
         m_handles.resize(m_handleSize * groupCount);
         check(device.vkGetRayTracingShaderGroupHandlesKHR(device, pipeline, 0, groupCount,
@@ -96,20 +97,20 @@ struct StridedOffsetRegion {
 // exactly shaderGroupHandleSize bytes long
 template <class Allocator = vma::Allocator>
 struct ShaderBindingTablesStaging {
-    template <class DeviceAndFunctions, std::ranges::input_range HitGroupHandleRange>
+    template <device_and_commands DeviceAndCommands, std::ranges::input_range HitGroupHandleRange>
     ShaderBindingTablesStaging(
-        Allocator& allocator, DeviceAndFunctions& device,
+        Allocator& allocator, DeviceAndCommands& device,
         const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& rayTracingPipelineProperties,
         HitGroupHandleRange&& raygenTable, HitGroupHandleRange&& missTable,
         HitGroupHandleRange&& hitTable, HitGroupHandleRange&& callableTable)
-        : tables(allocator,
+        : tables(device,
                  (std::ranges::size(raygenTable) + std::ranges::size(missTable) +
                   std::ranges::size(hitTable) + std::ranges::size(callableTable)) *
                          rayTracingPipelineProperties.shaderGroupHandleSize +
                      3 * rayTracingPipelineProperties.shaderGroupBaseAlignment,
                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                 device) {
+                 allocator) {
         assert(rayTracingPipelineProperties.shaderGroupBaseAlignment >=
                rayTracingPipelineProperties.shaderGroupHandleAlignment);
         auto tablesData = tables.map();
@@ -148,7 +149,7 @@ struct ShaderBindingTablesStaging {
         assert(raygenTableOffset->stride == raygenTableOffset->size);
     }
 
-    Array<std::byte>                   tables;
+    BoundBuffer<std::byte>             tables;
     std::optional<StridedOffsetRegion> raygenTableOffset;
     std::optional<StridedOffsetRegion> missTableOffset;
     std::optional<StridedOffsetRegion> hitTableOffset;
@@ -157,13 +158,14 @@ struct ShaderBindingTablesStaging {
 
 template <class Allocator = vma::Allocator>
 struct ShaderBindingTables {
-    template <class DeviceAndFunctions, class StagingAllocator = vma::Allocator>
-    ShaderBindingTables(Allocator& allocator, const DeviceAndFunctions& device, VkCommandPool pool,
-                        VkQueue queue, ShaderBindingTablesStaging<StagingAllocator>&& staging)
-        : tables(allocator, staging.tables.size(),
+    template <device_and_commands DeviceAndCommands, class StagingAllocator = vma::Allocator>
+    ShaderBindingTables(const DeviceAndCommands& device, VkCommandPool pool, VkQueue queue,
+                        ShaderBindingTablesStaging<StagingAllocator>&& staging,
+                        Allocator&                                     allocator)
+        : tables(device, staging.tables.size(),
                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
                      VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR,
-                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, device)
+                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator)
         , raygenTableOffset(staging.raygenTableOffset
                                 ? staging.raygenTableOffset->atAddress(tables.address(device))
                                 : VkStridedDeviceAddressRegionKHR{})
@@ -176,7 +178,7 @@ struct ShaderBindingTables {
         , callableTableOffset(staging.callableTableOffset
                                   ? staging.callableTableOffset->atAddress(tables.address(device))
                                   : VkStridedDeviceAddressRegionKHR{}) {
-        vko::simple::ImmediateCommandBuffer cmd(pool, queue, device);
+        vko::simple::ImmediateCommandBuffer cmd(device, pool, queue);
         VkBufferCopy                        bufferCopy{
                                    .srcOffset = 0,
                                    .dstOffset = 0,
@@ -184,7 +186,7 @@ struct ShaderBindingTables {
         };
         device.vkCmdCopyBuffer(cmd, staging.tables, tables, 1, &bufferCopy);
     }
-    Array<std::byte>                tables;
+    BoundBuffer<std::byte>          tables;
     VkStridedDeviceAddressRegionKHR raygenTableOffset;
     VkStridedDeviceAddressRegionKHR missTableOffset;
     VkStridedDeviceAddressRegionKHR hitTableOffset;
@@ -194,12 +196,13 @@ struct ShaderBindingTables {
 template <class PushConstants, size_t MaxRecursionDepth>
 class RayTracingPipeline {
 public:
-    template <class DeviceAndCommands>
-    RayTracingPipeline(std::span<const VkDescriptorSetLayout> descriptorSetLayouts,
+    template <device_and_commands DeviceAndCommands>
+    RayTracingPipeline(const DeviceAndCommands&               device,
+                       std::span<const VkDescriptorSetLayout> descriptorSetLayouts,
                        VkShaderModule raygen, VkShaderModule anyHit, VkShaderModule closestHit,
-                       VkShaderModule miss, const DeviceAndCommands& device)
+                       VkShaderModule miss)
         : RayTracingPipeline(
-              descriptorSetLayouts,
+              device, descriptorSetLayouts,
               std::to_array({
                   VkPipelineShaderStageCreateInfo{
                       .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -269,44 +272,40 @@ public:
                       .intersectionShader              = VK_SHADER_UNUSED_KHR,
                       .pShaderGroupCaptureReplayHandle = nullptr,
                   },
-              }),
-              device) {}
+              })) {}
 
-    template <class DeviceAndCommands>
-    RayTracingPipeline(std::span<const VkDescriptorSetLayout>                descriptorSetLayouts,
+    template <device_and_commands DeviceAndCommands>
+    RayTracingPipeline(const DeviceAndCommands&                              device,
+                       std::span<const VkDescriptorSetLayout>                descriptorSetLayouts,
                        std::span<const VkPipelineShaderStageCreateInfo>      stages,
-                       std::span<const VkRayTracingShaderGroupCreateInfoKHR> groups,
-                       const DeviceAndCommands&                              device)
-        : m_pipelineLayout(
-              VkPipelineLayoutCreateInfo{
-                  .sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                  .pNext                  = nullptr,
-                  .flags                  = 0,
-                  .setLayoutCount         = uint32_t(descriptorSetLayouts.size()),
-                  .pSetLayouts            = descriptorSetLayouts.data(),
-                  .pushConstantRangeCount = 1,
-                  .pPushConstantRanges =
-                      tmpPtr(VkPushConstantRange{VK_SHADER_STAGE_ALL, 0, sizeof(PushConstants)}),
-              },
-              device)
-        , m_pipeline(
-              VkRayTracingPipelineCreateInfoKHR{
-                  .sType      = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
-                  .pNext      = nullptr,
-                  .flags      = 0,
-                  .stageCount = static_cast<uint32_t>(stages.size()),
-                  .pStages    = stages.data(),
-                  .groupCount = static_cast<uint32_t>(groups.size()),
-                  .pGroups    = groups.data(),
-                  .maxPipelineRayRecursionDepth = MaxRecursionDepth,
-                  .pLibraryInfo                 = nullptr,
-                  .pLibraryInterface            = nullptr,
-                  .pDynamicState                = nullptr,
-                  .layout                       = m_pipelineLayout,
-                  .basePipelineHandle           = VK_NULL_HANDLE,
-                  .basePipelineIndex            = 0,
-              },
-              device) {}
+                       std::span<const VkRayTracingShaderGroupCreateInfoKHR> groups)
+        : m_pipelineLayout(device,
+                           VkPipelineLayoutCreateInfo{
+                               .sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                               .pNext          = nullptr,
+                               .flags          = 0,
+                               .setLayoutCount = uint32_t(descriptorSetLayouts.size()),
+                               .pSetLayouts    = descriptorSetLayouts.data(),
+                               .pushConstantRangeCount = 1,
+                               .pPushConstantRanges    = tmpPtr(VkPushConstantRange{
+                                   VK_SHADER_STAGE_ALL, 0, sizeof(PushConstants)}),
+                           })
+        , m_pipeline(device, VkRayTracingPipelineCreateInfoKHR{
+                                 .sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
+                                 .pNext = nullptr,
+                                 .flags = 0,
+                                 .stageCount = static_cast<uint32_t>(stages.size()),
+                                 .pStages    = stages.data(),
+                                 .groupCount = static_cast<uint32_t>(groups.size()),
+                                 .pGroups    = groups.data(),
+                                 .maxPipelineRayRecursionDepth = MaxRecursionDepth,
+                                 .pLibraryInfo                 = nullptr,
+                                 .pLibraryInterface            = nullptr,
+                                 .pDynamicState                = nullptr,
+                                 .layout                       = m_pipelineLayout,
+                                 .basePipelineHandle           = VK_NULL_HANDLE,
+                                 .basePipelineIndex            = 0,
+                             }) {}
 
     VkPipelineLayout layout() const { return m_pipelineLayout; }
     operator VkPipeline() const { return m_pipeline; }

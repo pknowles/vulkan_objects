@@ -141,6 +141,7 @@ std::unordered_map<std::string_view, std::string_view> makeCommandRootParents(co
 
 int main(int argc, char** argv) {
     if(argc != 4){
+        std::cout << "Wrong number of arguments: " << argc - 1 << "\n";
         std::cout << "Usage: ./generate <vk.xml> <template.hpp.txt> <output.hpp>\n";
         return EXIT_FAILURE;
     }
@@ -165,17 +166,16 @@ int main(int argc, char** argv) {
         }
     }
 
-    // These objects need to be bound to VkDeviceMemory before they're usable.
-    // It's wasteful to use the primary name on the native object when a vko
-    // utility could have it instead. I doubt people want to write
-    // vko::BoundImage everywhere and the same name in a separate namespace
-    // would just be confusing. Yes, this is breaking from the rules listed in
-    // the readme and yes I'll probably regret this.
+    // It'd be nice to reserve 'Buffer' and 'Image' for more commonly used
+    // "bound" variants, but I guess it's better not to deviate when wrapping
+    // the vulkan API.
     std::unordered_map<std::string_view, std::string_view> handlesRemap{
+#if 0
         {"Buffer", "BufferOnly"},
         {"Image", "ImageOnly"},
         {"VideoSessionKHR", "VideoSessionKHROnly"},
         {"AccelerationStructureNV", "AccelerationStructureNVOnly"},
+#endif
     };
 
     inja::Environment env;
@@ -370,7 +370,7 @@ int main(int argc, char** argv) {
 
     inja::json handles = inja::json::array();
     {
-#if 0
+#if 1
         std::regex createFunc("vk(Create|Allocate)(.*)([A-Z]{2,})?");
         std::regex destroyFunc("vk(Destroy|Free)(.*)([A-Z]{2,})?");
 #else
@@ -447,6 +447,12 @@ int main(int argc, char** argv) {
                 // TODO: support plural containers?
                 pugi::xpath_node countNode = node.node().select_node("param/name[contains(text(),'Count')]");
                 bool plural = static_cast<bool>(countNode);
+
+                // HACK: some calls such as vkAllocateCommandBuffers() are
+                // plural but the count is implied in the CreateInfo struct, not
+                // as a separate argument like vkCreateComputePipelines
+                plural = plural || std::regex_match(command.begin(), command.end(), pluralStrip);
+
                 if(plural)
                     objectName = std::regex_replace(objectName, pluralStrip, "$1");
 
@@ -462,24 +468,19 @@ int main(int argc, char** argv) {
                 }
 
                 pugi::xpath_node createInfoNode = node.node().select_node("param/type[contains(text(),'CreateInfo')]/text()");
-                if(!createInfoNode)
-                {
-                    inja::json obj = inja::json::object();
-                    obj["name"]    = valueOr(handlesRemap, objectName, objectName);
-                    obj["create"] = createFuncName;
-                    obj["failure"] = "Could not find CreateInfo";
-                    handles.push_back(obj);
-                    continue;
-                }
-
-                std::string_view createInfo = createInfoNode.node().value();
+                std::optional<std::string_view> createInfo;
+                if (createInfoNode)
+                    createInfo = createInfoNode.node().value();
 
                 inja::json obj = inja::json::object();
                 obj["name"]          = valueOr(handlesRemap, objectName, objectName);
                 obj["type"] = type;
                 obj["suffix"] = createMatch[3].str();
                 obj["parent"] = commandRootParents[destroyFunc->second.name];
-                obj["createInfo"] = createInfo;
+                if (createInfo)
+                    obj["createInfo"] = *createInfo;
+                else
+                    obj["createInfo"] = false;
                 obj["create"] = createFuncName;
                 obj["createPlural"] = plural;
                 obj["destroy"] = destroyFunc->second.name;

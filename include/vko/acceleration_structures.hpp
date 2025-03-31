@@ -35,7 +35,7 @@
 
 #include "vulkan/vulkan_core.h"
 #include <assert.h>
-#include <vko/array.hpp>
+#include <vko/bound_buffer.hpp>
 #include <vko/handles.hpp>
 
 namespace vko {
@@ -55,14 +55,14 @@ struct Input {
 // AS.
 class Sizes {
 public:
-    template <class DeviceAndCommands>
-    Sizes(const Input& input, const DeviceAndCommands& device)
-        : Sizes(input.type, input.flags, input.geometries, input.rangeInfos, device) {}
-    template <class DeviceAndCommands>
-    Sizes(VkAccelerationStructureTypeKHR type, VkBuildAccelerationStructureFlagsKHR flags,
+    template <device_and_commands DeviceAndCommands>
+    Sizes(const DeviceAndCommands& device, const Input& input)
+        : Sizes(device, input.type, input.flags, input.geometries, input.rangeInfos) {}
+    template <device_and_commands DeviceAndCommands>
+    Sizes(const DeviceAndCommands& device, VkAccelerationStructureTypeKHR type,
+          VkBuildAccelerationStructureFlagsKHR                      flags,
           std::span<const VkAccelerationStructureGeometryKHR>       geometries,
-          std::span<const VkAccelerationStructureBuildRangeInfoKHR> rangeInfos,
-          const DeviceAndCommands&                                  device)
+          std::span<const VkAccelerationStructureBuildRangeInfoKHR> rangeInfos)
         : m_sizeInfo{
               .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
               .pNext = nullptr,
@@ -107,30 +107,29 @@ private:
 // This can be a top or bottom level acceleration structure depending on the
 // 'type' passed to the constructor. To use the acceleration structure it must
 // first be given to BuiltAS.
-class AS {
+class AccelerationStructure {
 public:
-    template <class DeviceAndCommands, class Allocator = vma::Allocator>
-    AS(Allocator& allocator, VkAccelerationStructureTypeKHR type,
-       const VkAccelerationStructureBuildSizesInfoKHR& size,
-       VkAccelerationStructureCreateFlagsKHR flags, const DeviceAndCommands& device)
+    template <device_and_commands DeviceAndCommands, class Allocator = vma::Allocator>
+    AccelerationStructure(const DeviceAndCommands& device, VkAccelerationStructureTypeKHR type,
+                          const VkAccelerationStructureBuildSizesInfoKHR& size,
+                          VkAccelerationStructureCreateFlagsKHR flags, Allocator& allocator)
         : m_type(type)
         , m_size(size)
-        , m_buffer(allocator, m_size.accelerationStructureSize,
+        , m_buffer(device, m_size.accelerationStructureSize,
                    VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, device)
+                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator)
         , m_accelerationStructure(
-              VkAccelerationStructureCreateInfoKHR{
-                  .sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
-                  .pNext         = nullptr,
-                  .createFlags   = flags,
-                  .buffer        = m_buffer,
-                  .offset        = 0,
-                  .size          = m_size.accelerationStructureSize,
-                  .type          = m_type,
-                  .deviceAddress = 0,
-              },
-              device) {
+              device, VkAccelerationStructureCreateInfoKHR{
+                          .sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
+                          .pNext         = nullptr,
+                          .createFlags   = flags,
+                          .buffer        = m_buffer,
+                          .offset        = 0,
+                          .size          = m_size.accelerationStructureSize,
+                          .type          = m_type,
+                          .deviceAddress = 0,
+                      }) {
         VkAccelerationStructureDeviceAddressInfoKHR addressInfo{
             .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
             .pNext = nullptr,
@@ -147,24 +146,26 @@ public:
 private:
     VkAccelerationStructureTypeKHR           m_type;
     VkAccelerationStructureBuildSizesInfoKHR m_size;
-    Array<std::byte>                         m_buffer;
+    BoundBuffer<std::byte>                   m_buffer;
     AccelerationStructureKHR                 m_accelerationStructure;
     VkDeviceAddress                          m_address;
 };
 
-template <class DeviceAndCommands>
-void cmdBuild(VkCommandBuffer cmd, const AS& accelerationStructure, const Input& input, bool update,
-              Array<std::byte>& scratchBuffer, const DeviceAndCommands& device) {
-    cmdBuild(cmd, accelerationStructure, input.flags, input.geometries, input.rangeInfos, update,
-             scratchBuffer, device);
+template <device_and_commands DeviceAndCommands>
+void cmdBuild(const DeviceAndCommands& device, VkCommandBuffer cmd,
+              const AccelerationStructure& accelerationStructure, const Input& input, bool update,
+              BoundBuffer<std::byte>& scratchBuffer) {
+    cmdBuild(device, cmd, accelerationStructure, input.flags, input.geometries, input.rangeInfos,
+             update, scratchBuffer);
 }
 
-template <class DeviceAndCommands>
-void cmdBuild(VkCommandBuffer cmd, const AS& accelerationStructure,
+template <device_and_commands DeviceAndCommands>
+void cmdBuild(const DeviceAndCommands& device, VkCommandBuffer cmd,
+              const AccelerationStructure&                              accelerationStructure,
               VkBuildAccelerationStructureFlagsKHR                      flags,
               std::span<const VkAccelerationStructureGeometryKHR>       geometries,
               std::span<const VkAccelerationStructureBuildRangeInfoKHR> rangeInfos, bool update,
-              Array<std::byte>& scratchBuffer, const DeviceAndCommands& device) {
+              BoundBuffer<std::byte>& scratchBuffer) {
     assert(geometries.size() == rangeInfos.size());
     assert(!update || !!(flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR));
     VkBuildAccelerationStructureModeKHR mode  = update

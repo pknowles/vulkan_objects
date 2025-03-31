@@ -1,6 +1,6 @@
 
 > [!CAUTION]
-> Incomplete. This doesn't even compile yet.
+> Work in progress. Expect frequent changes. But it works 🙂
 
 # vko: Vulkan Objects
 
@@ -8,6 +8,21 @@ This library is a self-contained Vulkan 3D Graphics API provider and thin RAII
 wrapper. It is not an engine or rendering abstraction. That said, there are some
 optional utilities to make very specific but common operations easy to write.
 Naturally, these are layered on top and in separate headers.
+
+TLDR:
+
+```cpp
+#include <vko/handles.hpp>
+...
+vko::VulkanLibrary  library;  // Cross platform, just dlopen()
+vko::GlobalCommands globalCommands(library.loader());  // bootstrap with vkGetInstanceProcAddr
+vko::Instance       instance(globalCommands, VkInstanceCreateInfo{...});  // Standard CreateInfo structs
+VkPhysicalDevice    physicalDevice(vko::toVector(instance.vkEnumeratePhysicalDevices, instance)[0]);
+vko::Device         device(instance, physicalDevice, VkDeviceCreateInfo{...});  // Both function tables (or byo!) and VkDevice
+device.vkDeviceWaitIdle(device);  // Standard vulkan API, no vulkan.hpp/vulkan_raii.hpp
+```
+
+For more example code, see [test/src/test.cpp](test/src/test.cpp). It includes ray tracing✨!
 
 The aims are:
 
@@ -27,19 +42,24 @@ The aims are:
 
    For example, it's common to pass around an everything "context" object
    containing the VkDevice, maybe an allocator or queues. This is convenient,
-   but then you have to have one of these objects everywhere.
+   but then you have to have one of these objects everywhere. In contrast,
+   objects here are constructed from native vulkan objects.
 
-   Expose the full featureset of the API near-verbatim. Objects should be
-   reusable and pluggable. A big part of this is the single-responsibility
-   principle.
+   The aim is to expose the full featureset of the API near-verbatim. Objects
+   should be reusable and pluggable. A big part of this is sticking to the
+   single-responsibility principle.
 
-   Make shortcuts and special cases easy to write, but by layering utilities on
-   top. Allow objects to be replaced, don't force people to use them.
+   Shortcuts are added but special cases should be easy to override and write
+   without shortcuts. This is done by layering utilities on top. Higher level
+   objects can be replaced without losing much. No all-or-nothing monolith
+   objects.
 
-   \*TODO: One exception here is the loader and function tables. Globals are not
-   used, which necessitates function pointer tables. A workaround may be passing
-   the tables as a template parameter to allow other loaders to be used, or an
-   extra set of tables.
+   A difficulty is that function tables from the included loader need to be
+   passed around to make vulkan API calls. To facilitate using your own function
+   tables and not lock you into the ecosystem (yes, this is possible! e.g.
+   [volk](https://github.com/zeux/volk)), many methods are templates that take a
+   function table as the first parameter. For example. see the `device_commands`
+   and `device_and_commands` concepts.
 
 3. Simple, singular implementation
 
@@ -47,22 +67,30 @@ The aims are:
    cases is hard. I'm only one person. I'll pick one way and do it well,
    hopefully without limiting important features.
 
-   It includes vulkan from https://github.com/KhronosGroup/Vulkan-Headers for
-   `vk.xml`, `vulkan_core.h` and platform-specific headers
+   This includes vulkan directly from
+   https://github.com/KhronosGroup/Vulkan-Headers, just for `vk.xml`,
+   `vulkan_core.h` and platform-specific headers. Handles are generated, so this
+   library should always support the latest vulkan.
 
    This library includes its own vulkan function pointer loader, like
    [volk](https://github.com/zeux/volk), but because vulkan_core.h is included,
-   there is no need to support different versions. It's all one thing. An
-   exception is conditionals for platform-specific types.
+   there is no need to support different versions. It's all one thing. One
+   exception is ifdefs for platform-specific types.
 
 4. Lifetime and ownership is well defined
 
    Standard RAII: out of scope cleanup, no leaks, help avoid dangling pointers,
-   be safe knowing if you have a handle the object is valid and initialized.
-   Most objects are move-only and not copyable. This matches the API, e.g. you
-   can't copy a VkDevice.
+   be safe knowing if you have a handle then the object is valid and
+   initialized. Most objects are move-only and not copyable. This matches the
+   API, e.g. you can't copy a VkDevice.
 
-5. No effort plumbing
+5. Performance and data oriented
+
+   Avoid forcing heap allocations on the user. Avoid copying memory around to
+   restructure data. Instead, take pointers (i.e. `std::span`) already in vulkan
+   API compatible ways and let the user decide whether to pay the cost or not.
+
+6. No effort plumbing
 
    Use existing structures to hold data. E.g. there are already many
    `*CreateInfo` structs that can be taken as an argument. No need to
@@ -84,19 +112,37 @@ The aims are:
    layering to pick just what you want to use. Admittedly, it's nice to type `.`
    and have your IDE auto-complete methods.
 
+## Building
+
+Cmake and C++20 is required. Currently the following dependencies are
+automatically added with FetchContent:
+
+- [Vulkan Headers](https://github.com/KhronosGroup/Vulkan-Headers)
+
+Some other common ones can optionally be added with the below options.
+
+| CMake Options                   | Description                                                |
+| ------------------------------- | ---------------------------------------------------------- |
+| `VULKAN_OBJECTS_FETCH_VVL`      | `ON` fetches [Vulkan Validation Layers][vvl] source (big!) |
+| `VULKAN_OBJECTS_FETCH_VMA`      | `ON` fetches [Vulkan Memory Allocator][vma] source         |
+| `VULKAN_OBJECTS_FETCH_SLANG`    | `ON` fetches [Slang Compiler][slang] source                |
+| `VULKAN_OBJECTS_SPEC_OVERRIDE`  | `/path/to/vk.xml`                                          |
+| `VULKAN_OBJECTS_SPEC_TAG`       | `<default version>` if not `_OVERRIDE`                     |
+| `VULKAN_OBJECTS_VMA_TAG`        | `<default version>` if `_FETCH_VMA`                        |
+
+[vvl]: https://github.com/KhronosGroup/Vulkan-ValidationLayers
+[slang]: https://github.com/shader-slang/slang
+[vma]: https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+
 ## Issues
 
 - Some `vkCreate*` calls are plural but have singular destruction. E.g.
-  `vkCreateGraphicsPipelines` -> `vkDestroyPipeline`. By default, singular
-  constructors will be created. If needed, a `makePipelines()` wrapper can be
-  added to allow the driver to create these objects in batches, before splitting
-  them to individual C++ objects.
-- Some `vkCreate*` calls are plural and have plural destruction, e.g.
-  `vkAllocateCommandBuffers` -> `vkFreeCommandBuffer`. Ideally these would be
-  modelled with a plural `CommandBuffers` container. On balance being able to
-  split up ownership with an individual `CommandBuffer` object is more useful.
-  Thus, singular objects will be the norm until someone tells me this impacts
-  perf significantly. Nothing prevents plural objects being added in the future.
+  `vkCreateGraphicsPipelines` -> `vkDestroyPipeline`. Some `vkCreate*` calls are
+  plural and have plural destruction, e.g. `vkAllocateCommandBuffers` ->
+  `vkFreeCommandBuffer`. Sticking with matching the API principle, these are
+  primarily modelled as a vector of handles. Singular objects are added for
+  convenience too. These wrappers for these are currently hand coded until I can
+  spend some time to come up with a nicer way.
 - Some `vkCreate*` have no destruction. E.g. `vkCreateDisplayModeKHR`. \*shruggie\*
 
 ## Error handling
@@ -104,9 +150,10 @@ The aims are:
 Exceptions
 
 C++ is really lacking here. IMO it took so long for us to even get move
-semantics and during that time people understandably got the wrong idea about
-the language and the workarounds gave it a bad reputation. There is
-`std::expected` and `std::error_code`, but they don't help with constructors.
+semantics (we still have no std::ranges::output_range) and during that time
+people understandably got the wrong idea about the language and the workarounds
+gave it a bad reputation. There is `std::expected` and `std::error_code`, but
+they don't help with constructors.
 
 - We must have constructors for the compiler to help us avoid delayed initialization.
 - Constructors must be able to fail and the only way for that to happen is exceptions.
@@ -119,6 +166,13 @@ See:
 
 With that decision made, we need improved tooling. Particularly smooth and
 intuitive experience debugging IDEs and debuggers to be able to break for
-specific exception categories. Don't throw the baby out with the bathwater.
+specific exception categories. I also recognise big initializer lists are ugly
+AF, but they're needed. Don't throw the baby out with the bathwater.
 
 ## Generated code
+
+Some code is generated directly from vk.xml - see files prefixed with `gen_*`.
+The loader in particularly needs this (unless you're using your own). This code
+is generated to the build directory and not checked in. Generation is done with
+C++ using [pugixml](https://github.com/zeux/pugixml), so there is no dependency
+on Python or other tools.

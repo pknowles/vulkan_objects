@@ -16,16 +16,16 @@ namespace simple {
 
 class TimelineSemaphore {
 public:
-    TimelineSemaphore(const Device& device, uint64_t initialValue)
-        : m_semaphore(
-              VkSemaphoreCreateInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-                                    .pNext = tmpNext(VkSemaphoreTypeCreateInfo{
-                                        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
-                                        .pNext = nullptr,
-                                        .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
-                                        .initialValue  = initialValue}),
-                                    .flags = 0},
-              device) {}
+    template <device_and_commands DeviceAndCommands>
+    TimelineSemaphore(const DeviceAndCommands& device, uint64_t initialValue)
+        : m_semaphore(device, VkSemaphoreCreateInfo{
+                                  .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                                  .pNext = tmpNext(VkSemaphoreTypeCreateInfo{
+                                      .sType         = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                      .pNext         = nullptr,
+                                      .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+                                      .initialValue  = initialValue}),
+                                  .flags = 0}) {}
     operator VkSemaphore() const { return m_semaphore; }
 
 private:

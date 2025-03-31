@@ -10,9 +10,16 @@
 namespace vko
 {
 
+template <class T>
+concept instance_and_commands = std::constructible_from<VkInstance, T> && instance_commands<T>;
+
+template <class T>
+concept device_and_commands = std::constructible_from<VkDevice, T> && device_commands<T>;
+
 template<class Handle> struct handle_traits;
 
-template <class T, class CreateFunc, class CreateInfo> struct CreateHandle;
+template <class T, class CreateFunc>
+struct CreateHandle;
 
 // Argument pack for destroying a handle. Similar to an object keeping a
 // reference to its allocator. std::function could work too, but I have a
@@ -20,14 +27,16 @@ template <class T, class CreateFunc, class CreateInfo> struct CreateHandle;
 template <class T>
 struct DestroyFunc{
     // In most cases the parent is the first parameter of the destroy function
-    using Parent = handle_traits<T>::destroy_first_param;
+    using Parent = typename handle_traits<T>::destroy_first_param;
 
-    template <class FunctionsAndParent>
-        requires std::constructible_from<Parent, FunctionsAndParent>
-    DestroyFunc(T handle, const FunctionsAndParent& vk) : DestroyFunc(handle, vk, vk) {
-    }
-    DestroyFunc(T /* instance/device are special :( */, Parent parent,
-                const typename handle_traits<T>::table& table)
+    // template <class ParentAndCommands>
+    //     requires std::constructible_from<Parent, ParentAndCommands>
+    // DestroyFunc(const ParentAndCommands& vk)
+    //     : DestroyFunc(vk, vk) {}
+
+    // TODO: handle_traits<T>::table is not general at all. This should be
+    // generated in gen_handles.hpp to actually name the function
+    DestroyFunc(const typename handle_traits<T>::table& table, Parent parent)
         : destroy(table.*handle_traits<T>::table_destroy)
         , parent(parent) {}
     void operator()(T handle) const { destroy(parent, handle, nullptr); }
@@ -42,17 +51,25 @@ struct DestroyFunc{
 };
 
 // Template class to hold a single vulkan handle
-template <class T, class CreateFunc = void, class CreateInfo = void>
+template <class T, class CreateFunc = void>
 class Handle;
 
-// Specialization for constructing handles
-template <class T, class CreateFunc, class CreateInfo>
+// Default specialization for constructing handles
+template <class T, class CreateFunc>
 class Handle {
 public:
-    template <class ...Args>
-    Handle(const CreateInfo& createInfo,  const Args&... args)
-        : m_handle(CreateHandle<T, CreateFunc, CreateInfo>()(createInfo, args...)),
-          m_destroy(DestroyFunc<T>(m_handle /* sigh; only needed for instance and device */, args...)) {}
+    using Parent     = typename handle_traits<T>::destroy_first_param;
+    using CreateInfo = typename CreateHandle<T, CreateFunc>::CreateInfo;
+
+    template <class ParentAndCommands, class... Args>
+        requires std::constructible_from<Parent, ParentAndCommands>
+    Handle(const ParentAndCommands& vk, const CreateInfo& createInfo, const Args&... args)
+        : Handle(vk, static_cast<Parent>(vk), createInfo, args...) {}
+
+    template <class Commands, class... Args>
+    Handle(const Commands& vk, Parent parent, const CreateInfo& createInfo, const Args&... args)
+        : m_handle(CreateHandle<T, CreateFunc>()(vk, parent, createInfo, args...))
+        , m_destroy(DestroyFunc<T>(vk, parent, args...)) {}
     ~Handle() { destroy(); }
     Handle(const Handle& other) = delete;
     Handle(Handle&& other) noexcept
@@ -83,12 +100,14 @@ private:
 
 // Specialization for non-constructing handles
 template <class T>
-class Handle<T, void, void> {
+class Handle<T, void> {
 public:
-    template <class ...Args>
-    Handle(T&& handle,  const Args&... args)
-        : m_handle(handle),
-          m_destroy(DestroyFunc<T>(m_handle /* sigh; only needed for instance and device */, args...)) {}
+    template <class... Args>
+    Handle(T&& handle, const Args&... args)
+        : m_handle(handle)
+        , m_destroy(DestroyFunc<T>(
+              args...,
+              m_handle /* Instance and Device need the handle to load their destructors */)) {}
     ~Handle() { destroy(); }
     Handle(const Handle& other) = delete;
     Handle(Handle&& other) noexcept
@@ -116,19 +135,28 @@ private:
     DestroyFunc<T> m_destroy;
 };
 
-template <class T, class CreateFunc, class CreateInfo>
+template <class T, class CreateFunc>
 struct CreateHandleVector;
 
 template <class T>
 struct DestroyVectorFunc;
 
-template <class T, class CreateFunc, class CreateInfo>
+template <class T, class CreateFunc>
 class HandleVector {
 public:
-    template <class... Args>
-    HandleVector(const CreateInfo& createInfo, const Args&... args)
-        : m_handles(CreateHandleVector<T, CreateFunc, CreateInfo>()(createInfo, args...))
-        , m_destroy(DestroyVectorFunc<T>(createInfo, args...)) {}
+    using Parent     = typename handle_traits<T>::destroy_first_param;
+    using CreateInfo = typename CreateHandleVector<T, CreateFunc>::CreateInfo;
+
+    template <class ParentAndCommands, class... Args>
+        requires std::constructible_from<Parent, ParentAndCommands>
+    HandleVector(const ParentAndCommands& vk, CreateInfo&& createInfo, const Args&... args)
+        : HandleVector(vk, static_cast<Parent>(vk), createInfo, args...) {}
+
+    template <class Commands, class... Args>
+    HandleVector(const Commands& commands, Parent parent, CreateInfo&& createInfo,
+                 const Args&... args)
+        : m_handles(CreateHandleVector<T, CreateFunc>()(commands, parent, createInfo, args...))
+        , m_destroy(DestroyVectorFunc<T>(commands, parent, createInfo, args...)) {}
     ~HandleVector() { destroy(); }
     HandleVector(const HandleVector& other)            = delete;
     HandleVector(HandleVector&& other) noexcept        = default;
