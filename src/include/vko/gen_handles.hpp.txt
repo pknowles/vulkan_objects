@@ -47,10 +47,10 @@ template<> struct handle_traits<{{ command.handle }}> { using table = GlobalComm
 using {{ handle.name }} = Handle<{{ handle.type }}, PFN_{{ handle.create }}>;
 template <> struct CreateHandle<{{ handle.type }}, PFN_{{ handle.create }}> {
     using CreateInfo = {{ handle.createInfo }};
-    template <class {{ parent }}Commands>
-    {{ handle.type }} operator()(const {{ parent }}Commands& vk, {{ handle.parent }} parent, const {{ handle.createInfo }}& createInfo) {
+    template <{{ lower(parent) }}_commands {{ parent }}Commands>
+    {{ handle.type }} operator()(const {{ parent }}Commands& vk, {{ handle.parent }} {{ lower(parent) }}, const {{ handle.createInfo }}& createInfo) {
         {{ handle.type }} handle;
-        check(vk.{{ handle.create }}(parent, &createInfo, nullptr, &handle));
+        check(vk.{{ handle.create }}({{ lower(parent) }}, &createInfo, nullptr, &handle));
         return handle;
     }
 };

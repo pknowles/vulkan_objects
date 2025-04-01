@@ -51,12 +51,15 @@ The aims are:
 
    Shortcuts are added but special cases should be easy to override and write
    without shortcuts. This is done by layering utilities on top. Higher level
-   objects can be replaced without losing much.
+   objects can be replaced without losing much. No all-or-nothing monolith
+   objects.
 
-   A difficulty is that function tables need to be passed around. To facilitate
-   using your own function tables (yes, this is possible! e.g.
-   [volk](https://github.com/zeux/volk)), all objects are templates that take a
-   function table as the first parameter.
+   A difficulty is that function tables from the included loader need to be
+   passed around to make vulkan API calls. To facilitate using your own function
+   tables and not lock you into the ecosystem (yes, this is possible! e.g.
+   [volk](https://github.com/zeux/volk)), many methods are templates that take a
+   function table as the first parameter. For example. see the `device_commands`
+   and `device_and_commands` concepts.
 
 3. Simple, singular implementation
 
@@ -81,7 +84,13 @@ The aims are:
    initialized. Most objects are move-only and not copyable. This matches the
    API, e.g. you can't copy a VkDevice.
 
-5. No effort plumbing
+5. Performance and data oriented
+
+   Avoid forcing heap allocations on the user. Avoid copying memory around to
+   restructure data. Instead, take pointers (i.e. `std::span`) already in vulkan
+   API compatible ways and let the user decide whether to pay the cost or not.
+
+6. No effort plumbing
 
    Use existing structures to hold data. E.g. there are already many
    `*CreateInfo` structs that can be taken as an argument. No need to
@@ -109,12 +118,21 @@ Cmake and C++20 is required. Currently the following dependencies are
 automatically added with FetchContent:
 
 - [Vulkan Headers](https://github.com/KhronosGroup/Vulkan-Headers)
-- [Vulkan Validation Layers](https://github.com/KhronosGroup/Vulkan-ValidationLayers) (and dependencies! eek)
-- [Slang Compiler](https://github.com/shader-slang/slang)
-- [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)
 
-Only the vulkan headers are really required. The others are optional, but
-explicit optional support is on my TODO list.
+Some other common ones can optionally be added with the below options.
+
+| CMake Options                   | Description                                                |
+| ------------------------------- | ---------------------------------------------------------- |
+| `VULKAN_OBJECTS_FETCH_VVL`      | `ON` fetches [Vulkan Validation Layers][vvl] source (big!) |
+| `VULKAN_OBJECTS_FETCH_VMA`      | `ON` fetches [Vulkan Memory Allocator][vma] source         |
+| `VULKAN_OBJECTS_FETCH_SLANG`    | `ON` fetches [Slang Compiler][slang] source                |
+| `VULKAN_OBJECTS_SPEC_OVERRIDE`  | `/path/to/vk.xml`                                          |
+| `VULKAN_OBJECTS_SPEC_TAG`       | `<default version>` if not `_OVERRIDE`                     |
+| `VULKAN_OBJECTS_VMA_TAG`        | `<default version>` if `_FETCH_VMA`                        |
+
+[vvl]: https://github.com/KhronosGroup/Vulkan-ValidationLayers
+[slang]: https://github.com/shader-slang/slang
+[vma]: https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
 
 ## Issues
 

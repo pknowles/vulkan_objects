@@ -30,14 +30,14 @@ template <class T, class Allocator = vma::Allocator>
 class BoundBuffer {
 public:
     using Allocation = typename Allocator::AllocationType;
-    template <class DeviceAndCommands, class AllocationCreateInfo>
+    template <device_and_commands DeviceAndCommands, class AllocationCreateInfo>
     BoundBuffer(const DeviceAndCommands& device, VkDeviceSize elementCount,
                 VkBufferUsageFlags usage, const AllocationCreateInfo& allocationCreateInfo,
                 Allocator& allocator)
         : BoundBuffer(device, device, elementCount, nullptr, 0, usage, VK_SHARING_MODE_EXCLUSIVE,
                       {}, allocationCreateInfo, allocator) {}
 
-    template <class DeviceCommands, class AllocationCreateInfo>
+    template <device_commands DeviceCommands, class AllocationCreateInfo>
     BoundBuffer(const DeviceCommands& vk, VkDevice device, VkDeviceSize elementCount,
                 const void* pNext, VkBufferCreateFlags flags, VkBufferUsageFlags usage,
                 VkSharingMode sharingMode, std::span<const uint32_t> queueFamilyIndices,
@@ -62,7 +62,7 @@ public:
     VkDeviceSize                size() const { return m_size; }
     BufferMapping<T, Allocator> map() const { return {m_allocation, m_size}; }
 
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     VkDeviceAddress address(const DeviceAndCommands& device) const {
         VkBufferDeviceAddressInfo addressInfo{.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
                                               .pNext = nullptr,

@@ -14,7 +14,7 @@ struct BindingsAndFlags {
     std::vector<VkDescriptorBindingFlags>     flags;
 };
 
-template <class DeviceAndCommands>
+template <device_and_commands DeviceAndCommands>
 inline DescriptorSetLayout makeDescriptorSetLayout(const DeviceAndCommands& device,
                                                    const BindingsAndFlags&  bindingsAndFlags,
                                                    VkDescriptorSetLayoutCreateFlags createFlags) {
@@ -22,7 +22,7 @@ inline DescriptorSetLayout makeDescriptorSetLayout(const DeviceAndCommands& devi
                                    createFlags);
 }
 
-template <class DeviceAndCommands>
+template <device_and_commands DeviceAndCommands>
 inline DescriptorSetLayout makeDescriptorSetLayout(
     const DeviceAndCommands& device, std::span<const VkDescriptorSetLayoutBinding> bindings,
     std::span<const VkDescriptorBindingFlags> flags, VkDescriptorSetLayoutCreateFlags createFlags) {
@@ -56,13 +56,13 @@ struct DescriptorSetPoolSizes {
 
 class SingleDescriptorSetPool {
 public:
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     SingleDescriptorSetPool(const DeviceAndCommands&                      device,
                             std::span<const VkDescriptorSetLayoutBinding> bindings,
                             VkDescriptorPoolCreateFlags                   flags)
         : SingleDescriptorSetPool(device, DescriptorSetPoolSizes(bindings).sizes, flags) {}
 
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     SingleDescriptorSetPool(const DeviceAndCommands&              device,
                             std::span<const VkDescriptorPoolSize> sizes,
                             VkDescriptorPoolCreateFlags           flags)
@@ -81,14 +81,14 @@ private:
 };
 
 struct SingleDescriptorSet {
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     SingleDescriptorSet(const DeviceAndCommands& device, const BindingsAndFlags& bindingsAndFlags,
                         VkDescriptorSetLayoutCreateFlags layoutCreateFlags,
                         VkDescriptorPoolCreateFlags      poolCreateFlags)
         : SingleDescriptorSet(device, bindingsAndFlags.bindings, bindingsAndFlags.flags,
                               layoutCreateFlags, poolCreateFlags) {}
 
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     SingleDescriptorSet(const DeviceAndCommands&                      device,
                         std::span<const VkDescriptorSetLayoutBinding> bindings,
                         std::span<const VkDescriptorBindingFlags>     flags,

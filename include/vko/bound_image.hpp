@@ -12,12 +12,12 @@ class BoundImage {
 public:
     using Allocation = typename Allocator::AllocationType;
 
-    template <class DeviceAndCommands, class AllocationCreateInfo>
+    template <device_and_commands DeviceAndCommands, class AllocationCreateInfo>
     BoundImage(const DeviceAndCommands& vk, const VkImageCreateInfo& createInfo,
                const AllocationCreateInfo& allocationCreateInfo, Allocator& allocator)
         : BoundImage(vk, vk, createInfo, allocationCreateInfo, allocator) {}
 
-    template <class DeviceCommands, class AllocationCreateInfo>
+    template <device_commands DeviceCommands, class AllocationCreateInfo>
     BoundImage(const DeviceCommands& deviceCommands, VkDevice device,
                const VkImageCreateInfo&    createInfo,
                const AllocationCreateInfo& allocationCreateInfo, Allocator& allocator)

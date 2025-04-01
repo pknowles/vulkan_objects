@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <debugbreak.h>
+#include <iostream>
 #include <type_traits>
 #include <vko/acceleration_structures.hpp>
 #include <vko/adapters.hpp>
@@ -34,7 +35,7 @@
     #pragma pop_macro("None")
 #endif
 
-template <class T, class DeviceAndCommands>
+template <class T, vko::device_and_commands DeviceAndCommands>
 vko::BoundBuffer<T> uploadImmediate(vko::vma::Allocator& allocator, VkCommandPool pool,
                                     VkQueue queue, const DeviceAndCommands& device,
                                     std::span<std::add_const_t<T>> data, VkBufferUsageFlags usage) {
@@ -56,9 +57,22 @@ vko::BoundBuffer<T> uploadImmediate(vko::vma::Allocator& allocator, VkCommandPoo
     return result;
 }
 
+VkBool32 debugMessageCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severityBits,
+                              VkDebugUtilsMessageTypeFlagsEXT,
+                              const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void*) {
+    std::cout << pCallbackData->pMessage << std::endl;
+    VkFlags breakOnSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                              VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    if ((severityBits & breakOnSeverity) != 0) {
+        debug_break();
+    }
+    return VK_FALSE;
+}
+
 // Dangerous internal pointers encapsulated in a non-copyable non-movable
 // app-specific struct
 struct TestInstanceCreateInfo {
+    static constexpr const char* requiredExtensions[] = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
     VkApplicationInfo applicationInfo{
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pNext = nullptr,
@@ -69,14 +83,14 @@ struct TestInstanceCreateInfo {
         .apiVersion = VK_API_VERSION_1_4,
     };
     VkInstanceCreateInfo instanceCreateInfo{
-        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .pApplicationInfo = &applicationInfo,
-        .enabledLayerCount = 0,
-        .ppEnabledLayerNames = nullptr,
-        .enabledExtensionCount = 0,
-        .ppEnabledExtensionNames = nullptr,
+        .sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pNext                   = nullptr,
+        .flags                   = 0,
+        .pApplicationInfo        = &applicationInfo,
+        .enabledLayerCount       = 0,
+        .ppEnabledLayerNames     = nullptr,
+        .enabledExtensionCount   = uint32_t(std::size(requiredExtensions)),
+        .ppEnabledExtensionNames = requiredExtensions,
     };
     operator VkInstanceCreateInfo&() { return instanceCreateInfo; }
     TestInstanceCreateInfo() = default;
@@ -140,6 +154,7 @@ TEST(Integration, InitHappyPath) {
     vko::VulkanLibrary           library;
     vko::GlobalCommands          globalCommands(library.loader());
     vko::Instance                instance(globalCommands, TestInstanceCreateInfo());
+    vko::SimpleDebugMessenger    debugMessenger(instance, debugMessageCallback);
 
     // Pick a VkPhysicalDevice
     std::vector<VkPhysicalDevice> physicalDevices =
@@ -226,8 +241,6 @@ struct WindowInstanceCreateInfo {
     WindowInstanceCreateInfo operator=(const WindowInstanceCreateInfo& other) = delete;
 };
 
-
-
 TEST(Integration, WindowSystemIntegration) {
     vko::VulkanLibrary  library;
     vko::GlobalCommands globalCommands(library.loader());
@@ -243,33 +256,7 @@ TEST(Integration, WindowSystemIntegration) {
     vko::glfw::PlatformSupport platformSupport(instanceExtensions);
     vko::glfw::ScopedInit glfwInit;
     vko::Instance              instance(globalCommands, WindowInstanceCreateInfo(platformSupport));
-
-    vko::DebugUtilsMessengerEXT debugMessenger(
-        instance,
-        VkDebugUtilsMessengerCreateInfoEXT{
-            .sType           = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-            .pNext           = nullptr,
-            .flags           = 0,
-            .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
-                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-            .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                           VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                           VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-            .pfnUserCallback = [](VkDebugUtilsMessageSeverityFlagBitsEXT severityBits,
-                                  VkDebugUtilsMessageTypeFlagsEXT,
-                                  const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-                                  void*) -> VkBool32 {
-                std::cout << pCallbackData->pMessage << std::endl;
-                VkFlags breakOnSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                                          VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-                if ((severityBits & breakOnSeverity) != 0) {
-                    debug_break();
-                }
-                return VK_FALSE;
-            },
-            .pUserData = nullptr});
+    vko::SimpleDebugMessenger  debugMessenger(instance, debugMessageCallback);
 
     std::vector<VkPhysicalDevice> physicalDevices =
         vko::toVector(instance.vkEnumeratePhysicalDevices, instance);
@@ -337,13 +324,14 @@ TEST(Integration, WindowSystemIntegration) {
 
     vko::vma::Allocator  allocator(globalCommands, instance, physicalDevice, device,
                                    VK_API_VERSION_1_4, 0);
+    VkExtent3D                 imageExtent = {800U, 600U, 1U};
     vko::BoundBuffer<uint32_t> imageData(
-        device, 1024 * 1024, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        device, imageExtent.width * imageExtent.height, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, allocator);
     uint32_t pixelIndex = 0;
     for (uint32_t& pixel : imageData.map()) {
-        uint32_t x = pixelIndex % 1024;
-        uint32_t y = pixelIndex / 1024;
+        uint32_t x = pixelIndex % imageExtent.width;
+        uint32_t y = pixelIndex / imageExtent.width;
         pixel      = (((x ^ y) & 8) != 0) ? 0xFF000000U : 0xFFFFFFFFU;
         ++pixelIndex;
     }
@@ -353,7 +341,7 @@ TEST(Integration, WindowSystemIntegration) {
                                             .flags       = 0,
                                             .imageType   = VK_IMAGE_TYPE_2D,
                                             .format      = VK_FORMAT_R8G8B8A8_UNORM,
-                                            .extent      = {1024, 1024, 1},
+                                            .extent      = imageExtent,
                                             .mipLevels   = 1,
                                             .arrayLayers = 1,
                                             .samples     = VK_SAMPLE_COUNT_1_BIT,
@@ -373,7 +361,7 @@ TEST(Integration, WindowSystemIntegration) {
                               .bufferImageHeight = 0,
                               .imageSubresource  = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                               .imageOffset       = {0, 0, 0},
-                              .imageExtent       = {1024, 1024, 1},
+                              .imageExtent       = imageExtent,
         };
         vko::cmdImageBarrier(device, cmd, image,
                              {
@@ -492,7 +480,8 @@ TEST(Integration, WindowSystemIntegration) {
                 .srcOffset      = {0, 0, 0},
                 .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                 .dstOffset      = {0, 0, 0},
-                .extent = {uint32_t(std::min(1024, width)), uint32_t(std::min(1024, height)), 1},
+                .extent         = {std::min(imageExtent.width, uint32_t(width)),
+                                   std::min(imageExtent.height, uint32_t(height)), 1U},
             };
             device.vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, swapchain.images[imageIndex],
                                   VK_IMAGE_LAYOUT_GENERAL, 1, &region);
@@ -656,33 +645,7 @@ TEST(Integration, HelloTriangleRayTracing) {
     vko::glfw::PlatformSupport platformSupport(instanceExtensions);
     vko::glfw::ScopedInit glfwInit;
     vko::Instance              instance(globalCommands, WindowInstanceCreateInfo(platformSupport));
-
-    vko::DebugUtilsMessengerEXT debugMessenger(
-        instance,
-        VkDebugUtilsMessengerCreateInfoEXT{
-            .sType           = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-            .pNext           = nullptr,
-            .flags           = 0,
-            .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
-                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-            .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                           VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                           VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-            .pfnUserCallback = [](VkDebugUtilsMessageSeverityFlagBitsEXT severityBits,
-                                  VkDebugUtilsMessageTypeFlagsEXT,
-                                  const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-                                  void*) -> VkBool32 {
-                std::cout << pCallbackData->pMessage << std::endl;
-                VkFlags breakOnSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                                          VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-                if ((severityBits & breakOnSeverity) != 0) {
-                    debug_break();
-                }
-                return VK_FALSE;
-            },
-            .pUserData = nullptr});
+    vko::SimpleDebugMessenger  debugMessenger(instance, debugMessageCallback);
 
     std::vector<VkPhysicalDevice> physicalDevices =
         vko::toVector(instance.vkEnumeratePhysicalDevices, instance);
@@ -751,13 +714,14 @@ TEST(Integration, HelloTriangleRayTracing) {
     vko::vma::Allocator  allocator(globalCommands, instance, physicalDevice, device,
                                    VK_API_VERSION_1_4,
                                    VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT);
+    VkExtent3D           imageExtent = {800U, 600U, 1U};
     vko::BoundImage      image(device,
                                VkImageCreateInfo{.sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                                                  .pNext       = nullptr,
                                                  .flags       = 0,
                                                  .imageType   = VK_IMAGE_TYPE_2D,
                                                  .format      = VK_FORMAT_B8G8R8A8_UNORM,
-                                                 .extent      = {1024, 1024, 1},
+                                                 .extent      = imageExtent,
                                                  .mipLevels   = 1,
                                                  .arrayLayers = 1,
                                                  .samples     = VK_SAMPLE_COUNT_1_BIT,
@@ -910,7 +874,7 @@ TEST(Integration, HelloTriangleRayTracing) {
     vko::ShaderModule miss       = makeModule(missCode);
 
     struct RtPushConstants {
-        int test;
+        VkExtent3D imageSize;
     };
     vko::BindingsAndFlags bindings{
         {VkDescriptorSetLayoutBinding{.binding = 0,
@@ -977,7 +941,7 @@ TEST(Integration, HelloTriangleRayTracing) {
                 VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VkClearColorValue{.float32 = {1.0f, 1.0f, 0.0f, 1.0f}});
 
-            RtPushConstants pushConstant{0};
+            RtPushConstants pushConstant{imageExtent};
             device.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rtPipeline);
             device.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
                                            rtPipeline.layout(), 0, 1U, descriptorSet.set.ptr(), 0,
@@ -985,7 +949,8 @@ TEST(Integration, HelloTriangleRayTracing) {
             device.vkCmdPushConstants(cmd, rtPipeline.layout(), VK_SHADER_STAGE_ALL, 0,
                                       sizeof(pushConstant), &pushConstant);
             device.vkCmdTraceRaysKHR(cmd, &sbt.raygenTableOffset, &sbt.missTableOffset,
-                                     &sbt.hitTableOffset, &sbt.callableTableOffset, 1024, 1024, 1);
+                                     &sbt.hitTableOffset, &sbt.callableTableOffset,
+                                     imageExtent.width, imageExtent.height, 1);
             vko::cmdImageBarrier(device, cmd, image,
                                  {
                                      VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
@@ -1003,7 +968,8 @@ TEST(Integration, HelloTriangleRayTracing) {
                 .srcOffset      = {0, 0, 0},
                 .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                 .dstOffset      = {0, 0, 0},
-                .extent = {uint32_t(std::min(1024, width)), uint32_t(std::min(1024, height)), 1},
+                .extent         = {std::min(imageExtent.width, uint32_t(width)),
+                                   std::min(imageExtent.height, uint32_t(height)), 1U},
             };
             device.vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, swapchain.images[imageIndex],
                                   VK_IMAGE_LAYOUT_GENERAL, 1, &region);

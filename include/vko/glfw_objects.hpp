@@ -261,7 +261,7 @@ Window createWindow(int width, int height, const char* title, GLFWmonitor* monit
 
 class SurfaceKHR {
 public:
-    template <class InstanceAndCommands>
+    template <instance_and_commands InstanceAndCommands>
     SurfaceKHR(const InstanceAndCommands& vk, const PlatformSupport& support, GLFWwindow* window)
         : SurfaceKHR(vk, vk, support, window) {}
 

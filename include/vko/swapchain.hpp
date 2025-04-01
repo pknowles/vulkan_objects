@@ -13,7 +13,7 @@ namespace simple {
 // Swapchain with images and views created
 struct Swapchain {
     // Simple/default create info. Use the other constructor to override
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     Swapchain(const DeviceAndCommands& device, VkSurfaceKHR surface,
               VkSurfaceFormatKHR surfaceFormat, VkExtent2D extent, uint32_t queueFamilyIndex,
               VkPresentModeKHR presentMode, VkSwapchainKHR oldSwapchain)
@@ -41,7 +41,7 @@ struct Swapchain {
                         .oldSwapchain = oldSwapchain,
                     }) {}
 
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     Swapchain(const DeviceAndCommands& device, const VkSwapchainCreateInfoKHR& createInfo)
         : swapchain(device, createInfo)
         , acquiredImageSemaphore(
@@ -103,7 +103,7 @@ struct Swapchain {
         };
     }
 
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     void present(const DeviceAndCommands& device, VkQueue queue, uint32_t index,
                  VkSemaphore renderFinished) {
         VkPresentInfoKHR presentInfo{
@@ -128,7 +128,7 @@ struct Swapchain {
     std::vector<bool>      presented; // first-use flag, implying VK_IMAGE_LAYOUT_UNDEFINED
 };
 
-template <class DeviceAndCommands>
+template <device_and_commands DeviceAndCommands>
 inline void clearSwapchainImage(const DeviceAndCommands& device, VkCommandBuffer commandBuffer,
                                 VkImage image, VkImageLayout srcLayout, VkImageLayout dstLayout,
                                 VkAccessFlags dstAccess, VkPipelineStageFlags dstStage,

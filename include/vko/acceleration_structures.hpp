@@ -55,10 +55,10 @@ struct Input {
 // AS.
 class Sizes {
 public:
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     Sizes(const DeviceAndCommands& device, const Input& input)
         : Sizes(device, input.type, input.flags, input.geometries, input.rangeInfos) {}
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     Sizes(const DeviceAndCommands& device, VkAccelerationStructureTypeKHR type,
           VkBuildAccelerationStructureFlagsKHR                      flags,
           std::span<const VkAccelerationStructureGeometryKHR>       geometries,
@@ -109,7 +109,7 @@ private:
 // first be given to BuiltAS.
 class AccelerationStructure {
 public:
-    template <class DeviceAndCommands, class Allocator = vma::Allocator>
+    template <device_and_commands DeviceAndCommands, class Allocator = vma::Allocator>
     AccelerationStructure(const DeviceAndCommands& device, VkAccelerationStructureTypeKHR type,
                           const VkAccelerationStructureBuildSizesInfoKHR& size,
                           VkAccelerationStructureCreateFlagsKHR flags, Allocator& allocator)
@@ -151,7 +151,7 @@ private:
     VkDeviceAddress                          m_address;
 };
 
-template <class DeviceAndCommands>
+template <device_and_commands DeviceAndCommands>
 void cmdBuild(const DeviceAndCommands& device, VkCommandBuffer cmd,
               const AccelerationStructure& accelerationStructure, const Input& input, bool update,
               BoundBuffer<std::byte>& scratchBuffer) {
@@ -159,7 +159,7 @@ void cmdBuild(const DeviceAndCommands& device, VkCommandBuffer cmd,
              update, scratchBuffer);
 }
 
-template <class DeviceAndCommands>
+template <device_and_commands DeviceAndCommands>
 void cmdBuild(const DeviceAndCommands& device, VkCommandBuffer cmd,
               const AccelerationStructure&                              accelerationStructure,
               VkBuildAccelerationStructureFlagsKHR                      flags,

@@ -141,6 +141,7 @@ std::unordered_map<std::string_view, std::string_view> makeCommandRootParents(co
 
 int main(int argc, char** argv) {
     if(argc != 4){
+        std::cout << "Wrong number of arguments: " << argc - 1 << "\n";
         std::cout << "Usage: ./generate <vk.xml> <template.hpp.txt> <output.hpp>\n";
         return EXIT_FAILURE;
     }

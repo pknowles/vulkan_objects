@@ -10,6 +10,12 @@
 namespace vko
 {
 
+template <class T>
+concept instance_and_commands = std::constructible_from<VkInstance, T> && instance_commands<T>;
+
+template <class T>
+concept device_and_commands = std::constructible_from<VkDevice, T> && device_commands<T>;
+
 template<class Handle> struct handle_traits;
 
 template <class T, class CreateFunc>

@@ -14,7 +14,7 @@ namespace simple {
 // recording command buffer
 class RecordingCommandBuffer {
 public:
-    template <class DeviceCommands>
+    template <device_commands DeviceCommands>
     RecordingCommandBuffer(const DeviceCommands& vk, CommandBuffer&& commandBuffer,
                            const VkCommandBufferBeginInfo& beginInfo)
         : m_commandBuffer(std::move(commandBuffer))
@@ -39,10 +39,10 @@ class ImmediateCommandBuffer;
 template <>
 class ImmediateCommandBuffer<VkQueue> {
 public:
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     ImmediateCommandBuffer(const DeviceAndCommands& vk, VkCommandPool commandPool, VkQueue queue)
         : ImmediateCommandBuffer(vk, vk, commandPool, queue) {}
-    template <class DeviceCommands>
+    template <device_commands DeviceCommands>
     ImmediateCommandBuffer(const DeviceCommands& vk, VkDevice device, VkCommandPool commandPool,
                            VkQueue queue)
         : m_commandBuffer(
@@ -89,14 +89,14 @@ private:
     PFN_vkQueueWaitIdle               vkQueueWaitIdle;
 };
 
-template <class DeviceAndCommands>
+template <device_and_commands DeviceAndCommands>
 ImmediateCommandBuffer(const DeviceAndCommands& vk, VkCommandPool commandPool,
                        VkQueue queue) -> ImmediateCommandBuffer<VkQueue>;
 
 template <>
 class ImmediateCommandBuffer<TimelineQueue> {
 public:
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     ImmediateCommandBuffer(const DeviceAndCommands& vk, VkCommandPool commandPool,
                            TimelineQueue& queue)
         : ImmediateCommandBuffer(vk, vk, commandPool, queue) {}
@@ -129,7 +129,7 @@ private:
     PFN_vkQueueWaitIdle    vkQueueWaitIdle;
 };
 
-template <class DeviceAndCommands>
+template <device_and_commands DeviceAndCommands>
 ImmediateCommandBuffer(const DeviceAndCommands& vk, VkCommandPool commandPool,
                        TimelineQueue queue) -> ImmediateCommandBuffer<TimelineQueue>;
 

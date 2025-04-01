@@ -4,7 +4,7 @@
 
 namespace vko {
 
-template <class DeviceAndCommands>
+template <device_and_commands DeviceAndCommands>
 void cmdDynamicRenderingDefaults(const DeviceAndCommands& device, VkCommandBuffer cmd,
                                  uint32_t width, uint32_t height) {
     VkViewport            viewport{0.0F, 0.0F, float(width), float(height), 0.0F, 1.0F};
@@ -39,7 +39,7 @@ struct ImageAccess {
     VkImageLayout        layout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
-template <class DeviceAndCommands>
+template <device_and_commands DeviceAndCommands>
 void cmdImageBarrier(const DeviceAndCommands& device, VkCommandBuffer cmd, VkImage image,
                      ImageAccess src, ImageAccess dst,
                      VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
@@ -62,7 +62,7 @@ struct MemoryAccess {
     VkAccessFlags        access = 0U;
 };
 
-template <class DeviceAndCommands>
+template <device_and_commands DeviceAndCommands>
 void cmdMemoryBarrier(const DeviceAndCommands& device, VkCommandBuffer cmd, MemoryAccess src,
                       MemoryAccess dst) {
     VkMemoryBarrier memoryBarrier{.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
@@ -72,5 +72,28 @@ void cmdMemoryBarrier(const DeviceAndCommands& device, VkCommandBuffer cmd, Memo
     device.vkCmdPipelineBarrier(cmd, src.stage, dst.stage, 0U, 1U, &memoryBarrier, 0U, nullptr, 0U,
                                 nullptr);
 }
+
+// Debug messenger with a global callback (not using the user data pointer)
+template <instance_and_commands InstanceAndCommands>
+struct SimpleDebugMessenger {
+    SimpleDebugMessenger(const InstanceAndCommands&           vk,
+                         PFN_vkDebugUtilsMessengerCallbackEXT callback)
+        : messenger(vk,
+                    VkDebugUtilsMessengerCreateInfoEXT{
+                        .sType           = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+                        .pNext           = nullptr,
+                        .flags           = 0,
+                        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+                                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+                        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                                       VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                                       VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT |
+                                       VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
+                        .pfnUserCallback = callback,
+                        .pUserData       = nullptr}) {}
+    vko::DebugUtilsMessengerEXT messenger;
+};
 
 } // namespace vko

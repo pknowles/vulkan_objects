@@ -16,7 +16,7 @@ namespace simple {
 
 class TimelineSemaphore {
 public:
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     TimelineSemaphore(const DeviceAndCommands& device, uint64_t initialValue)
         : m_semaphore(device, VkSemaphoreCreateInfo{
                                   .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,

@@ -39,9 +39,9 @@ rayTracingPipelineProperties(const InstanceCommands& vk, VkPhysicalDevice physic
 
 class HitGroupHandles {
 public:
-    template <class DeviceAndFunctions>
+    template <device_and_commands DeviceAndCommands>
     HitGroupHandles(
-        const DeviceAndFunctions&                              device,
+        const DeviceAndCommands&                               device,
         const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& rayTracingPipelineProperties,
         const VkPipeline& pipeline, size_t groupCount)
         : m_handleSize(rayTracingPipelineProperties.shaderGroupHandleSize) {
@@ -97,9 +97,9 @@ struct StridedOffsetRegion {
 // exactly shaderGroupHandleSize bytes long
 template <class Allocator = vma::Allocator>
 struct ShaderBindingTablesStaging {
-    template <class DeviceAndFunctions, std::ranges::input_range HitGroupHandleRange>
+    template <device_and_commands DeviceAndCommands, std::ranges::input_range HitGroupHandleRange>
     ShaderBindingTablesStaging(
-        Allocator& allocator, DeviceAndFunctions& device,
+        Allocator& allocator, DeviceAndCommands& device,
         const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& rayTracingPipelineProperties,
         HitGroupHandleRange&& raygenTable, HitGroupHandleRange&& missTable,
         HitGroupHandleRange&& hitTable, HitGroupHandleRange&& callableTable)
@@ -158,8 +158,8 @@ struct ShaderBindingTablesStaging {
 
 template <class Allocator = vma::Allocator>
 struct ShaderBindingTables {
-    template <class DeviceAndFunctions, class StagingAllocator = vma::Allocator>
-    ShaderBindingTables(const DeviceAndFunctions& device, VkCommandPool pool, VkQueue queue,
+    template <device_and_commands DeviceAndCommands, class StagingAllocator = vma::Allocator>
+    ShaderBindingTables(const DeviceAndCommands& device, VkCommandPool pool, VkQueue queue,
                         ShaderBindingTablesStaging<StagingAllocator>&& staging,
                         Allocator&                                     allocator)
         : tables(device, staging.tables.size(),
@@ -196,7 +196,7 @@ struct ShaderBindingTables {
 template <class PushConstants, size_t MaxRecursionDepth>
 class RayTracingPipeline {
 public:
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     RayTracingPipeline(const DeviceAndCommands&               device,
                        std::span<const VkDescriptorSetLayout> descriptorSetLayouts,
                        VkShaderModule raygen, VkShaderModule anyHit, VkShaderModule closestHit,
@@ -274,7 +274,7 @@ public:
                   },
               })) {}
 
-    template <class DeviceAndCommands>
+    template <device_and_commands DeviceAndCommands>
     RayTracingPipeline(const DeviceAndCommands&                              device,
                        std::span<const VkDescriptorSetLayout>                descriptorSetLayouts,
                        std::span<const VkPipelineShaderStageCreateInfo>      stages,
