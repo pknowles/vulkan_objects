@@ -33,7 +33,7 @@ private:
     PFN_vkEndCommandBuffer vkEndCommandBuffer;
 };
 
-template <class Queue>
+template <class Queue = VkQueue>
 class ImmediateCommandBuffer;
 
 template <>

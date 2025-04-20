@@ -35,28 +35,6 @@
     #pragma pop_macro("None")
 #endif
 
-template <class T, vko::device_and_commands DeviceAndCommands>
-vko::BoundBuffer<T> uploadImmediate(vko::vma::Allocator& allocator, VkCommandPool pool,
-                                    VkQueue queue, const DeviceAndCommands& device,
-                                    std::span<std::add_const_t<T>> data, VkBufferUsageFlags usage) {
-    vko::BoundBuffer<T> staging(
-        device, data.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, allocator);
-    vko::BoundBuffer<T> result(device, data.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
-                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator);
-    {
-        vko::simple::ImmediateCommandBuffer cmd(device, pool, queue);
-        std::ranges::copy(data, staging.map().begin());
-        VkBufferCopy bufferCopy{
-            .srcOffset = 0,
-            .dstOffset = 0,
-            .size      = data.size() * sizeof(T),
-        };
-        device.vkCmdCopyBuffer(cmd, staging, result, 1, &bufferCopy);
-    }
-    return result;
-}
-
 VkBool32 debugMessageCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severityBits,
                               VkDebugUtilsMessageTypeFlagsEXT,
                               const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void*) {
@@ -141,7 +119,7 @@ struct TestDeviceCreateInfo {
                            .queueCreateInfoCount    = 1U,
                            .pQueueCreateInfos       = &queueCreateInfo,
                            .enabledLayerCount       = 0,
-                           .ppEnabledLayerNames     = 0,
+                           .ppEnabledLayerNames     = nullptr,
                            .enabledExtensionCount   = uint32_t(deviceExtensions.size()),
                            .ppEnabledExtensionNames = deviceExtensions.data(),
                            .pEnabledFeatures        = nullptr} {}

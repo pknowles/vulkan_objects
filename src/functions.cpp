@@ -25,15 +25,17 @@ struct FindVulkanImpl
 {
     FindVulkanImpl() {
 #if defined(VVL_DEVELOP_PATH)
-
     #if _WIN32
         if (GetEnvironmentVariableA("VK_ADD_LAYER_PATH", nullptr, 0) == ERROR_ENVVAR_NOT_FOUND &&
             !SetEnvironmentVariableA("VK_ADD_LAYER_PATH", VVL_DEVELOP_PATH)) {
             fprintf(stderr, "Failed to set VK_ADD_LAYER_PATH: %d\n", GetLastError());
         }
     #else
-        if (int result = setenv("VK_ADD_LAYER_PATH", VVL_DEVELOP_PATH, 0); result != 0) {
-            fprintf(stderr, "Failed to set VK_ADD_LAYER_PATH: %s\n", strerror(errno));
+        // TODO: append rather than replace?
+        if (getenv("VK_ADD_LAYER_PATH") == nullptr) {
+            if (int result = setenv("VK_ADD_LAYER_PATH", VVL_DEVELOP_PATH, 0); result != 0) {
+                fprintf(stderr, "Failed to set VK_ADD_LAYER_PATH: %s\n", strerror(errno));
+            }
         }
     #endif
 #endif

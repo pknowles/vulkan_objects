@@ -18,6 +18,7 @@
 
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
+#include <optional>
 #include <span>
 #include <vko/exceptions.hpp>
 #include <vko/functions.hpp>
@@ -249,8 +250,8 @@ struct WindowDeleter {
 
 using Window = std::unique_ptr<GLFWwindow, WindowDeleter>;
 
-Window createWindow(int width, int height, const char* title, GLFWmonitor* monitor = nullptr,
-                    GLFWwindow* share = nullptr) {
+inline Window createWindow(int width, int height, const char* title, GLFWmonitor* monitor = nullptr,
+                           GLFWwindow* share = nullptr) {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow* window = glfwCreateWindow(width, height, title, monitor, share);
     if (!window) {

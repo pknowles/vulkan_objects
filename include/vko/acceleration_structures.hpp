@@ -192,8 +192,8 @@ void cmdBuild(const DeviceAndCommands& device, VkCommandBuffer cmd,
 
 // Optional utility call to fill a Input with instances for
 // a top level acceleration structure build and update.
-Input createTlasInput(uint32_t instanceCount, VkDeviceAddress instanceBufferAddress,
-                      VkBuildAccelerationStructureFlagsKHR flags) {
+inline Input createTlasInput(uint32_t instanceCount, VkDeviceAddress instanceBufferAddress,
+                             VkBuildAccelerationStructureFlagsKHR flags) {
     return Input{
         .type  = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
         .flags = flags,
@@ -241,10 +241,10 @@ struct SimpleGeometryInput {
         VK_GEOMETRY_OPAQUE_BIT_KHR | VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR;
 };
 
-// Optional utility call to fill a Input with triangle
-// geometry for a bottom level acceleration structure build and update.
-Input createBlasInput(std::span<const SimpleGeometryInput> simpleInputs,
-                      VkBuildAccelerationStructureFlagsKHR accelerationStructureFlags) {
+// Optional utility call to fill an Input with triangle geometry for a bottom
+// level acceleration structure build and update.
+inline Input createBlasInput(std::span<const SimpleGeometryInput> simpleInputs,
+                             VkBuildAccelerationStructureFlagsKHR accelerationStructureFlags) {
     Input result{
         .type       = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
         .flags      = accelerationStructureFlags,
@@ -282,6 +282,44 @@ Input createBlasInput(std::span<const SimpleGeometryInput> simpleInputs,
         });
     }
     return result;
+}
+
+// Optional utility call to fill an Input with AABBs for a bottom level
+// acceleration structure build and update. Device address should point to a
+// buffer of VkAabbPositionsKHR.
+inline Input createAabbBlasInput(uint32_t aabbCount, VkDeviceAddress aabbBufferAddress,
+                                 VkBuildAccelerationStructureFlagsKHR accelerationStructureFlags) {
+    return Input{
+        .type  = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+        .flags = accelerationStructureFlags,
+        .geometries{
+            VkAccelerationStructureGeometryKHR{
+                .sType        = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+                .pNext        = nullptr,
+                .geometryType = VK_GEOMETRY_TYPE_AABBS_KHR,
+                .geometry =
+                    VkAccelerationStructureGeometryDataKHR{
+                        .aabbs =
+                            VkAccelerationStructureGeometryAabbsDataKHR{
+                                .sType =
+                                    VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
+                                .pNext  = nullptr,
+                                .data   = {aabbBufferAddress},
+                                .stride = sizeof(float) * 6,
+                            },
+                    },
+                .flags = 0,
+            },
+        },
+        .rangeInfos{
+            VkAccelerationStructureBuildRangeInfoKHR{
+                .primitiveCount  = aabbCount,
+                .primitiveOffset = 0,
+                .firstVertex     = 0,
+                .transformOffset = 0,
+            },
+        },
+    };
 }
 
 }; // namespace as
