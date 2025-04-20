@@ -91,29 +91,36 @@ public:
     using AllocationType = Allocation;
     using MapType        = Map;
 
-    template <class GlobalFunctions, class Instance>
-    Allocator(const GlobalFunctions& globalFunctions, const Instance& instance,
+    template <class GlobalFunctions, class InstanceAndCommands>
+    Allocator(const GlobalFunctions &globalFunctions, const InstanceAndCommands &instance,
               VkPhysicalDevice physicalDevice, VkDevice device, uint32_t vulkanApiVersion,
               VkBuildAccelerationStructureFlagsKHR flags)
-        : Allocator(
-              VmaAllocatorCreateInfo{
-                  .flags                          = flags,
-                  .physicalDevice                 = physicalDevice,
-                  .device                         = device,
-                  .preferredLargeHeapBlockSize    = 0,
-                  .pAllocationCallbacks           = nullptr,
-                  .pDeviceMemoryCallbacks         = nullptr,
-                  .pHeapSizeLimit                 = nullptr,
-                  .pVulkanFunctions               = nullptr,
-                  .instance                       = instance,
-                  .vulkanApiVersion               = vulkanApiVersion,
-                  .pTypeExternalMemoryHandleTypes = nullptr,
-              },
-              globalFunctions.vkGetInstanceProcAddr, instance.vkGetDeviceProcAddr) {}
+        : Allocator(globalFunctions.vkGetInstanceProcAddr, instance.vkGetDeviceProcAddr, instance, physicalDevice, device, vulkanApiVersion, flags) {}
 
-    Allocator(const VmaAllocatorCreateInfo& createInfo,
-              PFN_vkGetInstanceProcAddr     vkGetInstanceProcAddr,
-              PFN_vkGetDeviceProcAddr       vkGetDeviceProcAddr) {
+    Allocator(PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr,
+              PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr, VkInstance instance,
+              VkPhysicalDevice physicalDevice, VkDevice device, uint32_t vulkanApiVersion,
+              VkBuildAccelerationStructureFlagsKHR flags)
+        : Allocator(vkGetInstanceProcAddr, vkGetDeviceProcAddr,
+                    VmaAllocatorCreateInfo{
+                        .flags = flags,
+                        .physicalDevice = physicalDevice,
+                        .device = device,
+                        .preferredLargeHeapBlockSize = 0,
+                        .pAllocationCallbacks = nullptr,
+                        .pDeviceMemoryCallbacks = nullptr,
+                        .pHeapSizeLimit = nullptr,
+                        .pVulkanFunctions = nullptr,
+                        .instance = instance,
+                        .vulkanApiVersion = vulkanApiVersion,
+                        .pTypeExternalMemoryHandleTypes = nullptr,
+                    })
+    {
+    }
+
+    Allocator(PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr,
+              PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr, const VmaAllocatorCreateInfo &createInfo)
+    {
 
         if (createInfo.pVulkanFunctions)
             throw Exception("Custom VmaAllocatorCreateInfo::pVulkanFunctions not supported");

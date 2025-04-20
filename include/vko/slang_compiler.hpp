@@ -20,7 +20,7 @@
 namespace vko {
 namespace slang {
 
-void check(SlangResult result) {
+inline void check(SlangResult result) {
     if (SLANG_FAILED(result)) {
         // TODO: to-string?
         throw Exception(

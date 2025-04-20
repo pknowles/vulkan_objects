@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
+#include <ranges>
 #include <tuple>
 #include <vector>
 #include <vko/exceptions.hpp>
@@ -18,6 +19,12 @@ struct function_traits;
 template <class T>
 const T* tmpPtr(const T& t) {
     return &t;
+}
+
+// Dangerous equivalent for a span
+template <std::ranges::random_access_range Range>
+std::span<const std::ranges::range_value_t<Range>> tmpSpan(const Range& t) {
+    return t;
 }
 
 template <typename R, typename... Args>

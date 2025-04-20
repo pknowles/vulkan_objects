@@ -17,13 +17,13 @@ template<class Handle> struct handle_traits;
 {% if command.name in platform_commands %}
 #if defined({{ join(command.extensions, ") || defined(") }})
 {% endif %}
-{% if command.parent == "VkDevice" %}
-template<> struct handle_traits<{{ command.handle }}> { using table = DeviceCommands; using destroy_first_param = {{ command.first_param }}; static constexpr auto table_destroy = &DeviceCommands::{{ command.name }}; using destroy_t = PFN_{{ command.name }}; };
-{% else if command.parent == "VkInstance" %}
-template<> struct handle_traits<{{ command.handle }}> { using table = InstanceCommands; using destroy_first_param = {{ command.first_param }}; static constexpr auto table_destroy = &InstanceCommands::{{ command.name }}; using destroy_t = PFN_{{ command.name }}; };
-{% else %}
-template<> struct handle_traits<{{ command.handle }}> { using table = GlobalCommands; using destroy_first_param = {{ command.first_param }}; static constexpr auto table_destroy = &GlobalCommands::{{ command.name }}; using destroy_t = PFN_{{ command.name }}; };
-{% endif %}
+{% set type_enum = find("//types/type[name='" + command.handle + "']/@objtypeenum") %}
+template<> struct handle_traits<{{ command.handle }}> {
+    using destroy_first_param = {{ command.first_param }};
+    using destroy_t = PFN_{{ command.name }};
+    template<class CommandTable> static destroy_t destroy_command(const CommandTable& t) { return t.{{ command.name }}; }
+    static constexpr VkObjectType type_enum = {{ type_enum }};
+};
 {% if command.name in platform_commands %}
 #endif  // defined({{ join(command.extensions, ") || defined(") }})
 {% endif %}

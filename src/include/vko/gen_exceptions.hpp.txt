@@ -16,6 +16,9 @@ constexpr inline std::string_view to_string(VkResult result)
 ## for result in findall("//enums[@name='VkResult']/enum/@name")
     case {{ result }}: return "{{ result }}";
 ## endfor
+## for result in findall("//extensions/extension/require/enum[@extends='VkResult'][not(@alias)]/@name")
+    case {{ result }}: return "{{ result }}";
+## endfor
     default: break;
     }
     return "<invalid result>";
@@ -28,6 +31,9 @@ constexpr inline void check(VkResult result)
         switch (result) 
         {
 ## for result in findall("//enums[@name='VkResult']/enum/@name")
+        case {{ result }}: throw ResultException<{{ result }}>();
+## endfor
+## for result in findall("//extensions/extension/require/enum[@extends='VkResult'][not(@alias)]/@name")
         case {{ result }}: throw ResultException<{{ result }}>();
 ## endfor
         default: throw Exception("Invalid VkResult " + std::to_string(result));

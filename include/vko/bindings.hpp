@@ -14,6 +14,19 @@ struct BindingsAndFlags {
     std::vector<VkDescriptorBindingFlags>     flags;
 };
 
+inline BindingsAndFlags makeBindings(std::initializer_list<std::pair<VkDescriptorSetLayoutBinding, VkDescriptorBindingFlags>> init)
+{
+    BindingsAndFlags result;
+    result.bindings.reserve(init.size());
+    result.flags.reserve(init.size());
+    for(auto [binding, flags] : init)
+    {
+        result.bindings.push_back(binding);
+        result.flags.push_back(flags);
+    }
+    return result;
+}
+
 template <device_and_commands DeviceAndCommands>
 inline DescriptorSetLayout makeDescriptorSetLayout(const DeviceAndCommands& device,
                                                    const BindingsAndFlags&  bindingsAndFlags,
@@ -84,19 +97,21 @@ struct SingleDescriptorSet {
     template <device_and_commands DeviceAndCommands>
     SingleDescriptorSet(const DeviceAndCommands& device, const BindingsAndFlags& bindingsAndFlags,
                         VkDescriptorSetLayoutCreateFlags layoutCreateFlags,
-                        VkDescriptorPoolCreateFlags      poolCreateFlags)
+                        VkDescriptorPoolCreateFlags      poolCreateFlags,
+                        const void*                      descriptorSetPNext = nullptr)
         : SingleDescriptorSet(device, bindingsAndFlags.bindings, bindingsAndFlags.flags,
-                              layoutCreateFlags, poolCreateFlags) {}
+                              layoutCreateFlags, poolCreateFlags, descriptorSetPNext) {}
 
     template <device_and_commands DeviceAndCommands>
     SingleDescriptorSet(const DeviceAndCommands&                      device,
                         std::span<const VkDescriptorSetLayoutBinding> bindings,
                         std::span<const VkDescriptorBindingFlags>     flags,
                         VkDescriptorSetLayoutCreateFlags              layoutCreateFlags,
-                        VkDescriptorPoolCreateFlags                   poolCreateFlags)
+                        VkDescriptorPoolCreateFlags                   poolCreateFlags,
+                        const void*                                   descriptorSetPNext = nullptr)
         : layout(makeDescriptorSetLayout(device, bindings, flags, layoutCreateFlags))
         , pool(device, bindings, poolCreateFlags)
-        , set(device, nullptr, pool, layout) {}
+        , set(device, descriptorSetPNext, pool, layout) {}
     DescriptorSetLayout     layout;
     SingleDescriptorSetPool pool;
     DescriptorSet           set;

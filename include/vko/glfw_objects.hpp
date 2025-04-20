@@ -12,12 +12,16 @@
 #ifdef VK_USE_PLATFORM_WIN32_KHR
 #define GLFW_EXPOSE_NATIVE_WIN32
 #endif
-#if defined(VK_USE_PLATFORM_XLIB_KHR) || defined(VK_USE_PLATFORM_XCB_KHR)
+#if defined(VK_USE_PLATFORM_XLIB_KHR)
 #define GLFW_EXPOSE_NATIVE_X11
 #endif
 
+// NOTE: including glfw3native.h leaks the various native header includes -
+// maybe more than including vulkan.h. You'd need those anyway to create
+// surfaces for various platforms, so it's necessary.
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
+#include <optional>
 #include <span>
 #include <vko/exceptions.hpp>
 #include <vko/functions.hpp>
@@ -26,7 +30,7 @@
 #include <vulkan/vulkan_core.h>
 
 // *shakes fist at Xlib*
-#ifdef GLFW_EXPOSE_NATIVE_X11
+#if defined(VK_USE_PLATFORM_XCB_KHR) || defined(VK_USE_PLATFORM_XLIB_KHR)
     #pragma push_macro("None")
     #undef None
 namespace vko {
@@ -39,6 +43,15 @@ static constexpr auto None = 0L;
 
 namespace vko {
 namespace glfw {
+
+// Workaround because GLFW/glfw3native.h does not provide xcb handles
+// NOTE: these are defined in vulkan_objects and are NOT currently part of
+// GLFW.. but IMO they should be. See: https://github.com/glfw/glfw/issues/1061
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+xcb_visualid_t glfwGetXCBVisualID();
+xcb_connection_t* glfwGetXCBConnection();
+xcb_window_t glfwGetXCBWindow(GLFWwindow* window);
+#endif
 
 inline const char* errorToString(int errorCode) {
     // clang-format off
@@ -70,14 +83,11 @@ inline Exception makeLastErrorException(std::string msg) {
     return makeException(msg, errorCode).addContext(std::string("(") + descroption + ")");
 }
 
-
-
 #define CHECK_GLFW_EQ(result, expected) check<expected>::equal(result, #result, #expected)
 #define CHECK_GLFW_NE(result, notexpected) check<notexpected>::notequal(result, #result, #notexpected)
-template <auto Expected>
-struct check;
-template <class Result, Result Compare>
-struct check<Compare> {
+template <auto Compare>
+struct check {
+    using Result = decltype(Compare);
     static Result equal(Result result, const char* resultStr, const char* compareStr) {
         if (result != Compare) {
             throw makeLastErrorException(std::string(resultStr) + " != " + std::string(compareStr));
@@ -205,16 +215,15 @@ inline bool physicalDevicePresentationSupport([[maybe_unused]] InstanceCommands&
 #endif
 #if VK_KHR_wayland_surface
     case GLFW_PLATFORM_WAYLAND:
-        return vk.vkGetPhysicalDeviceWaylandPresentationSupportKHR() == VK_TRUE;
+        return vk.vkGetPhysicalDeviceWaylandPresentationSupportKHR(physicalDevice, queueFamilyIndex, glfwGetWaylandDisplay()) == VK_TRUE;
 #endif
 #if VK_KHR_xcb_surface || VK_KHR_xlib_surface
     case GLFW_PLATFORM_X11:
     #if VK_KHR_xcb_surface
         if (support.xcb) {
-            xcb_connection_t* connection = blah;
-            xcb_visualid_t    visualID = blah;
             return vk.vkGetPhysicalDeviceXcbPresentationSupportKHR(physicalDevice, queueFamilyIndex,
-                                                                   connection, visualID) == VK_TRUE;
+                                                                   glfwGetXCBConnection(),
+                                                                   glfwGetXCBVisualID()) == VK_TRUE;
         }
     #endif
     #if VK_KHR_xlib_surface
@@ -249,8 +258,8 @@ struct WindowDeleter {
 
 using Window = std::unique_ptr<GLFWwindow, WindowDeleter>;
 
-Window createWindow(int width, int height, const char* title, GLFWmonitor* monitor = nullptr,
-                    GLFWwindow* share = nullptr) {
+inline Window createWindow(int width, int height, const char* title, GLFWmonitor* monitor = nullptr,
+                           GLFWwindow* share = nullptr) {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow* window = glfwCreateWindow(width, height, title, monitor, share);
     if (!window) {
@@ -259,99 +268,157 @@ Window createWindow(int width, int height, const char* title, GLFWmonitor* monit
     return Window(window);
 }
 
+#if VK_KHR_win32_surface
+template <instance_commands InstanceCommands>
+Win32SurfaceKHR makeWin32SurfaceKHR(const InstanceCommands& vk, VkInstance instance,
+                                    GLFWwindow* window) {
+    return Win32SurfaceKHR{
+        vk, instance,
+        VkWin32SurfaceCreateInfoKHR{
+            .sType     = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+            .pNext     = nullptr,
+            .flags     = 0,
+            .hinstance = GetModuleHandle(
+                nullptr), // GLFW loads its own module/.hinstance with GetModuleHandleExW()
+            .hwnd = glfwGetWin32Window(window),
+        }};
+}
+#endif
+
+#if VK_KHR_wayland_surface
+template <instance_commands InstanceCommands>
+WaylandSurfaceKHR makeWaylandSurfaceKHR(const InstanceCommands& vk, VkInstance instance,
+                                        GLFWwindow* window) {
+    return WaylandSurfaceKHR{
+        vk, instance,
+        VkWaylandSurfaceCreateInfoKHR{
+            .sType   = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+            .pNext   = nullptr,
+            .flags   = 0,
+            .display = CHECK_GLFW_NE(glfwGetWaylandDisplay(), (wl_display*)0),
+            .surface = CHECK_GLFW_NE(glfwGetWaylandWindow(window), (wl_surface*)0),
+        }};
+}
+#endif
+
+#if VK_KHR_xcb_surface
+template <instance_commands InstanceCommands>
+XcbSurfaceKHR makeXcbSurfaceKHR(const InstanceCommands& vk, VkInstance instance,
+                                GLFWwindow* window) {
+    return XcbSurfaceKHR{
+        vk, instance,
+        VkXcbSurfaceCreateInfoKHR{
+            .sType      = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,
+            .pNext      = nullptr,
+            .flags      = 0,
+            .connection = CHECK_GLFW_NE(glfwGetXCBConnection(), (xcb_connection_t*)0),
+            .window     = CHECK_GLFW_NE(glfwGetXCBWindow(window), (xcb_window_t)0),
+        }};
+}
+#endif
+
+#if VK_KHR_xlib_surface
+template <instance_commands InstanceCommands>
+XlibSurfaceKHR makeXlibSurfaceKHR(const InstanceCommands& vk, VkInstance instance,
+                                  GLFWwindow* window) {
+
+    return XlibSurfaceKHR{vk, instance,
+                          VkXlibSurfaceCreateInfoKHR{
+                              .sType  = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR,
+                              .pNext  = nullptr,
+                              .flags  = 0,
+                              .dpy    = CHECK_GLFW_NE(glfwGetX11Display(), (Display*)0),
+                              .window = CHECK_GLFW_NE(glfwGetX11Window(window), (::Window)None),
+                          }};
+}
+#endif
+
+// Hackery to make a std::variant of all supported platform surfaces
+// clang-format off
+template <class Void, class... Types>
+struct SurfaceVariantSelector {
+    using type = std::variant<Types...>;
+};
+using SurfaceVariant = typename SurfaceVariantSelector<
+    void // trailing comma workaround
+#if VK_KHR_win32_surface
+    , Win32SurfaceKHR
+#endif
+#if VK_KHR_wayland_surface
+    , WaylandSurfaceKHR
+#endif
+#if VK_KHR_xcb_surface
+    , XcbSurfaceKHR
+#endif
+#if VK_KHR_xlib_surface
+    , XlibSurfaceKHR
+#endif
+    >::type;
+// clang-format on
+
+template <instance_commands InstanceCommands>
+SurfaceVariant makeSurface(const InstanceCommands& vk, VkInstance instance, PlatformSupport support,
+                           GLFWwindow* window) {
+    std::optional<SurfaceVariant> result;
+    std::string                   exceptionStrings;
+#if VK_KHR_win32_surface
+    if (!result && support.win32) {
+        try {
+            result = makeWin32SurfaceKHR(vk, instance, window);
+        } catch (const Exception& e) {
+            exceptionStrings += std::string(e.what()) + "\n";
+        }
+    }
+#endif
+#if VK_KHR_wayland_surface
+    if (!result && support.wayland) {
+        try {
+            result = makeWaylandSurfaceKHR(vk, instance, window);
+        } catch (const Exception& e) {
+            exceptionStrings += std::string(e.what()) + "\n";
+        }
+    }
+#endif
+#if VK_KHR_xcb_surface
+    if (!result && support.xcb) {
+        try {
+            result = makeXcbSurfaceKHR(vk, instance, window);
+        } catch (const Exception& e) {
+            exceptionStrings += std::string(e.what()) + "\n";
+        }
+    }
+#endif
+#if VK_KHR_xlib_surface
+    if (!result && support.xlib) {
+        try {
+            result = makeXlibSurfaceKHR(vk, instance, window);
+        } catch (const Exception& e) {
+            exceptionStrings += std::string(e.what()) + "\n";
+        }
+    }
+#endif
+    if (!result) {
+        throw Exception("No supported surfaces:\n" + exceptionStrings);
+    }
+    return std::move(*result);
+}
+
 class SurfaceKHR {
 public:
     template <instance_and_commands InstanceAndCommands>
     SurfaceKHR(const InstanceAndCommands& vk, const PlatformSupport& support, GLFWwindow* window)
         : SurfaceKHR(vk, vk, support, window) {}
 
-#if VK_KHR_win32_surface
-    template <class InstanceCommands>
-    SurfaceKHR(const InstanceCommands& vk, VkInstance instance, const PlatformSupport&,
-               GLFWwindow* window)
-        : m_surface(
-              vk, instance,
-              VkWin32SurfaceCreateInfoKHR{
-                  .sType     = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
-                  .pNext     = nullptr,
-                  .flags     = 0,
-                  .hinstance = GetModuleHandle(
-                      nullptr), // GLFW loads its own module/.hinstance with GetModuleHandleExW()
-                  .hwnd = glfwGetWin32Window(window)}) {}
-    operator VkSurfaceKHR() const { return m_surface; }
-
-private:
-    Win32SurfaceKHR m_surface;
-#endif
-#if VK_KHR_wayland_surface
-    template <class InstanceCommands>
-    SurfaceKHR(const InstanceCommands& vk, VkInstance instance, const PlatformSupport&, GLFWwindow* window)
-        : m_surface(vk, instance, WaylandSurfaceCreateInfoKHR{.sType=VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,.pNext=nullptr,
-                                                .flags= 0, .display=CHECK_GLFW_NE(glfwGetWaylandDisplay(), (wl_display*)0, .surface=CHECK_GLFW_NE(glfwGetWaylandWindow(window), (wl_surface*)0}) {}
-    operator VkSurfaceKHR() const { return m_surface; }
-
-private:
-    WaylandSurfaceKHR m_surface;
-#endif
-#if VK_KHR_xcb_surface || VK_KHR_xlib_surface
-    template <class InstanceCommands>
+    template <instance_commands InstanceCommands>
     SurfaceKHR(const InstanceCommands& vk, VkInstance instance, PlatformSupport support,
-               GLFWwindow* window) {
-    #if VK_KHR_xcb_surface
-            if (support.xcb) {
-                xcb_connection_t* connection = blah;
-                xcb_window_t      window = blah(window);
-                m_surface                    = XcbSurfaceKHR(
-                    vk, instance, VkXcbSurfaceCreateInfoKHR {
-                        .sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-                        .pNext = nullptr;
-                        .flags = 0;
-                        .connection = connection;
-                        .window = window;
-                    });
-            }
-    #endif
-    #if VK_KHR_xlib_surface
-            if (support.xlib) {
-                m_surface = XlibSurfaceKHR(
-                    vk, instance,
-                    VkXlibSurfaceCreateInfoKHR{
-                        .sType  = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR,
-                        .pNext  = nullptr,
-                        .flags  = 0,
-                        .dpy    = CHECK_GLFW_NE(glfwGetX11Display(), (Display*)0),
-                        .window = CHECK_GLFW_NE(glfwGetX11Window(window), (::Window)None),
-                    });
-            }
-    #endif
-            if (!m_surface) {
-                throw Exception("No supported surfaces");
-            }
+               GLFWwindow* window)
+        : m_surface(makeSurface(vk, instance, support, window)) {}
+    operator VkSurfaceKHR() const {
+        return std::visit(
+            [](auto const& s) -> VkSurfaceKHR { return static_cast<VkSurfaceKHR>(s); }, m_surface);
     }
-
-    #if VK_KHR_xcb_surface && VK_KHR_xlib_surface
-        std::variant<XlibSurfaceKHR, XcbSurfaceKHR> m_surface;
-        operator VkSurfaceKHR() const {
-            return std::holds_alternative<XlibSurfaceKHR>(m_surface)
-                       ? static_cast<VkSurfaceKHR>(std::get<XlibSurfaceKHR>(m_surface))
-                       : static_cast<VkSurfaceKHR>(std::get<XcbSurfaceKHR>(m_surface));
-        }
-    #else
-        operator VkSurfaceKHR() const { return *m_surface; }
-        private:
-        #if VK_KHR_xcb_surface
-        std::optional<XcbSurfaceKHR> m_surface;
-        #endif
-        #if VK_KHR_xlib_surface
-        std::optional<XlibSurfaceKHR> m_surface;
-        #endif
-    #endif
-#endif
-#if VK_MVK_macos_surface
-    case GLFW_PLATFORM_COCOA:
-        return true;
-#endif
-    };
+    SurfaceVariant m_surface;
+};
 
 #undef CHECK_GLFW_RESULT
 } // namespace glfw

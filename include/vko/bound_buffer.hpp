@@ -59,6 +59,7 @@ public:
 
     operator VkBuffer() const { return m_buffer; }
     const VkBuffer*             ptr() const { return m_buffer.ptr(); }
+    VkBuffer                    object() const { return m_buffer.object(); }
     VkDeviceSize                size() const { return m_size; }
     BufferMapping<T, Allocator> map() const { return {m_allocation, m_size}; }
 

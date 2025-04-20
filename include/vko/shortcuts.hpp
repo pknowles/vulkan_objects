@@ -1,10 +1,14 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
+#pragma once
 
+#include <vko/bound_buffer.hpp>
+#include <vko/bound_image.hpp>
+#include <vko/command_recording.hpp>
 #include <vko/handles.hpp>
 
 namespace vko {
 
-template <device_and_commands DeviceAndCommands>
+template <device_and_commands DeviceAndCommands = Device>
 void cmdDynamicRenderingDefaults(const DeviceAndCommands& device, VkCommandBuffer cmd,
                                  uint32_t width, uint32_t height) {
     VkViewport            viewport{0.0F, 0.0F, float(width), float(height), 0.0F, 1.0F};
@@ -39,7 +43,7 @@ struct ImageAccess {
     VkImageLayout        layout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
-template <device_and_commands DeviceAndCommands>
+template <device_and_commands DeviceAndCommands = Device>
 void cmdImageBarrier(const DeviceAndCommands& device, VkCommandBuffer cmd, VkImage image,
                      ImageAccess src, ImageAccess dst,
                      VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
@@ -62,7 +66,7 @@ struct MemoryAccess {
     VkAccessFlags        access = 0U;
 };
 
-template <device_and_commands DeviceAndCommands>
+template <device_and_commands DeviceAndCommands = Device>
 void cmdMemoryBarrier(const DeviceAndCommands& device, VkCommandBuffer cmd, MemoryAccess src,
                       MemoryAccess dst) {
     VkMemoryBarrier memoryBarrier{.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
@@ -74,26 +78,118 @@ void cmdMemoryBarrier(const DeviceAndCommands& device, VkCommandBuffer cmd, Memo
 }
 
 // Debug messenger with a global callback (not using the user data pointer)
-template <instance_and_commands InstanceAndCommands>
+template <instance_and_commands InstanceAndCommands = Instance>
 struct SimpleDebugMessenger {
     SimpleDebugMessenger(const InstanceAndCommands&           vk,
                          PFN_vkDebugUtilsMessengerCallbackEXT callback)
-        : messenger(vk,
-                    VkDebugUtilsMessengerCreateInfoEXT{
-                        .sType           = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-                        .pNext           = nullptr,
-                        .flags           = 0,
-                        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-                                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
-                                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-                        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                                       VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                                       VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT |
-                                       VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
-                        .pfnUserCallback = callback,
-                        .pUserData       = nullptr}) {}
+        : messenger(vk, VkDebugUtilsMessengerCreateInfoEXT{
+                            .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+                            .pNext = nullptr,
+                            .flags = 0,
+                            .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+                                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+                            .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                                           VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                                           VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+                            .pfnUserCallback = callback,
+                            .pUserData       = nullptr}) {}
     vko::DebugUtilsMessengerEXT messenger;
 };
+
+template <class T, vko::device_and_commands DeviceAndCommands = Device,
+          class Allocator = vko::vma::Allocator>
+BoundBuffer<T> uploadImmediate(Allocator& allocator, VkCommandPool pool, VkQueue queue,
+                               const DeviceAndCommands& device, std::span<std::add_const_t<T>> data,
+                               VkBufferUsageFlags usage) {
+    BoundBuffer<T> staging(
+        device, data.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, allocator);
+    BoundBuffer<T> result(device, data.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator);
+    {
+        simple::ImmediateCommandBuffer cmd(device, pool, queue);
+        std::ranges::copy(data, staging.map().begin());
+        VkBufferCopy bufferCopy{
+            .srcOffset = 0,
+            .dstOffset = 0,
+            .size      = data.size() * sizeof(T),
+        };
+        device.vkCmdCopyBuffer(cmd, staging, result, 1, &bufferCopy);
+    }
+    return result;
+}
+
+template <class Allocator = vko::vma::Allocator>
+struct ViewedImage {
+    template <device_and_commands DeviceAndCommands, class AllocationCreateInfo>
+    ViewedImage(const DeviceAndCommands& device, const VkImageCreateInfo createInfo,
+                const AllocationCreateInfo& allocationCreateInfo, Allocator& allocator)
+        : image(device, device, createInfo, allocationCreateInfo, allocator)
+        , view(device, device,
+               VkImageViewCreateInfo{
+                   .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                   .pNext    = nullptr,
+                   .flags    = 0,
+                   .image    = image,
+                   .viewType = VK_IMAGE_VIEW_TYPE_2D, // TODO: should be able to compute
+                                                      // this based on createInfo.imageType
+                   .format     = createInfo.format,
+                   .components = VkComponentMapping{},
+                   .subresourceRange =
+                       VkImageSubresourceRange{
+                           .aspectMask =
+                               VK_IMAGE_ASPECT_COLOR_BIT, // TODO: should be able to compute
+                                                          // this based on the format
+                           .baseMipLevel   = 0,
+                           .levelCount     = 1,
+                           .baseArrayLayer = 0,
+                           .layerCount     = 1,
+                       },
+               }) {}
+    BoundImage<Allocator> image;
+    ImageView             view;
+    operator VkImage() const { return image; } // typing "image.image" looks weird
+};
+
+// Creates a 2D Image and View with very general usage bits. Single layer, no
+// mipmapping.
+template <device_and_commands DeviceAndCommands = Device, class Allocator = vko::vma::Allocator>
+ViewedImage<Allocator> makeImage(const DeviceAndCommands& device, VkExtent3D imageExtent,
+                                 VkFormat format, Allocator& allocator) {
+    return ViewedImage{device,
+                       VkImageCreateInfo{.sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                         .pNext       = nullptr,
+                                         .flags       = 0,
+                                         .imageType   = VK_IMAGE_TYPE_2D,
+                                         .format      = format,
+                                         .extent      = imageExtent,
+                                         .mipLevels   = 1,
+                                         .arrayLayers = 1,
+                                         .samples     = VK_SAMPLE_COUNT_1_BIT,
+                                         .tiling      = VK_IMAGE_TILING_OPTIMAL,
+                                         .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                                  VK_IMAGE_USAGE_STORAGE_BIT,
+                                         .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
+                                         .queueFamilyIndexCount = 0,
+                                         .pQueueFamilyIndices   = nullptr,
+                                         .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED},
+                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator};
+}
+
+// Remember to enable VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+template<device_and_commands Device, class Handle>
+void setName(const Device& device, Handle handle, const std::string& name) {
+    VkDebugUtilsObjectNameInfoEXT objectNameInfo{
+        .sType        = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+        .pNext        = nullptr,
+        .objectType   = handle_traits<Handle>::type_enum,
+        .objectHandle = reinterpret_cast<uint64_t>(handle),
+        .pObjectName  = name.c_str(),
+    };
+    device.vkSetDebugUtilsObjectNameEXT(device, &objectNameInfo);
+}
 
 } // namespace vko

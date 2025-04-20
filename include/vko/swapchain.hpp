@@ -107,14 +107,14 @@ struct Swapchain {
     void present(const DeviceAndCommands& device, VkQueue queue, uint32_t index,
                  VkSemaphore renderFinished) {
         VkPresentInfoKHR presentInfo{
-            .sType{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR},
-            .pNext{nullptr},
-            .waitSemaphoreCount{1U},
-            .pWaitSemaphores{&renderFinished},
-            .swapchainCount{1U},
-            .pSwapchains{swapchain.ptr()},
-            .pImageIndices{&index},
-            .pResults{nullptr},
+            .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .pNext              = nullptr,
+            .waitSemaphoreCount = 1U,
+            .pWaitSemaphores    = &renderFinished,
+            .swapchainCount     = 1U,
+            .pSwapchains        = swapchain.ptr(),
+            .pImageIndices      = &index,
+            .pResults           = nullptr,
         };
         check(device.vkQueuePresentKHR(queue, &presentInfo));
         presented[index] = true;
