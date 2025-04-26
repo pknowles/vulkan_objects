@@ -22,7 +22,7 @@ public:
         check(vk.vkBeginCommandBuffer(m_commandBuffer, &beginInfo));
     }
     operator VkCommandBuffer() const { return m_commandBuffer; }
-    operator bool() const { return static_cast<bool>(m_commandBuffer); }
+    explicit operator bool() const { return static_cast<bool>(m_commandBuffer); }
     CommandBuffer&& end() {
         check(vkEndCommandBuffer(m_commandBuffer));
         return std::move(m_commandBuffer);
@@ -57,20 +57,22 @@ public:
         , vkQueueSubmit(vk.vkQueueSubmit)
         , vkQueueWaitIdle(vk.vkQueueWaitIdle) {}
     ~ImmediateCommandBuffer() {
-        CommandBuffer cmd(m_commandBuffer.end());
-        VkSubmitInfo  submitInfo{
-             .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-             .pNext                = nullptr,
-             .waitSemaphoreCount   = uint32_t(m_waitSemaphores.size()),
-             .pWaitSemaphores      = m_waitSemaphores.data(),
-             .pWaitDstStageMask    = m_waitSemaphoreStageMasks.data(),
-             .commandBufferCount   = 1U,
-             .pCommandBuffers      = cmd.ptr(),
-             .signalSemaphoreCount = uint32_t(m_signalSemaphores.size()),
-             .pSignalSemaphores    = m_signalSemaphores.data(),
-        };
-        vkQueueSubmit(m_queue, 1, &submitInfo, VK_NULL_HANDLE);
-        vkQueueWaitIdle(m_queue);
+        if (static_cast<bool>(m_commandBuffer)) {
+            CommandBuffer cmd(m_commandBuffer.end());
+            VkSubmitInfo  submitInfo{
+                 .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                 .pNext                = nullptr,
+                 .waitSemaphoreCount   = uint32_t(m_waitSemaphores.size()),
+                 .pWaitSemaphores      = m_waitSemaphores.data(),
+                 .pWaitDstStageMask    = m_waitSemaphoreStageMasks.data(),
+                 .commandBufferCount   = 1U,
+                 .pCommandBuffers      = cmd.ptr(),
+                 .signalSemaphoreCount = uint32_t(m_signalSemaphores.size()),
+                 .pSignalSemaphores    = m_signalSemaphores.data(),
+            };
+            vkQueueSubmit(m_queue, 1, &submitInfo, VK_NULL_HANDLE);
+            vkQueueWaitIdle(m_queue);
+        }
     }
     void addWait(VkSemaphore semaphore, VkPipelineStageFlags stageMask) {
         m_waitSemaphores.push_back(semaphore);

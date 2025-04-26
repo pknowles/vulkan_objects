@@ -34,10 +34,9 @@ struct DestroyFunc{
     // DestroyFunc(const ParentAndCommands& vk)
     //     : DestroyFunc(vk, vk) {}
 
-    // TODO: handle_traits<T>::table is not general at all. This should be
-    // generated in gen_handles.hpp to actually name the function
-    DestroyFunc(const typename handle_traits<T>::table& table, Parent parent)
-        : destroy(table.*handle_traits<T>::table_destroy)
+    template<class CommandTable>
+    DestroyFunc(const CommandTable& table, Parent parent)
+        : destroy(handle_traits<T>::template destroy_command(table))
         , parent(parent) {}
     void operator()(T handle) const { destroy(parent, handle, nullptr); }
 
@@ -87,6 +86,7 @@ public:
     }
     operator T() const { return m_handle; }
     explicit operator bool() const { return m_handle != VK_NULL_HANDLE; }
+    T        object() const { return m_handle; } // useful to be explicit for type deduction
     const T* ptr() const { return &m_handle; }
 
 private:
@@ -165,7 +165,6 @@ public:
         destroy();
         m_destroy       = std::move(other.m_destroy);
         m_handles       = std::move(other.m_handles);
-        other.m_handles = VK_NULL_HANDLE;
         return *this;
     }
     auto& operator[](size_t i) const { return m_handles[i]; }
@@ -174,6 +173,7 @@ public:
     auto  data() const { return m_handles.data(); }
     auto  size() const { return m_handles.size(); }
     auto  empty() const { return m_handles.empty(); }
+    explicit operator bool() const { return !empty(); }
 
 private:
     void destroy() {

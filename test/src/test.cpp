@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <debugbreak.h>
+#include <gtest/gtest.h>
 #include <iostream>
 #include <type_traits>
 #include <vko/acceleration_structures.hpp>
@@ -22,18 +23,6 @@
 #include <vko/swapchain.hpp>
 #include <vko/timeline_queue.hpp>
 #include <vulkan/vulkan_core.h>
-
-#ifdef VK_USE_PLATFORM_XLIB_KHR
-    #pragma push_macro("None")
-    #pragma push_macro("Bool")
-    #undef None
-    #undef Bool
-#endif
-#include <gtest/gtest.h>
-#ifdef VK_USE_PLATFORM_XLIB_KHR
-    #pragma pop_macro("Bool")
-    #pragma pop_macro("None")
-#endif
 
 VkBool32 debugMessageCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severityBits,
                               VkDebugUtilsMessageTypeFlagsEXT,

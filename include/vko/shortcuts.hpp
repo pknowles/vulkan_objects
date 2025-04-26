@@ -153,6 +153,8 @@ struct ViewedImage {
     operator VkImage() const { return image; } // typing "image.image" looks weird
 };
 
+// Creates a 2D Image and View with very general usage bits. Single layer, no
+// mipmapping.
 template <device_and_commands DeviceAndCommands = Device, class Allocator = vko::vma::Allocator>
 ViewedImage<Allocator> makeImage(const DeviceAndCommands& device, VkExtent3D imageExtent,
                                  VkFormat format, Allocator& allocator) {
@@ -175,6 +177,19 @@ ViewedImage<Allocator> makeImage(const DeviceAndCommands& device, VkExtent3D ima
                                          .pQueueFamilyIndices   = nullptr,
                                          .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED},
                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator};
+}
+
+// Remember to enable VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+template<device_and_commands Device, class Handle>
+void setName(const Device& device, Handle handle, const std::string& name) {
+    VkDebugUtilsObjectNameInfoEXT objectNameInfo{
+        .sType        = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
+        .pNext        = nullptr,
+        .objectType   = handle_traits<Handle>::type_enum,
+        .objectHandle = reinterpret_cast<uint64_t>(handle),
+        .pObjectName  = name.c_str(),
+    };
+    device.vkSetDebugUtilsObjectNameEXT(device, &objectNameInfo);
 }
 
 } // namespace vko

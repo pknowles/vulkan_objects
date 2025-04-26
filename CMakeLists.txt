@@ -17,6 +17,7 @@ add_custom_target(vulkan_objects_generated)
 file(GLOB vulkan_objects_headers include/vko/*.hpp)
 add_library(vulkan_objects
   src/functions.cpp
+  src/glfw_xcb_hack.cpp
   ${generated_directory}/src/gen_functions.cpp
   ${generated_sources} # Just so these appear in visual studio
   ${vulkan_objects_headers} # Same
@@ -58,19 +59,24 @@ elseif(ANDROID)
 elseif(APPLE)
   target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_METAL_EXT)
 elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|BSD|GNU")
-  #find_package(Wayland)
-  #if(xcb_FOUND)
-  #  target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_WAYLAND_KHR)
-  #endif()
-  #find_package(XCB)
-  #if(XCB_FOUND)
-  #  target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_XCB_KHR)
-  #  target_link_libraries(vulkan_objects PUBLIC xcb)
-  #endif()
   find_package(X11)
-  if(X11_FOUND)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(Wayland wayland-client)
+  pkg_check_modules(XCB xcb)
+  pkg_check_modules(X11_XCB x11-xcb)
+  if(Wayland_FOUND)
+    target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_WAYLAND_KHR)
+    target_include_directories(vulkan_objects PUBLIC ${Wayland_INCLUDE_DIRS})
+  endif()
+  if(XCB_FOUND)
+    target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_XCB_KHR)
+    target_include_directories(vulkan_objects PUBLIC ${XCB_INCLUDE_DIRS})
+    target_link_libraries(vulkan_objects PUBLIC ${XCB_LIBRARIES} ${X11_LIBRARIES} ${X11_XCB_LIBRARIES}) # required for glfw_xcb_hack.cpp
+  endif()
+  option(VULKAN_OBJECTS_ENABLE_X11 "Enables X11. Don't. Use XCB." OFF) # https://stackoverflow.com/questions/79583727/how-to-avoid-macros-from-x11-polluting-other-third-party-code
+  if(X11_FOUND AND VULKAN_OBJECTS_ENABLE_X11)
     target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_XLIB_KHR)
-    target_link_libraries(vulkan_objects PUBLIC ${X11_LIBRARIES})
+    #target_link_libraries(vulkan_objects PUBLIC ${X11_LIBRARIES})
   endif()
 endif()
 
@@ -132,6 +138,9 @@ if(VULKAN_OBJECTS_FETCH_VMA)
   target_compile_definitions(vma_static PUBLIC VMA_STATIC_VULKAN_FUNCTIONS=0 VMA_DYNAMIC_VULKAN_FUNCTIONS=1)
   target_link_libraries(vma_static PUBLIC Vulkan::Headers GPUOpen::VulkanMemoryAllocator)
   target_link_libraries(vulkan_objects PUBLIC vma_static)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_compile_options(vma_static PRIVATE -Wno-nullability-extension -Wno-nullability-completeness)
+  endif()
 endif()
 
 if(VULKAN_OBJECTS_FETCH_SLANG)
