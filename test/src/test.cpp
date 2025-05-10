@@ -266,8 +266,8 @@ TEST(Integration, WindowSystemIntegration) {
     };
     vko::CommandPool commandPool(device, commandPoolCreateInfo);
 
-    vko::glfw::Window     window = vko::glfw::createWindow(800, 600, "Vulkan Window");
-    vko::glfw::SurfaceKHR surface(instance, platformSupport, window.get());
+    vko::glfw::Window     window  = vko::glfw::makeWindow(800, 600, "Vulkan Window");
+    vko::SurfaceKHR       surface = vko::glfw::makeSurface(instance, platformSupport, window.get());
     auto                  surfaceFormats =
         vko::toVector(instance.vkGetPhysicalDeviceSurfaceFormatsKHR, physicalDevice, surface);
     auto surfaceFormatIt =
@@ -655,9 +655,9 @@ TEST(Integration, HelloTriangleRayTracing) {
     };
     vko::CommandPool commandPool(device, commandPoolCreateInfo);
 
-    vko::glfw::Window     window = vko::glfw::createWindow(800, 600, "Vulkan Window");
-    vko::glfw::SurfaceKHR surface(instance, platformSupport, window.get());
-    auto                  surfaceFormats =
+    vko::glfw::Window window  = vko::glfw::makeWindow(800, 600, "Vulkan Window");
+    vko::SurfaceKHR   surface = vko::glfw::makeSurface(instance, platformSupport, window.get());
+    auto              surfaceFormats =
         vko::toVector(instance.vkGetPhysicalDeviceSurfaceFormatsKHR, physicalDevice, surface);
     auto surfaceFormatIt =
         std::ranges::find_if(surfaceFormats, [](const VkSurfaceFormatKHR& format) {
