@@ -33,10 +33,10 @@
 // Finally, rt::BuiltAS provides a .object() and .address().
 #pragma once
 
-#include "vulkan/vulkan_core.h"
 #include <assert.h>
 #include <vko/bound_buffer.hpp>
 #include <vko/handles.hpp>
+#include <vulkan/vulkan_core.h>
 
 namespace vko {
 
@@ -234,11 +234,10 @@ struct SimpleGeometryInput {
     uint32_t           maxVertex;
     VkDeviceAddress    indexAddress;
     VkDeviceAddress    vertexAddress;
-    VkDeviceSize       vertexStride = sizeof(float) * 3;
-    VkFormat           vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-    VkIndexType        indexType    = VK_INDEX_TYPE_UINT32;
-    VkGeometryFlagsKHR geometryFlags =
-        VK_GEOMETRY_OPAQUE_BIT_KHR | VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR;
+    VkDeviceSize       vertexStride  = sizeof(float) * 3;
+    VkFormat           vertexFormat  = VK_FORMAT_R32G32B32_SFLOAT;
+    VkIndexType        indexType     = VK_INDEX_TYPE_UINT32;
+    VkGeometryFlagsKHR geometryFlags = VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR;
 };
 
 // Optional utility call to fill an Input with triangle geometry for a bottom
