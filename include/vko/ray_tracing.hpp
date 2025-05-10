@@ -196,11 +196,17 @@ struct ShaderBindingTables {
 template <class PushConstants, size_t MaxRecursionDepth>
 class RayTracingPipeline {
 public:
+    // If using the below helper constructor, use these magic numbers... :(
+    static constexpr uint32_t DefaultGroupRaygen = 0;
+    static constexpr uint32_t DefaultGroupMiss   = 1;
+    static constexpr uint32_t DefaultGroupHit    = 2; // combined closest and any hit
+    static constexpr uint32_t DefaultGroupCount  = 3;
+
     template <device_and_commands DeviceAndCommands>
     RayTracingPipeline(const DeviceAndCommands&               device,
                        std::span<const VkDescriptorSetLayout> descriptorSetLayouts,
-                       VkShaderModule raygen, VkShaderModule anyHit, VkShaderModule closestHit,
-                       VkShaderModule miss)
+                       VkShaderModule raygen, VkShaderModule miss, VkShaderModule closestHit,
+                       VkShaderModule anyHit)
         : RayTracingPipeline(
               device, descriptorSetLayouts,
               std::to_array({
