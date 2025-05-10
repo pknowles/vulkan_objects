@@ -3,7 +3,7 @@
 {# Ignore that. This is the original! #}
 #pragma once
 
-#include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan.h>
 #include <vko/functions.hpp>
 #include <vko/exceptions.hpp>
 #include <vko/handle.hpp>
@@ -64,5 +64,29 @@ using {{ handle.name }} = Handle<{{ handle.type }}>; {{ handle.createPlural }} {
     {% endif %}
 {% endif %}
 ## endfor
+
+// Macro hackery to make a std::variant of all supported platform surfaces
+// clang-format off
+template <class Void, class... Types>
+struct SurfaceVariantSelector {
+    using type = std::variant<Types...>;
+};
+using SurfaceVariant = typename SurfaceVariantSelector<
+    void // trailing comma workaround
+## for handle in handles
+{% if handle.failure %}
+{% else if not handle.createInfo %}
+{% else if handle.type == "VkSurfaceKHR" %}
+    {% if handle.create in platform_commands %}
+#if defined({{ join(handle.extensions, ") || defined(") }})
+    {% endif %}
+    , {{ handle.name }}
+    {% if handle.create in platform_commands %}
+#endif  // defined({{ join(handle.extensions, ") || defined(") }})
+    {% endif %}
+{% endif %}
+## endfor
+    >::type;
+// clang-format on
 
 }  // namespace vko

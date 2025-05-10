@@ -26,8 +26,8 @@
 #include <vko/exceptions.hpp>
 #include <vko/functions.hpp>
 #include <vko/handles.hpp>
+#include <vko/surface.hpp>
 #include <vulkan/vulkan.h>
-#include <vulkan/vulkan_core.h>
 
 // *shakes fist at Xlib*
 #if defined(VK_USE_PLATFORM_XCB_KHR) || defined(VK_USE_PLATFORM_XLIB_KHR)
@@ -258,8 +258,8 @@ struct WindowDeleter {
 
 using Window = std::unique_ptr<GLFWwindow, WindowDeleter>;
 
-inline Window createWindow(int width, int height, const char* title, GLFWmonitor* monitor = nullptr,
-                           GLFWwindow* share = nullptr) {
+inline Window makeWindow(int width, int height, const char* title, GLFWmonitor* monitor = nullptr,
+                         GLFWwindow* share = nullptr) {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow* window = glfwCreateWindow(width, height, title, monitor, share);
     if (!window) {
@@ -333,32 +333,9 @@ XlibSurfaceKHR makeXlibSurfaceKHR(const InstanceCommands& vk, VkInstance instanc
 }
 #endif
 
-// Hackery to make a std::variant of all supported platform surfaces
-// clang-format off
-template <class Void, class... Types>
-struct SurfaceVariantSelector {
-    using type = std::variant<Types...>;
-};
-using SurfaceVariant = typename SurfaceVariantSelector<
-    void // trailing comma workaround
-#if VK_KHR_win32_surface
-    , Win32SurfaceKHR
-#endif
-#if VK_KHR_wayland_surface
-    , WaylandSurfaceKHR
-#endif
-#if VK_KHR_xcb_surface
-    , XcbSurfaceKHR
-#endif
-#if VK_KHR_xlib_surface
-    , XlibSurfaceKHR
-#endif
-    >::type;
-// clang-format on
-
 template <instance_commands InstanceCommands>
-SurfaceVariant makeSurface(const InstanceCommands& vk, VkInstance instance, PlatformSupport support,
-                           GLFWwindow* window) {
+SurfaceKHR makeSurface(const InstanceCommands& vk, VkInstance instance, PlatformSupport support,
+                       GLFWwindow* window) {
     std::optional<SurfaceVariant> result;
     std::string                   exceptionStrings;
 #if VK_KHR_win32_surface
@@ -400,25 +377,13 @@ SurfaceVariant makeSurface(const InstanceCommands& vk, VkInstance instance, Plat
     if (!result) {
         throw Exception("No supported surfaces:\n" + exceptionStrings);
     }
-    return std::move(*result);
+    return SurfaceKHR{std::move(*result)};
 }
 
-class SurfaceKHR {
-public:
-    template <instance_and_commands InstanceAndCommands>
-    SurfaceKHR(const InstanceAndCommands& vk, const PlatformSupport& support, GLFWwindow* window)
-        : SurfaceKHR(vk, vk, support, window) {}
-
-    template <instance_commands InstanceCommands>
-    SurfaceKHR(const InstanceCommands& vk, VkInstance instance, PlatformSupport support,
-               GLFWwindow* window)
-        : m_surface(makeSurface(vk, instance, support, window)) {}
-    operator VkSurfaceKHR() const {
-        return std::visit(
-            [](auto const& s) -> VkSurfaceKHR { return static_cast<VkSurfaceKHR>(s); }, m_surface);
-    }
-    SurfaceVariant m_surface;
-};
+template <instance_and_commands InstanceAndCommands>
+SurfaceKHR makeSurface(const InstanceAndCommands& vk, PlatformSupport support, GLFWwindow* window) {
+    return makeSurface(vk, vk, support, window);
+}
 
 #undef CHECK_GLFW_RESULT
 } // namespace glfw
