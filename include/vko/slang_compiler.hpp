@@ -115,14 +115,36 @@ public:
     Composition(::slang::ISession* session, std::span<::slang::IComponentType* const> components) {
         check(session->createCompositeComponentType(components.data(), components.size(),
                                                     m_componentType.writeRef()));
+        m_size = components.size();
     }
     operator T*() const { return m_componentType.get(); }
     T& operator*() const { return *m_componentType.get(); }
     T* operator->() const { return m_componentType.get(); }
+    size_t size() const { return m_size; }
 
 private:
     Slang::ComPtr<T> m_componentType;
+    size_t           m_size = 0;
 };
+
+inline std::vector<EntryPoint> entrypoints(::slang::IModule*            module,
+                                           std::span<const std::string> entryPointNames) {
+    std::vector<EntryPoint> result;
+    result.reserve(entryPointNames.size());
+    for (auto& name : entryPointNames)
+        result.emplace_back(module, name.c_str());
+    return result;
+}
+
+inline Composition entrypointComposition(::slang::ISession* session, ::slang::IModule* module,
+                                         std::span<const std::string> entryPointNames) {
+    std::vector<EntryPoint>               tmpObjects = entrypoints(module, entryPointNames);
+    std::vector<::slang::IComponentType*> tmpPtrs;
+    tmpPtrs.reserve(tmpObjects.size());
+    for (auto& obj : tmpObjects)
+        tmpPtrs.emplace_back(obj);
+    return Composition(session, tmpPtrs);
+}
 
 class Program {
 public:

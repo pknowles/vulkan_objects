@@ -151,10 +151,10 @@ private:
     VkDeviceAddress                          m_address;
 };
 
-template <device_and_commands DeviceAndCommands>
+template <device_and_commands DeviceAndCommands, class Buffer>
 void cmdBuild(const DeviceAndCommands& device, VkCommandBuffer cmd,
               const AccelerationStructure& accelerationStructure, const Input& input, bool update,
-              BoundBuffer<std::byte>& scratchBuffer) {
+              const Buffer& scratchBuffer) {
     cmdBuild(device, cmd, accelerationStructure, input.flags, input.geometries, input.rangeInfos,
              update, scratchBuffer);
 }
@@ -165,14 +165,25 @@ void cmdBuild(const DeviceAndCommands& device, VkCommandBuffer cmd,
               VkBuildAccelerationStructureFlagsKHR                      flags,
               std::span<const VkAccelerationStructureGeometryKHR>       geometries,
               std::span<const VkAccelerationStructureBuildRangeInfoKHR> rangeInfos, bool update,
-              BoundBuffer<std::byte>& scratchBuffer) {
+              const DeviceBuffer<std::byte>& scratchBuffer) {
+    auto& sizes = accelerationStructure.sizes();
+    assert(scratchBuffer.size() >= (update ? sizes.updateScratchSize : sizes.buildScratchSize));
+    cmdBuild(device, cmd, accelerationStructure, flags, geometries, rangeInfos, update,
+             scratchBuffer.address());
+}
+
+template <device_and_commands DeviceAndCommands>
+void cmdBuild(const DeviceAndCommands& device, VkCommandBuffer cmd,
+              const AccelerationStructure&                              accelerationStructure,
+              VkBuildAccelerationStructureFlagsKHR                      flags,
+              std::span<const VkAccelerationStructureGeometryKHR>       geometries,
+              std::span<const VkAccelerationStructureBuildRangeInfoKHR> rangeInfos, bool update,
+              VkDeviceAddress scratchBufferAddress) {
     assert(geometries.size() == rangeInfos.size());
     assert(!update || !!(flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR));
-    VkBuildAccelerationStructureModeKHR mode  = update
-                                                    ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
-                                                    : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-    auto&                               sizes = accelerationStructure.sizes();
-    assert(scratchBuffer.size() >= (update ? sizes.updateScratchSize : sizes.buildScratchSize));
+    VkBuildAccelerationStructureModeKHR         mode = update
+                                                           ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
+                                                           : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     VkAccelerationStructureBuildGeometryInfoKHR buildGeometryInfo{
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
         .pNext = nullptr,
@@ -184,7 +195,7 @@ void cmdBuild(const DeviceAndCommands& device, VkCommandBuffer cmd,
         .geometryCount            = static_cast<uint32_t>(geometries.size()),
         .pGeometries              = geometries.data(),
         .ppGeometries             = nullptr,
-        .scratchData              = {.deviceAddress = scratchBuffer.address(device)},
+        .scratchData              = {.deviceAddress = scratchBufferAddress},
     };
     auto rangeInfosPtr = rangeInfos.data();
     device.vkCmdBuildAccelerationStructuresKHR(cmd, 1, &buildGeometryInfo, &rangeInfosPtr);
@@ -301,7 +312,7 @@ inline Input createAabbBlasInput(uint32_t aabbCount, VkDeviceAddress aabbBufferA
                         .aabbs =
                             VkAccelerationStructureGeometryAabbsDataKHR{
                                 .sType =
-                                    VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
+                                    VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR,
                                 .pNext  = nullptr,
                                 .data   = {aabbBufferAddress},
                                 .stride = sizeof(float) * 6,

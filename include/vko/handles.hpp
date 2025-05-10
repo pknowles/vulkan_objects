@@ -12,18 +12,20 @@ class InstanceHandle {
 public:
     using CreateInfo = VkInstanceCreateInfo;
 
-    template <class GlobalCommands>
+    template <global_commands GlobalCommands>
     InstanceHandle(const GlobalCommands& vk, const VkInstanceCreateInfo& createInfo) {
         check(vk.vkCreateInstance(&createInfo, nullptr, &m_handle));
 
         m_destroy = reinterpret_cast<PFN_vkDestroyInstance>(
             vk.vkGetInstanceProcAddr(m_handle, "vkDestroyInstance"));
 
-        // WARNING: this leaks the VkInstance. IMO this is a spec bug. Should
-        // not have to have a valid instance before loading the destroy
-        // function.
-        if (!m_destroy)
+        // WARNING: throwing here leaks the VkInstance as the destructor would
+        // need m_destroy. IMO this is a spec bug. Should not have to have a
+        // valid instance before loading the destroy function.
+        if (!m_destroy) {
+            m_handle = VK_NULL_HANDLE;
             throw Exception("Driver's vkGetInstanceProcAddr(vkDestroyInstance) returned null");
+        }
     }
 
     ~InstanceHandle() { destroy(); }
@@ -43,6 +45,7 @@ public:
     }
     operator VkInstance() const { return m_handle; }
     explicit          operator bool() const { return m_handle != VK_NULL_HANDLE; }
+    VkInstance        object() const { return m_handle; }
     const VkInstance* ptr() const { return &m_handle; }
 
 private:
@@ -50,13 +53,14 @@ private:
         if (m_handle != VK_NULL_HANDLE)
             m_destroy(m_handle, nullptr);
     }
-    VkInstance            m_handle = VK_NULL_HANDLE;
-    PFN_vkDestroyInstance m_destroy;
+    VkInstance            m_handle  = VK_NULL_HANDLE;
+    PFN_vkDestroyInstance m_destroy = nullptr;
 };
 
 // Convenience class to combine the instance handle and its function pointers
 class Instance : public InstanceHandle, public InstanceCommands {
 public:
+    template <global_commands GlobalCommands>
     Instance(const GlobalCommands& vk, const VkInstanceCreateInfo& createInfo)
         : Instance(InstanceHandle(vk, createInfo), vk.vkGetInstanceProcAddr) {}
     Instance(InstanceHandle&& handle, PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr)
@@ -69,7 +73,7 @@ class DeviceHandle {
 public:
     using CreateInfo = VkDeviceCreateInfo;
 
-    template <class InstanceCommands>
+    template <instance_commands InstanceCommands>
     DeviceHandle(const InstanceCommands& vk, VkPhysicalDevice physicalDevice,
                  const VkDeviceCreateInfo& createInfo) {
         check(vk.vkCreateDevice(physicalDevice, &createInfo, nullptr, &m_handle));
@@ -77,10 +81,13 @@ public:
         m_destroy = reinterpret_cast<PFN_vkDestroyDevice>(
             vk.vkGetDeviceProcAddr(m_handle, "vkDestroyDevice"));
 
-        // WARNING: this leaks the VkDevice. IMO this is a spec bug. Should not
-        // have to have a valid device before loading the destroy function.
-        if (!m_destroy)
+        // WARNING: throwing here leaks the VkDevice as the destructor would
+        // need m_destroy. IMO this is a spec bug. Should not have to have a
+        // valid instance before loading the destroy function.
+        if (!m_destroy) {
+            m_handle = VK_NULL_HANDLE;
             throw Exception("Driver's vkGetDeviceProcAddr(vkDestroyDevice) returned null");
+        }
     }
 
     ~DeviceHandle() { destroy(); }
@@ -100,6 +107,7 @@ public:
     }
     operator VkDevice() const { return m_handle; }
     explicit        operator bool() const { return m_handle != VK_NULL_HANDLE; }
+    VkDevice        object() const { return m_handle; }
     const VkDevice* ptr() const { return &m_handle; }
 
 private:
@@ -107,13 +115,14 @@ private:
         if (m_handle != VK_NULL_HANDLE)
             m_destroy(m_handle, nullptr);
     }
-    VkDevice            m_handle = VK_NULL_HANDLE;
-    PFN_vkDestroyDevice m_destroy;
+    VkDevice            m_handle  = VK_NULL_HANDLE;
+    PFN_vkDestroyDevice m_destroy = nullptr;
 };
 
 // Convenience class to combine the device handle and its function pointers
 class Device : public DeviceHandle, public DeviceCommands {
 public:
+    template <instance_commands InstanceCommands>
     Device(const InstanceCommands& vk, VkPhysicalDevice physicalDevice,
            const VkDeviceCreateInfo& createInfo)
         : Device(DeviceHandle(vk, physicalDevice, createInfo), vk.vkGetDeviceProcAddr) {}
@@ -170,9 +179,9 @@ public:
     CommandBuffer(const DeviceAndCommands& vk, const void* pNext, VkCommandPool commandPool,
                   VkCommandBufferLevel level)
         : CommandBuffer(vk, vk, pNext, commandPool, level) {}
-    template <class Commands>
-    CommandBuffer(const Commands& vk, VkDevice device, const void* pNext, VkCommandPool commandPool,
-                  VkCommandBufferLevel level)
+    template <device_commands DeviceCommands>
+    CommandBuffer(const DeviceCommands& vk, VkDevice device, const void* pNext,
+                  VkCommandPool commandPool, VkCommandBufferLevel level)
         : m_commandBuffers(vk, device,
                            VkCommandBufferAllocateInfo{
                                .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,

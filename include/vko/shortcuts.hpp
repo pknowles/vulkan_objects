@@ -98,16 +98,18 @@ struct SimpleDebugMessenger {
     vko::DebugUtilsMessengerEXT messenger;
 };
 
+// Assumes the caller will add a pipeline barrier to make the vkCmdCopyBuffer()
+// visible to the next user of the buffer
 template <class T, vko::device_and_commands DeviceAndCommands = Device,
           class Allocator = vko::vma::Allocator>
-BoundBuffer<T> uploadImmediate(Allocator& allocator, VkCommandPool pool, VkQueue queue,
-                               const DeviceAndCommands& device, std::span<std::add_const_t<T>> data,
-                               VkBufferUsageFlags usage) {
+DeviceBuffer<T> uploadImmediate(Allocator& allocator, VkCommandPool pool, VkQueue queue,
+                                const DeviceAndCommands&       device,
+                                std::span<std::add_const_t<T>> data, VkBufferUsageFlags usage) {
     BoundBuffer<T> staging(
         device, data.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, allocator);
-    BoundBuffer<T> result(device, data.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
-                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator);
+    DeviceBuffer<T> result(device, data.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator);
     {
         simple::ImmediateCommandBuffer cmd(device, pool, queue);
         std::ranges::copy(data, staging.map().begin());
@@ -119,6 +121,31 @@ BoundBuffer<T> uploadImmediate(Allocator& allocator, VkCommandPool pool, VkQueue
         device.vkCmdCopyBuffer(cmd, staging, result, 1, &bufferCopy);
     }
     return result;
+}
+
+// Assumes the caller has already added a pipeline barrier to make src input
+// data visible to vkCmdCopyBuffer()
+template <class T, vko::device_and_commands DeviceAndCommands = Device,
+          class Allocator = vko::vma::Allocator>
+BoundBuffer<T> downloadImmediate(Allocator& allocator, VkCommandPool pool, VkQueue queue,
+                                 const DeviceAndCommands& device, const DeviceBuffer<T>& src) {
+    BoundBuffer<T> staging(
+        device, src.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, allocator);
+    {
+        simple::ImmediateCommandBuffer cmd(device, pool, queue);
+        VkBufferCopy                   bufferCopy{
+                              .srcOffset = 0,
+                              .dstOffset = 0,
+                              .size      = src.size() * sizeof(T),
+        };
+        device.vkCmdCopyBuffer(cmd, src, staging, 1, &bufferCopy);
+        cmdMemoryBarrier(device, cmd,
+                         {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT},
+                         {VK_PIPELINE_STAGE_HOST_BIT,
+                          VK_ACCESS_HOST_READ_BIT}); // not sure if host bits do anything
+    }
+    return staging;
 }
 
 template <class Allocator = vko::vma::Allocator>

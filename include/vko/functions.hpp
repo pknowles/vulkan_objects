@@ -10,22 +10,22 @@ namespace vko
 // Concept for a global function pointer table. Only does a single test for performance
 // reasons.
 template <class T>
-concept global_commands = requires(T vk) {
-    { vk.vkCreateInstance } -> std::same_as<PFN_vkCreateInstance&>;
+concept global_commands = requires(const T& vk) {
+    { vk.vkCreateInstance } -> std::same_as<const PFN_vkCreateInstance&>;
 };
 
 // Concept for a instance function pointer table. Only does a single test for performance
 // reasons.
 template <class T>
-concept instance_commands = requires(T vk) {
-    { vk.vkCreateDevice } -> std::same_as<PFN_vkCreateDevice&>;
+concept instance_commands = requires(const T& vk) {
+    { vk.vkCreateDevice } -> std::same_as<const PFN_vkCreateDevice&>;
 };
 
 // Concept for a device function pointer table. Only does a single test for performance
 // reasons.
 template <class T>
-concept device_commands = requires(T vk) {
-    { vk.vkGetDeviceQueue } -> std::same_as<PFN_vkGetDeviceQueue&>;
+concept device_commands = requires(const T& vk) {
+    { vk.vkGetDeviceQueue } -> std::same_as<const PFN_vkGetDeviceQueue&>;
 };
 
 struct VulkanLibrary

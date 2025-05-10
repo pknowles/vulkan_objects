@@ -167,16 +167,16 @@ struct ShaderBindingTables {
                      VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR,
                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator)
         , raygenTableOffset(staging.raygenTableOffset
-                                ? staging.raygenTableOffset->atAddress(tables.address(device))
+                                ? staging.raygenTableOffset->atAddress(tables.address())
                                 : VkStridedDeviceAddressRegionKHR{})
         , missTableOffset(staging.missTableOffset
-                              ? staging.missTableOffset->atAddress(tables.address(device))
+                              ? staging.missTableOffset->atAddress(tables.address())
                               : VkStridedDeviceAddressRegionKHR{})
         , hitTableOffset(staging.hitTableOffset
-                             ? staging.hitTableOffset->atAddress(tables.address(device))
+                             ? staging.hitTableOffset->atAddress(tables.address())
                              : VkStridedDeviceAddressRegionKHR{})
         , callableTableOffset(staging.callableTableOffset
-                                  ? staging.callableTableOffset->atAddress(tables.address(device))
+                                  ? staging.callableTableOffset->atAddress(tables.address())
                                   : VkStridedDeviceAddressRegionKHR{}) {
         vko::simple::ImmediateCommandBuffer cmd(device, pool, queue);
         VkBufferCopy                        bufferCopy{
@@ -186,17 +186,98 @@ struct ShaderBindingTables {
         };
         device.vkCmdCopyBuffer(cmd, staging.tables, tables, 1, &bufferCopy);
     }
-    BoundBuffer<std::byte>          tables;
+    DeviceBuffer<std::byte>         tables;
     VkStridedDeviceAddressRegionKHR raygenTableOffset;
     VkStridedDeviceAddressRegionKHR missTableOffset;
     VkStridedDeviceAddressRegionKHR hitTableOffset;
     VkStridedDeviceAddressRegionKHR callableTableOffset;
 };
 
+template <VkShaderStageFlagBits stage>
+inline VkPipelineShaderStageCreateInfo rtStage(VkShaderModule module,
+                                               const char*    entrypoint = "main") {
+    return {
+        .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .pNext               = nullptr,
+        .flags               = 0,
+        .stage               = stage,
+        .module              = module,
+        .pName               = entrypoint,
+        .pSpecializationInfo = nullptr,
+    };
+}
+
+inline VkPipelineShaderStageCreateInfo stageRaygen(VkShaderModule module,
+                                                   const char*    entrypoint = "main") {
+    return rtStage<VK_SHADER_STAGE_RAYGEN_BIT_KHR>(module, entrypoint);
+}
+
+inline VkPipelineShaderStageCreateInfo stageMiss(VkShaderModule module,
+                                                 const char*    entrypoint = "main") {
+    return rtStage<VK_SHADER_STAGE_MISS_BIT_KHR>(module, entrypoint);
+}
+
+inline VkPipelineShaderStageCreateInfo stageClosestHit(VkShaderModule module,
+                                                       const char*    entrypoint = "main") {
+    return rtStage<VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR>(module, entrypoint);
+}
+
+inline VkPipelineShaderStageCreateInfo stageAnyHit(VkShaderModule module,
+                                                   const char*    entrypoint = "main") {
+    return rtStage<VK_SHADER_STAGE_ANY_HIT_BIT_KHR>(module, entrypoint);
+}
+
+inline VkPipelineShaderStageCreateInfo stageIntersection(VkShaderModule module,
+                                                         const char*    entrypoint = "main") {
+    return rtStage<VK_SHADER_STAGE_INTERSECTION_BIT_KHR>(module, entrypoint);
+}
+
+inline VkRayTracingShaderGroupCreateInfoKHR groupGeneral(uint32_t stageIndex) {
+    return {
+        .sType              = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
+        .pNext              = nullptr,
+        .type               = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR,
+        .generalShader      = stageIndex,
+        .closestHitShader   = VK_SHADER_UNUSED_KHR,
+        .anyHitShader       = VK_SHADER_UNUSED_KHR,
+        .intersectionShader = VK_SHADER_UNUSED_KHR,
+        .pShaderGroupCaptureReplayHandle = nullptr,
+    };
+}
+
+inline VkRayTracingShaderGroupCreateInfoKHR
+groupTrianglesHit(uint32_t closestHitIndex, uint32_t anyHitIndex = VK_SHADER_UNUSED_KHR) {
+    return {
+        .sType              = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
+        .pNext              = nullptr,
+        .type               = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR,
+        .generalShader      = VK_SHADER_UNUSED_KHR,
+        .closestHitShader   = closestHitIndex,
+        .anyHitShader       = anyHitIndex,
+        .intersectionShader = VK_SHADER_UNUSED_KHR,
+        .pShaderGroupCaptureReplayHandle = nullptr,
+    };
+}
+
+inline VkRayTracingShaderGroupCreateInfoKHR
+groupProceduralHit(uint32_t closestHitIndex, uint32_t anyHitIndex, uint32_t intersectionIndex) {
+    return {
+        .sType              = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
+        .pNext              = nullptr,
+        .type               = VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR,
+        .generalShader      = VK_SHADER_UNUSED_KHR,
+        .closestHitShader   = closestHitIndex,
+        .anyHitShader       = anyHitIndex,
+        .intersectionShader = intersectionIndex,
+        .pShaderGroupCaptureReplayHandle = nullptr,
+    };
+}
+
 template <class PushConstants, size_t MaxRecursionDepth>
 class RayTracingPipeline {
 public:
     // If using the below helper constructor, use these magic numbers... :(
+    // More for starters/demonstration - most apps will need multiple hitgroups
     static constexpr uint32_t DefaultGroupRaygen = 0;
     static constexpr uint32_t DefaultGroupMiss   = 1;
     static constexpr uint32_t DefaultGroupHit    = 2; // combined closest and any hit
@@ -209,76 +290,12 @@ public:
                        VkShaderModule anyHit)
         : RayTracingPipeline(
               device, descriptorSetLayouts,
-              std::to_array({
-                  VkPipelineShaderStageCreateInfo{
-                      .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                      .pNext               = nullptr,
-                      .flags               = 0,
-                      .stage               = VK_SHADER_STAGE_RAYGEN_BIT_KHR,
-                      .module              = raygen,
-                      .pName               = "main",
-                      .pSpecializationInfo = nullptr,
-                  },
-                  VkPipelineShaderStageCreateInfo{
-                      .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                      .pNext               = nullptr,
-                      .flags               = 0,
-                      .stage               = VK_SHADER_STAGE_MISS_BIT_KHR,
-                      .module              = miss,
-                      .pName               = "main",
-                      .pSpecializationInfo = nullptr,
-                  },
-                  VkPipelineShaderStageCreateInfo{
-                      .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                      .pNext               = nullptr,
-                      .flags               = 0,
-                      .stage               = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
-                      .module              = closestHit,
-                      .pName               = "main",
-                      .pSpecializationInfo = nullptr,
-                  },
-                  VkPipelineShaderStageCreateInfo{
-                      .sType               = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                      .pNext               = nullptr,
-                      .flags               = 0,
-                      .stage               = VK_SHADER_STAGE_ANY_HIT_BIT_KHR,
-                      .module              = anyHit,
-                      .pName               = "main",
-                      .pSpecializationInfo = nullptr,
-                  },
-              }),
-              std::to_array({
-                  VkRayTracingShaderGroupCreateInfoKHR{
-                      .sType         = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
-                      .pNext         = nullptr,
-                      .type          = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR,
-                      .generalShader = 0 /* "raygen" shaderStages[0] */,
-                      .closestHitShader                = VK_SHADER_UNUSED_KHR,
-                      .anyHitShader                    = VK_SHADER_UNUSED_KHR,
-                      .intersectionShader              = VK_SHADER_UNUSED_KHR,
-                      .pShaderGroupCaptureReplayHandle = nullptr,
-                  },
-                  VkRayTracingShaderGroupCreateInfoKHR{
-                      .sType         = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
-                      .pNext         = nullptr,
-                      .type          = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR,
-                      .generalShader = 1 /* "miss" shaderStages[1] */,
-                      .closestHitShader                = VK_SHADER_UNUSED_KHR,
-                      .anyHitShader                    = VK_SHADER_UNUSED_KHR,
-                      .intersectionShader              = VK_SHADER_UNUSED_KHR,
-                      .pShaderGroupCaptureReplayHandle = nullptr,
-                  },
-                  VkRayTracingShaderGroupCreateInfoKHR{
-                      .sType         = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
-                      .pNext         = nullptr,
-                      .type          = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR,
-                      .generalShader = VK_SHADER_UNUSED_KHR,
-                      .closestHitShader                = 2 /* "any hit" shaderStages[2] */,
-                      .anyHitShader                    = 3 /* "closest hit" shaderStages[3] */,
-                      .intersectionShader              = VK_SHADER_UNUSED_KHR,
-                      .pShaderGroupCaptureReplayHandle = nullptr,
-                  },
-              })) {}
+              std::to_array({stageRaygen(raygen), stageMiss(miss), stageClosestHit(closestHit),
+                             stageAnyHit(anyHit)}),
+              std::to_array({groupGeneral(0 /* "raygen" shaderStages[0] */),
+                             groupGeneral(1 /* "miss" shaderStages[1] */),
+                             groupTrianglesHit(2 /* "any hit" shaderStages[2] */,
+                                               3 /* "closest hit" shaderStages[3] */)})) {}
 
     template <device_and_commands DeviceAndCommands>
     RayTracingPipeline(const DeviceAndCommands&                              device,

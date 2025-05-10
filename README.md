@@ -1,25 +1,40 @@
 
-> [!CAUTION]
-> Work in progress. Expect frequent changes. But it works 🙂
-
 # vko: Vulkan Objects
 
-This library is a self-contained Vulkan 3D Graphics API provider and thin RAII
-wrapper. It is not an engine or rendering abstraction. That said, there are some
-optional utilities to make very specific but common operations easy to write.
-Naturally, these are layered on top and in separate headers.
+Self-contained Vulkan 3D Graphics API provider and thin RAII wrapper in C++.
 
-TLDR:
+- Dependency and lifetime design validation at compile time
+- All-in-one: Generated from the Vulkan spec directly, optional loader included.
+- Pluggable: Consumes native API types for easy integration. Use utilities you
+  want; replace those you don't.
+
+There are many optional extras to make common operations easy to write.
+Naturally, these are layered and in separate headers to make ignoring them or
+overriding and specialization easy. This is not an engine or rendering
+abstraction. It does not suck you into an ecosystem.
+
+TLDR by example:
 
 ```cpp
 #include <vko/handles.hpp>
 ...
 vko::VulkanLibrary  library;  // Cross platform, just dlopen()
-vko::GlobalCommands globalCommands(library.loader());  // bootstrap with vkGetInstanceProcAddr
+vko::GlobalCommands globalCommands(library.loader());  // bootstrap with any vkGetInstanceProcAddr
 vko::Instance       instance(globalCommands, VkInstanceCreateInfo{...});  // Standard CreateInfo structs
 VkPhysicalDevice    physicalDevice(vko::toVector(instance.vkEnumeratePhysicalDevices, instance)[0]);
-vko::Device         device(instance, physicalDevice, VkDeviceCreateInfo{...});  // Both function tables (or byo!) and VkDevice
-device.vkDeviceWaitIdle(device);  // Standard vulkan API, no vulkan.hpp/vulkan_raii.hpp
+vko::Device         device(instance, physicalDevice, VkDeviceCreateInfo{...});
+
+// Standard C API, no vulkan.hpp/vulkan_raii.hpp overhead
+device.vkDeviceWaitIdle(device);
+
+// BYO types. vko::Instance and vko::Device are both function tables and VkInstance/VkDevice.
+// There are overloads if yours are separate:
+vko::Image image(device, VkImageCreateInfo{...})
+vko::Image image((vko::DeviceCommands&)device, (VkDevice)device, VkImageCreateInfo{...})
+// ... but you may want vko::BoundImage<vko::vma::Allocator> :)
+
+// Optional glfw integration
+vko::SurfaceKHR surface = vko::glfw::makeSurface(...);
 ```
 
 For more example code, see [test/src/test.cpp](test/src/test.cpp). It includes ray tracing✨!
@@ -29,13 +44,14 @@ The aims are:
 1. Dependencies are implied by the language
 
    No default initialization. Delayed initialization would allow you to create
-   an object before its dependencies are created or even in scope. This would
-   make using the library ambiguous and error prone. For example, you can't
-   create a VkCommandPool before a VkDevice and by forcing initialization a user
-   will immediately be reminded to create the VkDevice first.
+   an object before its dependencies are created or even in scope. This makes
+   code ambiguous and error prone. For example, you can't create a VkCommandPool
+   before a VkDevice and by forcing initialization a user will immediately be
+   reminded to create the VkDevice first. It allows the compiler to help us
+   design better.
 
-   If it's truly needed there is always std::optional and std::unique_ptr, which
-   better show the intent of a nullable object.
+   If it's truly needed there is always `std::optional` and `std::unique_ptr`.
+   Safety first, RAII by default, that you can override in specific places.
 
 2. Objects are general, have minimal dependencies and don't suck you into an
    ecosystem
@@ -149,8 +165,8 @@ Some other common ones can optionally be added with the below options.
 
 Exceptions
 
-C++ is really lacking here. IMO it took so long for us to even get move
-semantics (we still have no std::ranges::output_range) and during that time
+C++ is really lacking here, re. RTTI. IMO it took so long for us to even get
+move semantics (we still have no std::ranges::output_range) and during that time
 people understandably got the wrong idea about the language and the workarounds
 gave it a bad reputation. There is `std::expected` and `std::error_code`, but
 they don't help with constructors.
