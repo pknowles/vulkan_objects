@@ -12,23 +12,27 @@ namespace simple {
 // See: https://github.com/KhronosGroup/Vulkan-Docs/issues/2444#issuecomment-2448561334
 template <class PushConstants>
 struct ComputeShader {
-    ShadersEXT     shader;
-    PipelineLayout pipelineLayout; // for push constants and descriptor sets
-    ComputeShader(Device& device, ::slang::ISession* session, const std::string moduleName,
-            std::span<const VkDescriptorSetLayout> descriptorSetLayouts)
+    template <device_and_commands Device>
+    ComputeShader(const Device& device, ::slang::ISession* session, const std::string moduleName,
+                  std::span<const VkDescriptorSetLayout> descriptorSetLayouts)
         : ComputeShader(device, session,
-                  slang::EntryPoint(slang::Module(session, moduleName.c_str()), "main"),
-                  descriptorSetLayouts) {}
-    ComputeShader(Device& device, ::slang::ISession* session, ::slang::IComponentType* entryPoint,
-            std::span<const VkDescriptorSetLayout> descriptorSetLayouts)
-        : ComputeShader(device,
-                  slang::Code(slang::Program(
-                                       slang::Composition(session, std::span(&entryPoint, 1))),
-                                   0, 0)
-                      .bytes(),
-                  descriptorSetLayouts) {}
-    ComputeShader(Device& device, std::span<const std::byte> spirv,
-            std::span<const VkDescriptorSetLayout> descriptorSetLayouts)
+                        slang::EntryPoint(slang::Module(session, moduleName.c_str()), "main"),
+                        descriptorSetLayouts) {}
+
+    template <device_and_commands Device>
+    ComputeShader(const Device& device, ::slang::ISession* session,
+                  ::slang::IComponentType*               entryPoint,
+                  std::span<const VkDescriptorSetLayout> descriptorSetLayouts)
+        : ComputeShader(
+              device,
+              slang::Code(slang::Program(slang::Composition(session, std::span(&entryPoint, 1))), 0,
+                          0)
+                  .bytes(),
+              descriptorSetLayouts) {}
+
+    template <device_and_commands Device>
+    ComputeShader(const Device& device, std::span<const std::byte> spirv,
+                  std::span<const VkDescriptorSetLayout> descriptorSetLayouts)
         : shader(device, device,
                  std::to_array({VkShaderCreateInfoEXT{
                      .sType                  = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
@@ -63,6 +67,9 @@ struct ComputeShader {
                                             .size       = uint32_t(sizeof(PushConstants))})
 
                                  }) {}
+
+    ShadersEXT     shader;
+    PipelineLayout pipelineLayout; // for push constants and descriptor sets
 };
 
 } // namespace simple

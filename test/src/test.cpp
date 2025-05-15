@@ -778,11 +778,11 @@ TEST(Integration, HelloTriangleRayTracing) {
                              });
     }
 
-    vko::BoundBuffer<uint32_t> triangles = uploadImmediate<uint32_t>(
+    vko::DeviceBuffer<uint32_t> triangles = uploadImmediate<uint32_t>(
         allocator, commandPool, queue, device, std::to_array({0U, 1U, 2U, 0U, 2U, 3U}),
         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
-    vko::BoundBuffer<float> vertices = uploadImmediate<float>(
+    vko::DeviceBuffer<float> vertices = uploadImmediate<float>(
         allocator, commandPool, queue, device,
         std::to_array({-1.0f, 0.0f, -1.0f, -1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, -1.0f}),
         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
@@ -792,8 +792,8 @@ TEST(Integration, HelloTriangleRayTracing) {
             .triangleCount = static_cast<uint32_t>(triangles.size()),
             .maxVertex =
                 static_cast<uint32_t>(vertices.size()) - 1, // Max. index one less than count
-            .indexAddress  = triangles.address(device),
-            .vertexAddress = vertices.address(device),
+            .indexAddress  = triangles.address(),
+            .vertexAddress = vertices.address(),
             .vertexStride  = sizeof(float) * 3,
         },
     };
@@ -803,7 +803,7 @@ TEST(Integration, HelloTriangleRayTracing) {
     vko::as::Sizes                 blasSizes(device, blasInput);
     vko::as::AccelerationStructure blas(device, blasInput.type, *blasSizes, 0, allocator);
     VkTransformMatrixKHR identity{.matrix = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
-    vko::BoundBuffer<VkAccelerationStructureInstanceKHR> instances =
+    vko::DeviceBuffer<VkAccelerationStructureInstanceKHR> instances =
         uploadImmediate<VkAccelerationStructureInstanceKHR>(
             allocator, commandPool, queue, device,
             std::to_array({VkAccelerationStructureInstanceKHR{
@@ -817,12 +817,12 @@ TEST(Integration, HelloTriangleRayTracing) {
             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
                 VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
     vko::as::Input tlasInput =
-        vko::as::createTlasInput(uint32_t(instances.size()), instances.address(device),
+        vko::as::createTlasInput(uint32_t(instances.size()), instances.address(),
                                  VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
                                      VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_DATA_ACCESS_KHR);
     vko::as::Sizes                 tlasSizes(device, tlasInput);
     vko::as::AccelerationStructure tlas(device, tlasInput.type, *tlasSizes, 0, allocator);
-    vko::BoundBuffer<std::byte>    scratch(
+    vko::DeviceBuffer<std::byte>   scratch(
         device, std::max(blasSizes->buildScratchSize, tlasSizes->buildScratchSize),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator);
