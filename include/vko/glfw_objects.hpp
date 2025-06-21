@@ -348,7 +348,8 @@ SurfaceKHR makeSurface(const InstanceCommands& vk, VkInstance instance, Platform
     }
 #endif
 #if VK_KHR_wayland_surface
-    if (!result && support.wayland) {
+    if (!result && support.wayland &&
+        glfwGetWaylandDisplay() /* avoid having to catch an exception */) {
         try {
             result = makeWaylandSurfaceKHR(vk, instance, window);
         } catch (const Exception& e) {
@@ -357,7 +358,7 @@ SurfaceKHR makeSurface(const InstanceCommands& vk, VkInstance instance, Platform
     }
 #endif
 #if VK_KHR_xcb_surface
-    if (!result && support.xcb) {
+    if (!result && support.xcb && glfwGetXCBConnection() /* avoid having to catch an exception */) {
         try {
             result = makeXcbSurfaceKHR(vk, instance, window);
         } catch (const Exception& e) {
@@ -366,7 +367,7 @@ SurfaceKHR makeSurface(const InstanceCommands& vk, VkInstance instance, Platform
     }
 #endif
 #if VK_KHR_xlib_surface
-    if (!result && support.xlib) {
+    if (!result && support.xlib && glfwGetX11Display() /* avoid having to catch an exception */) {
         try {
             result = makeXlibSurfaceKHR(vk, instance, window);
         } catch (const Exception& e) {

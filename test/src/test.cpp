@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <debugbreak.h>
+#include <expected>
 #include <gtest/gtest.h>
 #include <iostream>
 #include <type_traits>
@@ -65,11 +66,9 @@ struct TestInstanceCreateInfo {
     TestInstanceCreateInfo operator=(const TestInstanceCreateInfo& other) = delete;
 };
 
-struct TestDeviceCreateInfo {
-    std::array<const char*, 2>              deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-                                                                VK_EXT_SHADER_OBJECT_EXTENSION_NAME};
-    float                                   queuePriority    = 1.0f;
-    VkDeviceQueueCreateInfo                 queueCreateInfo;
+// Combined vulkan features struct initialized with required flags set.
+// Non-copyable so the pNext chain remains valid.
+struct TestDeviceFeatures {
     VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeature = {
         .sType        = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
         .pNext        = nullptr,
@@ -94,7 +93,29 @@ struct TestDeviceCreateInfo {
         .shaderIntegerDotProduct = VK_FALSE,
         .maintenance4            = VK_FALSE,
     };
-    VkDeviceCreateInfo deviceCreateInfo;
+    bool hasAll(const TestDeviceFeatures& required) {
+        // For demonstration. Ideally this code would be generated for vulkan
+        // feature structs
+        if (required.vulkan13Feature.dynamicRendering && !vulkan13Feature.dynamicRendering)
+            return false;
+        if (required.shaderObjectFeature.shaderObject && !shaderObjectFeature.shaderObject)
+            return false;
+        // ...
+        return true;
+    }
+    TestDeviceFeatures()                                          = default;
+    TestDeviceFeatures(const TestDeviceFeatures& other)           = delete;
+    TestDeviceFeatures operator=(const TestDeviceFeatures& other) = delete;
+    void*              pNext() { return &vulkan13Feature; }
+};
+
+struct TestDeviceCreateInfo {
+    std::array<const char*, 2> deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                                                   VK_EXT_SHADER_OBJECT_EXTENSION_NAME};
+    float                      queuePriority    = 1.0f;
+    VkDeviceQueueCreateInfo    queueCreateInfo;
+    TestDeviceFeatures         features;
+    VkDeviceCreateInfo         deviceCreateInfo;
     TestDeviceCreateInfo(uint32_t queueFamilyIndex)
         : queueCreateInfo{.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                           .pNext            = nullptr,
@@ -103,7 +124,7 @@ struct TestDeviceCreateInfo {
                           .queueCount       = 1,
                           .pQueuePriorities = &queuePriority}
         , deviceCreateInfo{.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-                           .pNext                   = &vulkan13Feature,
+                           .pNext                   = features.pNext(),
                            .flags                   = 0,
                            .queueCreateInfoCount    = 1U,
                            .pQueueCreateInfos       = &queueCreateInfo,
@@ -127,19 +148,45 @@ TEST(Integration, InitHappyPath) {
     std::vector<VkPhysicalDevice> physicalDevices =
         vko::toVector(instance.vkEnumeratePhysicalDevices, instance);
 
-    auto physicalDeviceIt =
-        std::ranges::find_if(physicalDevices, [&](VkPhysicalDevice physicalDevice) -> bool {
-            VkPhysicalDeviceFeatures2 features2 =
-                vko::get(instance.vkGetPhysicalDeviceFeatures2, physicalDevice);
-            bool anyHasAll = std::ranges::any_of(
+    auto queueSuitable = [](const VkQueueFamilyProperties& properties) {
+        VkQueueFlags requiredFlags =
+            VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
+        return (properties.queueFlags & requiredFlags) == requiredFlags;
+    };
+    auto physicalDeviceSuitable = [&](VkPhysicalDevice physicalDevice) -> bool {
+        // Check device has required features
+        TestDeviceFeatures hasFeatures; // Reuse the required features pNext chain for querying
+        VkPhysicalDeviceFeatures2 features2{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                                            .pNext = hasFeatures.pNext(),
+                                            .features = {}};
+        instance.vkGetPhysicalDeviceFeatures2(physicalDevice, &features2);
+        if (features2.features.shaderInt64 != VK_TRUE)
+            return false; // Don't really care. Purely for demonstration
+        if (!hasFeatures.hasAll(TestDeviceFeatures{}))
+            return false; // TODO: move features2 into TestDeviceFeatures
+        if (!std::ranges::any_of(
                 vko::toVector(instance.vkGetPhysicalDeviceQueueFamilyProperties, physicalDevice),
-                [](const VkQueueFamilyProperties& properties) {
-                    return (properties.queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT |
-                                                     VK_QUEUE_TRANSFER_BIT)) != 0;
-                });
-            // Don't really care. Purely for demonstration
-            return features2.features.shaderInt64 == VK_TRUE && anyHasAll;
-        });
+                queueSuitable))
+            return false;
+
+        // Check device has required extensions
+        auto extensions =
+            vko::toVector(instance.vkEnumerateDeviceExtensionProperties, physicalDevice, nullptr);
+        for (auto required : TestDeviceCreateInfo(0).deviceExtensions)
+            if (std::ranges::none_of(extensions, [&required](const VkExtensionProperties& p) {
+                    return std::string_view(p.extensionName) == required;
+                }))
+                return false;
+
+        // Check device has required properties
+        // TODO: could return a priority and choose the highest
+        VkPhysicalDeviceProperties properties =
+            vko::get(instance.vkGetPhysicalDeviceProperties, physicalDevice);
+        if (false && properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU)
+            return false; // For demonstration
+        return true;
+    };
+    auto physicalDeviceIt = std::ranges::find_if(physicalDevices, physicalDeviceSuitable);
     ASSERT_NE(physicalDeviceIt, physicalDevices.end());
     VkPhysicalDevice physicalDevice = *physicalDeviceIt;
 
@@ -147,11 +194,7 @@ TEST(Integration, InitHappyPath) {
     // TODO: reuse results from above call
     std::vector<VkQueueFamilyProperties> queueProperties =
         vko::toVector(instance.vkGetPhysicalDeviceQueueFamilyProperties, physicalDevice);
-    auto queuePropertiesIt =
-        std::ranges::find_if(queueProperties, [](const VkQueueFamilyProperties& properties) {
-            return (properties.queueFlags &
-                    (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)) != 0;
-        });
+    auto queuePropertiesIt = std::ranges::find_if(queueProperties, queueSuitable);
     ASSERT_NE(queuePropertiesIt, queueProperties.end());
     uint32_t queueFamilyIndex = uint32_t(std::distance(queueProperties.begin(), queuePropertiesIt));
 
@@ -229,7 +272,7 @@ TEST(Integration, WindowSystemIntegration) {
         vko::toVector(instance.vkEnumeratePhysicalDevices, instance);
     auto physicalDeviceIt =
         std::ranges::find_if(physicalDevices, [&](VkPhysicalDevice physicalDevice) -> bool {
-            uint32_t queueFamilyIndex = 0; // TODO: search more than just the first?
+            uint32_t queueFamilyIndex = 0; // TODO: search more than just the first
             return vko::glfw::physicalDevicePresentationSupport(instance, platformSupport, physicalDevice,
                                                                 queueFamilyIndex);
         });
@@ -242,8 +285,9 @@ TEST(Integration, WindowSystemIntegration) {
         vko::toVector(instance.vkGetPhysicalDeviceQueueFamilyProperties, physicalDevice);
     auto queuePropertiesIt =
         std::ranges::find_if(queueProperties, [](const VkQueueFamilyProperties& properties) {
-            return (properties.queueFlags &
-                    (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)) != 0;
+            VkQueueFlags requiredFlags =
+                VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
+            return (properties.queueFlags & requiredFlags) == requiredFlags;
         });
     ASSERT_NE(queuePropertiesIt, queueProperties.end());
     uint32_t queueFamilyIndex = uint32_t(std::distance(queueProperties.begin(), queuePropertiesIt));
@@ -631,8 +675,9 @@ TEST(Integration, HelloTriangleRayTracing) {
         vko::toVector(instance.vkGetPhysicalDeviceQueueFamilyProperties, physicalDevice);
     auto queuePropertiesIt =
         std::ranges::find_if(queueProperties, [](const VkQueueFamilyProperties& properties) {
-            return (properties.queueFlags &
-                    (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)) != 0;
+            VkQueueFlags requiredFlags =
+                VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
+            return (properties.queueFlags & requiredFlags) == requiredFlags;
         });
     ASSERT_NE(queuePropertiesIt, queueProperties.end());
     uint32_t queueFamilyIndex = uint32_t(std::distance(queueProperties.begin(), queuePropertiesIt));
@@ -860,7 +905,7 @@ TEST(Integration, HelloTriangleRayTracing) {
                                                                       VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT);
     vko::simple::RayTracingPipeline<RtPushConstants, 4> rtPipeline(
         device, std::to_array({static_cast<VkDescriptorSetLayout>(descriptorSet.layout)}), rayGen,
-        anyHit, closestHit, miss);
+        miss, closestHit, anyHit);
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProperties =
         vko::simple::rayTracingPipelineProperties(instance, physicalDevice);
     vko::simple::HitGroupHandles     hitGroupHandles(device, rtPipelineProperties, rtPipeline, 3);
