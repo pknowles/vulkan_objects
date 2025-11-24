@@ -20,11 +20,23 @@ public:
     T*     data() const { return reinterpret_cast<T*>(m_map.data()); }
     size_t size() const { return m_size; }
     T&     operator[](size_t index) const { return data()[index]; }
+    std::span<T> span() const { return std::span{data(), size()}; }
 
 private:
     Map          m_map;
     VkDeviceSize m_size;
 };
+
+// It's common to download and inspect buffers when debugging and annoying to
+// have to set the TRANSFER_SRC bit manually.
+// TODO: ideally move to user layer
+inline constexpr VkBufferUsageFlags debugUsageFlags() {
+#if !defined(NDEBUG)
+    return VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+#else
+    return 0;
+#endif
+}
 
 template <class T, class Allocator = vma::Allocator>
 class BoundBuffer {
@@ -49,7 +61,7 @@ public:
                        .pNext                 = pNext,
                        .flags                 = flags,
                        .size                  = sizeof(T) * elementCount,
-                       .usage                 = usage,
+                       .usage                 = usage | debugUsageFlags(),
                        .sharingMode           = sharingMode,
                        .queueFamilyIndexCount = uint32_t(queueFamilyIndices.size()),
                        .pQueueFamilyIndices =
@@ -96,9 +108,9 @@ public:
                  VkSharingMode sharingMode, std::span<const uint32_t> queueFamilyIndices,
                  const AllocationCreateInfo& allocationCreateInfo, Allocator& allocator)
         : m_buffer(vk, device, elementCount, pNext, flags,
-                   usage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, sharingMode,
-                   queueFamilyIndices, allocationCreateInfo | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                   allocator)
+                   usage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | debugUsageFlags(),
+                   sharingMode, queueFamilyIndices,
+                   allocationCreateInfo | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator)
         , m_address(vk.vkGetBufferDeviceAddress(
               device, vko::tmpPtr(VkBufferDeviceAddressInfo{
                           .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,

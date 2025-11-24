@@ -92,4 +92,22 @@ auto get(GetFunc getFunc, const Args&... args) {
     return result;
 }
 
+template <class T, std::ranges::input_range Input, class TransformFunction>
+std::vector<T> generate(const Input& input, TransformFunction&& transformFunction) {
+    std::vector<T> result;
+    if constexpr (std::ranges::sized_range<Input>)
+        result.reserve(std::ranges::size(input));
+    std::ranges::transform(input, std::back_inserter(result), transformFunction);
+    return result;
+}
+
+template <class T, class GenerateFunction>
+std::vector<T> generateIndexed(size_t size, GenerateFunction&& generateFunction) {
+    std::vector<T> result;
+    result.reserve(size);
+    for (size_t i = 0; i < size; ++i)
+        result.push_back(generateFunction(i));
+    return result;
+}
+
 } // namespace vko
