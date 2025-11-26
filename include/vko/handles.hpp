@@ -242,6 +242,54 @@ struct DestroyVectorFunc<VkShaderEXT> {
     VkDevice               device;
 };
 
+// An array of ComputePipelines. Exposes an array directly because that's what the
+// API provides.
+using ComputePipelines = HandleVector<VkPipeline, PFN_vkCreateComputePipelines>;
+
+template <>
+struct CreateHandleVector<VkPipeline, PFN_vkCreateComputePipelines> {
+    using CreateInfo = std::span<const VkComputePipelineCreateInfo>;
+
+    template <device_and_commands DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
+    std::vector<VkPipeline> operator()(const DeviceAndCommands&                     vk,
+                                       std::span<const VkComputePipelineCreateInfo> createInfo) {
+        return (*this)(vk, vk, createInfo);
+    }
+    template <class Commands>
+    std::vector<VkPipeline> operator()(const Commands& vk, VkDevice device,
+                                       std::span<const VkComputePipelineCreateInfo> createInfo) {
+        std::vector<VkPipeline> handles(createInfo.size());
+        check(vk.vkCreateComputePipelines(device, VK_NULL_HANDLE, uint32_t(createInfo.size()),
+                                          createInfo.data(), nullptr, handles.data()));
+        return handles;
+    }
+};
+
+// An array of GraphicsPipelines. Exposes an array directly because that's what the
+// API provides.
+using GraphicsPipelines = HandleVector<VkPipeline, PFN_vkCreateGraphicsPipelines>;
+
+template <>
+struct CreateHandleVector<VkPipeline, PFN_vkCreateGraphicsPipelines> {
+    using CreateInfo = std::span<const VkGraphicsPipelineCreateInfo>;
+
+    template <device_and_commands DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
+    std::vector<VkPipeline> operator()(const DeviceAndCommands&                      vk,
+                                       std::span<const VkGraphicsPipelineCreateInfo> createInfo) {
+        return (*this)(vk, vk, createInfo);
+    }
+    template <class Commands>
+    std::vector<VkPipeline> operator()(const Commands& vk, VkDevice device,
+                                       std::span<const VkGraphicsPipelineCreateInfo> createInfo) {
+        std::vector<VkPipeline> handles(createInfo.size());
+        check(vk.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, uint32_t(createInfo.size()),
+                                           createInfo.data(), nullptr, handles.data()));
+        return handles;
+    }
+};
+
 // An array of RayTracingPipelinesKHR. Exposes an array directly because that's what the
 // API provides.
 using RayTracingPipelinesKHR = HandleVector<VkPipeline, PFN_vkCreateRayTracingPipelinesKHR>;
@@ -271,6 +319,33 @@ struct CreateHandleVector<VkPipeline, PFN_vkCreateRayTracingPipelinesKHR> {
 
 template <>
 struct DestroyVectorFunc<VkPipeline> {
+    // Constructor for ComputePipelines
+    template <device_and_commands DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
+    DestroyVectorFunc(const DeviceAndCommands&                     vk,
+                      std::span<const VkComputePipelineCreateInfo> createInfo)
+        : DestroyVectorFunc(vk, vk, createInfo) {}
+
+    template <device_commands DeviceCommands>
+    DestroyVectorFunc(const DeviceCommands& vk, VkDevice device,
+                      std::span<const VkComputePipelineCreateInfo>)
+        : destroy(vk.vkDestroyPipeline)
+        , device(device) {}
+
+    // Constructor for GraphicsPipelines
+    template <device_and_commands DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
+    DestroyVectorFunc(const DeviceAndCommands&                      vk,
+                      std::span<const VkGraphicsPipelineCreateInfo> createInfo)
+        : DestroyVectorFunc(vk, vk, createInfo) {}
+
+    template <device_commands DeviceCommands>
+    DestroyVectorFunc(const DeviceCommands& vk, VkDevice device,
+                      std::span<const VkGraphicsPipelineCreateInfo>)
+        : destroy(vk.vkDestroyPipeline)
+        , device(device) {}
+
+    // Constructor for RayTracingPipelinesKHR
     template <device_and_commands DeviceAndCommands>
         requires std::constructible_from<VkDevice, DeviceAndCommands>
     DestroyVectorFunc(const DeviceAndCommands&                           vk,
@@ -282,12 +357,51 @@ struct DestroyVectorFunc<VkPipeline> {
                       std::span<const VkRayTracingPipelineCreateInfoKHR>)
         : destroy(vk.vkDestroyPipeline)
         , device(device) {}
+
     void operator()(const std::vector<VkPipeline>& handles) const {
         for (auto handle : handles)
             destroy(device, handle, nullptr);
     }
     PFN_vkDestroyPipeline destroy;
     VkDevice              device;
+};
+
+// Utility to expose ComputePipelines as a single VkPipeline
+// TODO: special case to avoid the std::vector heap allocation
+class ComputePipeline {
+public:
+    template <device_and_commands DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
+    ComputePipeline(const DeviceAndCommands& vk, const VkComputePipelineCreateInfo& createInfo)
+        : ComputePipeline(vk, vk, createInfo) {}
+    template <device_commands DeviceCommands>
+    ComputePipeline(const DeviceCommands& vk, VkDevice device,
+                    const VkComputePipelineCreateInfo& createInfo)
+        : m_pipelines(vk, device, std::span{&createInfo, 1}) {}
+    operator VkPipeline() const { return m_pipelines[0]; }
+    const VkPipeline* ptr() const { return &m_pipelines[0]; }
+
+private:
+    ComputePipelines m_pipelines;
+};
+
+// Utility to expose GraphicsPipelines as a single VkPipeline
+// TODO: special case to avoid the std::vector heap allocation
+class GraphicsPipeline {
+public:
+    template <device_and_commands DeviceAndCommands>
+        requires std::constructible_from<VkDevice, DeviceAndCommands>
+    GraphicsPipeline(const DeviceAndCommands& vk, const VkGraphicsPipelineCreateInfo& createInfo)
+        : GraphicsPipeline(vk, vk, createInfo) {}
+    template <device_commands DeviceCommands>
+    GraphicsPipeline(const DeviceCommands& vk, VkDevice device,
+                     const VkGraphicsPipelineCreateInfo& createInfo)
+        : m_pipelines(vk, device, std::span{&createInfo, 1}) {}
+    operator VkPipeline() const { return m_pipelines[0]; }
+    const VkPipeline* ptr() const { return &m_pipelines[0]; }
+
+private:
+    GraphicsPipelines m_pipelines;
 };
 
 // Utility to expose RayTracingPipelinesKHR as a single VkPipeline

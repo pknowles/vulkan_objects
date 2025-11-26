@@ -1,11 +1,33 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
+#include <concepts>
 #include <memory>
 #include <vk_mem_alloc.h>
 #include <vko/exceptions.hpp>
 
 namespace vko {
+
+template <class T>
+concept allocation_mapping = requires(T t) {
+    { t.data() } -> std::same_as<void*>;
+    { t.invalidate(VkDeviceSize{}, VkDeviceSize{}) } -> std::same_as<void>;
+    { t.flush(VkDeviceSize{}, VkDeviceSize{}) } -> std::same_as<void>;
+};
+
+template <class T>
+concept allocation = requires(T t) {
+    { t.map() } -> allocation_mapping;
+};
+
+template <class T>
+concept allocator =
+    requires(T t, const VkMemoryRequirements& memoryRequirements,
+             VkMemoryPropertyFlags memoryPropertyFlags, VkBuffer buffer, VkImage image) {
+        { t.create(memoryRequirements, memoryPropertyFlags) } -> allocation;
+        { t.create(buffer, memoryPropertyFlags) } -> allocation;
+        { t.create(image, memoryPropertyFlags) } -> allocation;
+    };
 
 namespace vma {
 
@@ -51,6 +73,7 @@ private:
     VmaAllocation m_allocation = nullptr; // non-owning
     void*         m_data;
 };
+static_assert(allocation_mapping<Map>);
 
 class Allocation {
 public:
@@ -85,6 +108,81 @@ private:
     VmaAllocator  m_allocator  = nullptr; // non-owning
     VmaAllocation m_allocation = nullptr;
 };
+static_assert(allocation<Allocation>);
+
+class Pool {
+public:
+    Pool() = delete;
+    Pool(VmaAllocator allocator, const VmaPoolCreateInfo& createInfo)
+        : m_allocator(allocator) {
+        check(vmaCreatePool(allocator, &createInfo, &m_pool));
+    }
+    Pool(const Pool& other) = delete;
+    Pool(Pool&& other) noexcept
+        : m_allocator(other.m_allocator)
+        , m_pool(other.m_pool) {
+        other.m_pool = VK_NULL_HANDLE;
+    }
+    Pool& operator=(const Pool& other) = delete;
+    Pool& operator=(Pool&& other) noexcept {
+        free();
+        m_allocator  = other.m_allocator;
+        m_pool       = other.m_pool;
+        other.m_pool = VK_NULL_HANDLE;
+        return *this;
+    }
+    ~Pool() { free(); }
+    operator VmaPool() const { return m_pool; }
+
+private:
+    void free() {
+        if (m_pool != VK_NULL_HANDLE)
+            vmaDestroyPool(m_allocator, m_pool);
+    }
+
+    VmaAllocator m_allocator = nullptr; // non-owning
+    VmaPool      m_pool      = VK_NULL_HANDLE;
+};
+
+inline VmaAllocationCreateFlags
+defaultAllocationCreateFlags(VkMemoryPropertyFlags memoryPropertyFlags) {
+    VmaAllocationCreateFlags vmaFlags = 0;
+    if ((memoryPropertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0)
+        vmaFlags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    // VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT
+    return vmaFlags;
+}
+
+inline VmaAllocationCreateInfo allocationCreateInfo(VkMemoryPropertyFlags memoryPropertyFlags) {
+    // https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/usage_patterns.html
+    // WARNING: many flags are outright ignored when
+    // VMA_MEMORY_USAGE_UNKNOWN is used and memory properties are given
+    // directly.
+    return {
+        .flags          = defaultAllocationCreateFlags(memoryPropertyFlags),
+        .usage          = VMA_MEMORY_USAGE_UNKNOWN,
+        .requiredFlags  = memoryPropertyFlags,
+        .preferredFlags = 0,
+        .memoryTypeBits = 0,
+        .pool           = VK_NULL_HANDLE,
+        .pUserData      = nullptr,
+        .priority       = 0.0f,
+    };
+}
+
+inline VmaAllocationCreateInfo allocationCreateInfo(VmaPool               pool,
+                                                    VkMemoryPropertyFlags memoryPropertyFlags) {
+    return {
+        .flags          = defaultAllocationCreateFlags(memoryPropertyFlags),
+        .usage          = VMA_MEMORY_USAGE_UNKNOWN,
+        .requiredFlags  = memoryPropertyFlags,
+        .preferredFlags = 0,
+        .memoryTypeBits = 0,
+        .pool           = pool,
+        .pUserData      = nullptr,
+        .priority       = 0.0f,
+    };
+}
 
 class Allocator {
 public:
@@ -151,6 +249,8 @@ public:
     }
     ~Allocator() { free(); }
 
+    // TODO: would it make more sense to turn create() into Allocation
+    // constructors?
     Allocation create(const VkMemoryRequirements& memoryRequirements,
                       VkMemoryPropertyFlags       memoryPropertyFlags) {
         return create(memoryRequirements, allocationCreateInfo(memoryPropertyFlags));
@@ -207,30 +307,10 @@ private:
             vmaDestroyAllocator(m_allocator);
     }
 
-    VmaAllocationCreateInfo allocationCreateInfo(VkMemoryPropertyFlags memoryPropertyFlags) const {
-        // https://gpuopen-librariesandsdks.github.io/VulkanMemoryAllocator/html/usage_patterns.html
-        // WARNING: many flags are outright ignored when
-        // VMA_MEMORY_USAGE_UNKNOWN is used and memory properties are given
-        // directly.
-        VmaAllocationCreateFlags vmaFlags = 0;
-        if ((memoryPropertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0)
-            vmaFlags |= VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        // VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT
-        return {
-            .flags          = vmaFlags,
-            .usage          = VMA_MEMORY_USAGE_UNKNOWN,
-            .requiredFlags  = memoryPropertyFlags,
-            .preferredFlags = 0,
-            .memoryTypeBits = 0,
-            .pool           = VK_NULL_HANDLE,
-            .pUserData      = nullptr,
-            .priority       = 0.0f,
-        };
-    }
-
     std::unique_ptr<VmaVulkanFunctions> m_vulkanFunctions;
     VmaAllocator                        m_allocator = nullptr;
 };
+static_assert(allocator<Allocator>);
 
 } // namespace vma
 
