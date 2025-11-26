@@ -2,6 +2,7 @@
 #pragma once
 
 #include <span>
+#include <type_traits>
 #include <vko/allocator.hpp>
 #include <vko/handles.hpp>
 
@@ -109,8 +110,7 @@ public:
                  const AllocationCreateInfo& allocationCreateInfo, Allocator& allocator)
         : m_buffer(vk, device, elementCount, pNext, flags,
                    usage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | debugUsageFlags(),
-                   sharingMode, queueFamilyIndices,
-                   allocationCreateInfo | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator)
+                   sharingMode, queueFamilyIndices, allocationCreateInfo, allocator)
         , m_address(vk.vkGetBufferDeviceAddress(
               device, vko::tmpPtr(VkBufferDeviceAddressInfo{
                           .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,

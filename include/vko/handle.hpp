@@ -84,10 +84,10 @@ public:
         other.m_handle = VK_NULL_HANDLE;
         return *this;
     }
-    operator T() const { return m_handle; }
-    explicit operator bool() const { return m_handle != VK_NULL_HANDLE; }
-    T        object() const { return m_handle; } // useful to be explicit for type deduction
-    const T* ptr() const { return &m_handle; }
+    operator T() const & { return m_handle; }
+    explicit operator bool() const & { return m_handle != VK_NULL_HANDLE; }
+    T        object() const & { return m_handle; } // useful to be explicit for type deduction
+    const T* ptr() const & { return &m_handle; }
 
 private:
     void destroy() {
@@ -123,8 +123,11 @@ public:
         other.m_handle = VK_NULL_HANDLE;
         return *this;
     }
-    operator T() const { return m_handle; }
-    explicit operator bool() const { return m_handle != VK_NULL_HANDLE; }
+    operator T() const& { return m_handle; } // l-value only for safety
+    // explicit operator bool() const & { return m_handle != VK_NULL_HANDLE; }
+    T          object() const { return m_handle; }                    // static_cast<T>() shortcut
+    const T*   ptr() const { return &m_handle; }                      // direct to vulkan pointer
+    bool engaged() const { return m_handle != VK_NULL_HANDLE; } // for moved-from objects
 
 private:
     void destroy() {

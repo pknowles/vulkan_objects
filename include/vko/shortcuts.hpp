@@ -8,6 +8,32 @@
 
 namespace vko {
 
+// Guess the image aspect mask from format
+// Returns sensible defaults for all standard formats
+inline VkImageAspectFlags guessAspect(VkFormat format) {
+    switch (format) {
+    // Depth-only formats
+    case VK_FORMAT_D16_UNORM:
+    case VK_FORMAT_D32_SFLOAT:
+    case VK_FORMAT_X8_D24_UNORM_PACK32:
+        return VK_IMAGE_ASPECT_DEPTH_BIT;
+    
+    // Stencil-only formats
+    case VK_FORMAT_S8_UINT:
+        return VK_IMAGE_ASPECT_STENCIL_BIT;
+    
+    // Combined depth-stencil formats (return both aspects)
+    case VK_FORMAT_D16_UNORM_S8_UINT:
+    case VK_FORMAT_D24_UNORM_S8_UINT:
+    case VK_FORMAT_D32_SFLOAT_S8_UINT:
+        return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    
+    // All other formats are color
+    default:
+        return VK_IMAGE_ASPECT_COLOR_BIT;
+    }
+}
+
 template <device_and_commands DeviceAndCommands = Device>
 void cmdDynamicRenderingDefaults(const DeviceAndCommands& device, VkCommandBuffer cmd,
                                  uint32_t width, uint32_t height) {
@@ -151,24 +177,21 @@ BoundBuffer<T> downloadImmediate(Allocator& allocator, VkCommandPool pool, VkQue
 template <class Allocator = vko::vma::Allocator>
 struct ViewedImage {
     template <device_and_commands DeviceAndCommands, class AllocationCreateInfo>
-    ViewedImage(const DeviceAndCommands& device, const VkImageCreateInfo createInfo,
+    ViewedImage(const DeviceAndCommands& device, const VkImageCreateInfo imageCreateInfo,
                 const AllocationCreateInfo& allocationCreateInfo, Allocator& allocator)
-        : image(device, device, createInfo, allocationCreateInfo, allocator)
+        : image(device, device, imageCreateInfo, allocationCreateInfo, allocator)
         , view(device, device,
                VkImageViewCreateInfo{
                    .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                    .pNext    = nullptr,
                    .flags    = 0,
                    .image    = image,
-                   .viewType = VK_IMAGE_VIEW_TYPE_2D, // TODO: should be able to compute
-                                                      // this based on createInfo.imageType
-                   .format     = createInfo.format,
+                   .viewType = VK_IMAGE_VIEW_TYPE_2D, // TODO: compute from createInfo.imageType
+                   .format     = imageCreateInfo.format,
                    .components = VkComponentMapping{},
                    .subresourceRange =
                        VkImageSubresourceRange{
-                           .aspectMask =
-                               VK_IMAGE_ASPECT_COLOR_BIT, // TODO: should be able to compute
-                                                          // this based on the format
+                           .aspectMask     = guessAspect(imageCreateInfo.format),
                            .baseMipLevel   = 0,
                            .levelCount     = 1,
                            .baseArrayLayer = 0,

@@ -1,9 +1,11 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
-#include "vulkan/vulkan_core.h"
+#include <vector>
+#include <vko/exceptions.hpp>
 #include <vko/handles.hpp>
 #include <vko/timeline_queue.hpp>
+#include <vulkan/vulkan_core.h>
 
 namespace vko {
 
@@ -21,8 +23,9 @@ public:
         , vkEndCommandBuffer(vk.vkEndCommandBuffer) {
         check(vk.vkBeginCommandBuffer(m_commandBuffer, &beginInfo));
     }
-    operator VkCommandBuffer() const { return m_commandBuffer; }
-    explicit operator bool() const { return static_cast<bool>(m_commandBuffer); }
+    operator VkCommandBuffer() const & { return m_commandBuffer; }
+    //explicit operator bool() const & { return static_cast<bool>(m_commandBuffer); }
+    bool engaged() const { return m_commandBuffer.engaged(); }
     CommandBuffer&& end() {
         check(vkEndCommandBuffer(m_commandBuffer));
         return std::move(m_commandBuffer);
@@ -33,11 +36,7 @@ private:
     PFN_vkEndCommandBuffer vkEndCommandBuffer;
 };
 
-template <class Queue = VkQueue>
-class ImmediateCommandBuffer;
-
-template <>
-class ImmediateCommandBuffer<VkQueue> {
+class ImmediateCommandBuffer {
 public:
     template <device_and_commands DeviceAndCommands>
     ImmediateCommandBuffer(const DeviceAndCommands& vk, VkCommandPool commandPool, VkQueue queue)
@@ -90,50 +89,6 @@ private:
     PFN_vkQueueSubmit                 vkQueueSubmit;
     PFN_vkQueueWaitIdle               vkQueueWaitIdle;
 };
-
-template <device_and_commands DeviceAndCommands>
-ImmediateCommandBuffer(const DeviceAndCommands& vk, VkCommandPool commandPool,
-                       VkQueue queue) -> ImmediateCommandBuffer<VkQueue>;
-
-template <>
-class ImmediateCommandBuffer<TimelineQueue> {
-public:
-    template <device_and_commands DeviceAndCommands>
-    ImmediateCommandBuffer(const DeviceAndCommands& vk, VkCommandPool commandPool,
-                           TimelineQueue& queue)
-        : ImmediateCommandBuffer(vk, vk, commandPool, queue) {}
-    template <class Commands>
-    ImmediateCommandBuffer(VkCommandPool commandPool, TimelineQueue& queue, VkDevice device,
-                           const Commands& vk)
-        : m_commandBuffer(
-              CommandBuffer(nullptr, commandPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, device, vk),
-              VkCommandBufferBeginInfo{
-                  .sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                  .pNext            = nullptr,
-                  .flags            = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-                  .pInheritanceInfo = nullptr,
-              },
-              vk)
-        , m_queue(queue)
-        , vkQueueWaitIdle(vk.vkQueueWaitIdle) {}
-    ~ImmediateCommandBuffer() {
-        SynchronizedCommandBuffer readyCmd(m_commandBuffer.end());
-        // TODO: stageMask??
-        readyCmd.stageMask = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-        m_queue.submit({&readyCmd});
-        vkQueueWaitIdle(m_queue);
-    }
-    operator VkCommandBuffer() const { return m_commandBuffer; }
-
-private:
-    RecordingCommandBuffer m_commandBuffer;
-    TimelineQueue&         m_queue;
-    PFN_vkQueueWaitIdle    vkQueueWaitIdle;
-};
-
-template <device_and_commands DeviceAndCommands>
-ImmediateCommandBuffer(const DeviceAndCommands& vk, VkCommandPool commandPool,
-                       TimelineQueue queue) -> ImmediateCommandBuffer<TimelineQueue>;
 
 } // namespace simple
 
