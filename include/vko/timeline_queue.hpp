@@ -170,15 +170,17 @@ void submit(DeviceAndCommands& device, VkQueue queue, Range&& submitInfos,
                                 std::ranges::data(submitInfos), fence));
 }
 
-template <
-    std::ranges::contiguous_range CmdRange       = std::initializer_list<VkCommandBufferSubmitInfo>,
-    std::ranges::contiguous_range SemaphoreRange = std::initializer_list<VkSemaphoreSubmitInfo>>
-    requires std::same_as<std::remove_cv_t<std::ranges::range_value_t<CmdRange>>,
+template <std::ranges::contiguous_range WaitRange = std::initializer_list<VkSemaphoreSubmitInfo>,
+          std::ranges::contiguous_range CmdRange = std::initializer_list<VkCommandBufferSubmitInfo>,
+          std::ranges::contiguous_range SignalRange = std::initializer_list<VkSemaphoreSubmitInfo>>
+    requires std::same_as<std::remove_cv_t<std::ranges::range_value_t<WaitRange>>,
+                          VkSemaphoreSubmitInfo> &&
+             std::same_as<std::remove_cv_t<std::ranges::range_value_t<CmdRange>>,
                           VkCommandBufferSubmitInfo> &&
-             std::same_as<std::remove_cv_t<std::ranges::range_value_t<SemaphoreRange>>,
+             std::same_as<std::remove_cv_t<std::ranges::range_value_t<SignalRange>>,
                           VkSemaphoreSubmitInfo>
-VkSubmitInfo2 makeSubmitInfo(SemaphoreRange&& waitInfos, CmdRange&& commandBufferInfos,
-                             SemaphoreRange&& signalInfos) {
+VkSubmitInfo2 makeSubmitInfo(WaitRange&& waitInfos, CmdRange&& commandBufferInfos,
+                             SignalRange&& signalInfos) {
     return {
         .sType                    = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
         .pNext                    = nullptr,
@@ -205,7 +207,10 @@ template <std::ranges::contiguous_range WaitRange = std::initializer_list<VkSema
                           VkSemaphoreSubmitInfo>
 void submit(DeviceAndCommands& device, VkQueue queue, WaitRange&& waitInfos,
             CmdRange&& commandBufferInfos, SignalRange&& signalInfos) {
-    submit(device, queue, {makeSubmitInfo(waitInfos, commandBufferInfos, signalInfos)});
+    submit(device, queue,
+           {makeSubmitInfo(std::forward<WaitRange>(waitInfos),
+                           std::forward<CmdRange>(commandBufferInfos),
+                           std::forward<SignalRange>(signalInfos))});
 }
 
 // Shortcut for a single command buffer on all devices
@@ -234,6 +239,8 @@ class TimelineSubmission {
     SemaphoreValue                         signalValue;
 };
 
+// A promise semaphore value and a shared future. Useful for sharing copies of a
+// SemaphoreValue-to-be for a future submission.
 struct SubmitPromise {
     SubmitPromise(VkSemaphore semaphore)
         : signalFuture{semaphore, promiseValue.get_future()} {}
@@ -270,7 +277,8 @@ private:
 };
 
 // A VkQueue with a timeline semaphore that tracks submission. Not thread safe.
-// Use only for tracking submissions to a single device in a device group.
+// Use only for tracking submissions to a single device in a device group. It is
+// just a ConcurrentTimelineQueue a single internal SubmitPromise.
 class TimelineQueue {
 public:
     template <device_and_commands DeviceAndCommands>
@@ -283,10 +291,13 @@ public:
         , m_deviceIndex(deviceIndex)
         , m_submitPromise{m_semaphore} {}
 
+    // Returns a SemaphoreValue for the next submission. Be careful something
+    // else doesn't submit in the meantime. If this is unknown, use a
+    // ConcurrentTimelineQueue.
     SemaphoreValue nextSubmitSemaphore() const { return m_submitPromise.signalFuture; }
 
     [[nodiscard]] VkSemaphoreSubmitInfo
-    nextTimelineInfo(VkPipelineStageFlags2 timelineSemaphoreStageMask) {
+    signalInfoAndAdvance(VkPipelineStageFlags2 timelineSemaphoreStageMask) {
         VkSemaphoreSubmitInfo timelineSignalInfo = {.sType =
                                                         VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                                                     .pNext       = nullptr,
@@ -303,14 +314,14 @@ public:
     template <device_and_commands DeviceAndCommands>
     void submit(DeviceAndCommands& device, std::span<VkSemaphoreSubmitInfo> waitInfos,
                 VkCommandBuffer commandBuffer, VkPipelineStageFlags2 timelineSemaphoreStageMask) {
-        auto                      timelineSignalInfo = nextTimelineInfo(timelineSemaphoreStageMask);
+        auto                      timelineSignalInfo = signalInfoAndAdvance(timelineSemaphoreStageMask);
         VkCommandBufferSubmitInfo commandBufferSubmitInfo = {
             .sType         = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
             .pNext         = nullptr,
             .commandBuffer = commandBuffer,
             .deviceMask    = 1u << m_deviceIndex,
         };
-        submit(device, m_queue, waitInfos, {commandBufferSubmitInfo}, {timelineSignalInfo});
+        vko::submit(device, m_queue, waitInfos, {commandBufferSubmitInfo}, {timelineSignalInfo});
     }
 
     // Like above, but with additional user-provided signal infos.
@@ -318,7 +329,7 @@ public:
     void submit(DeviceAndCommands& device, std::span<VkSemaphoreSubmitInfo> waitInfos,
                 VkCommandBuffer commandBuffer, VkPipelineStageFlags2 timelineSemaphoreStageMask,
                 std::span<VkSemaphoreSubmitInfo> extraSignalInfos) {
-        auto                      timelineSignalInfo = nextTimelineInfo(timelineSemaphoreStageMask);
+        auto                      timelineSignalInfo = signalInfoAndAdvance(timelineSemaphoreStageMask);
         VkCommandBufferSubmitInfo commandBufferSubmitInfo = {
             .sType         = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
             .pNext         = nullptr,
@@ -350,7 +361,9 @@ private:
     SubmitPromise     m_submitPromise;
 };
 
-// A thread safe version of SerialTimelineQueue.
+// A thread safe version of SerialTimelineQueue. This may also be useful in a
+// single-threaded case where submission order may differ from command building
+// order.
 class ConcurrentTimelineQueue {
 public:
     static_assert(!std::is_copy_constructible_v<SubmitPromise>);

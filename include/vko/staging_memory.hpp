@@ -115,15 +115,22 @@ public:
         if (m_inUse.size() >= 2 && m_inUse.front().reuseSemaphore.wait(device, 0)) {
             while (m_inUse.size() >= 2 &&
                    std::next(m_inUse.begin())->reuseSemaphore.wait(device, 0)) {
+                for(auto& pool : m_inUse.front().pools) {
+                    m_totalPoolBytes -= pool.size();
+                }
                 m_inUse.pop_front();
             }
         }
 
         // Move current pools and buffers into the in-use queue
-        m_inUse.push_back({std::move(m_currentPools), std::move(m_currentBuffers), reuseSemaphore});
+        m_inUse.push_back({std::move(m_currentPools), std::move(m_currentBuffers), reuseSemaphore, m_currentBufferBytes});
         m_currentPools.clear();
         m_currentBuffers.clear();
+        m_currentBufferBytes = 0;
     }
+
+    VkDeviceSize capacity() const { return m_totalPoolBytes; }
+    VkDeviceSize size() const { return m_totalBufferBytes; }
 
 private:
     vma::Pool makePool() {
@@ -171,12 +178,14 @@ private:
         // If there is no current pool, see if there is one we can reuse yet
         if (m_currentPools.empty()) {
             if (!m_inUse.empty() && m_inUse.front().reuseSemaphore.wait(device.get())) {
+                m_totalBufferBytes -= m_inUse.front().bufferBytes;
+                m_inUse.front().buffers.clear();
+                m_inUse.front().bufferBytes = 0;
                 if (m_inUse.front().pools.size() == 1) {
                     // Take the last pool from the in-use queue and reuse the
-                    // std::vector memory with a swap
-                    std::swap(m_currentPools, m_inUse.front().pools);
-                    std::swap(m_currentBuffers, m_inUse.front().buffers);
-                    m_currentBuffers.clear();
+                    // std::vector memory
+                    m_currentPools = std::move(m_inUse.front().pools);
+                    m_currentBuffers = std::move(m_inUse.front().buffers);
                     m_inUse.pop_front();
                 } else {
                     // Take just one pool from the in-use queue
@@ -193,6 +202,7 @@ private:
         // If there is no available pool, create a new one
         if (m_currentPools.empty()) {
             m_currentPools.push_back(makePool());
+            m_totalPoolBytes += m_poolSize;
         }
 
         // Try to make a buffer from the current pools
@@ -209,6 +219,7 @@ private:
         } catch (const std::exception& e) {
             // Retry once with a fresh pool
             m_currentPools.push_back(makePool());
+            m_totalPoolBytes += m_poolSize;
             buffer = BoundBuffer<T, Allocator>(
                 device.get(), size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                 vma::allocationCreateInfo(m_currentPools.back(),
@@ -216,6 +227,8 @@ private:
                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
                 m_allocator.get());
         }
+        m_currentBufferBytes += buffer->sizeBytes();
+        m_totalBufferBytes += buffer->sizeBytes();
 
         auto [any, ptr] = toUniqueAnyWithPtr(std::move(*buffer));
         m_currentBuffers.emplace_back(std::move(any));
@@ -227,11 +240,15 @@ private:
         std::vector<vma::Pool> pools;
         std::vector<UniqueAny> buffers;
         SemaphoreValue         reuseSemaphore;
+        VkDeviceSize           bufferBytes = 0;
     };
 
     std::reference_wrapper<const DeviceAndCommands> device;
     std::reference_wrapper<Allocator>               m_allocator;
     VkDeviceSize                                    m_poolSize = 0;
+    VkDeviceSize                                    m_totalPoolBytes = 0;
+    VkDeviceSize                                    m_currentBufferBytes = 0;
+    VkDeviceSize                                    m_totalBufferBytes = 0;
     std::vector<vma::Pool>                          m_currentPools;
     std::vector<UniqueAny>                          m_currentBuffers;
     std::deque<InUseMemoryPools>                    m_inUse;
