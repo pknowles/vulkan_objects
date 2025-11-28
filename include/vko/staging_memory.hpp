@@ -281,20 +281,24 @@ void uploadTo(
                              });
 }
 
-// Non type-safe upload. Avoid where possible.
-template <staging_allocator StagingAllocator, device_and_commands DeviceAndCommands>
-BufferMapping<std::byte, typename StagingAllocator::Allocator>
-uploadToBytes(StagingAllocator& staging, const DeviceAndCommands& device, VkCommandBuffer cmd,
-              VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize size) {
-    return staging.template with<std::byte>(
-        size, [&](const vko::BoundBuffer<std::byte, typename StagingAllocator::Allocator>& buffer) {
+// Non type-safe upload. Avoid where possible. The returned BufferMapping must
+// not outlive the staging memory.
+template <std::ranges::contiguous_range Range, staging_allocator StagingAllocator, device_and_commands DeviceAndCommands>
+requires std::same_as<std::remove_cv_t<std::ranges::range_value_t<Range>>, std::byte>
+void
+uploadToBytes(StagingAllocator& staging, const DeviceAndCommands& device, VkCommandBuffer cmd, Range&& data,
+              VkBuffer dstBuffer, VkDeviceSize dstOffset) {
+    if (std::ranges::empty(data))
+        throw std::runtime_error("uploading empty data");
+    staging.template with<std::byte>(
+        std::ranges::size(data), [&](const vko::BoundBuffer<std::byte, typename StagingAllocator::Allocator>& buffer) {
             VkBufferCopy bufferCopy{
                 .srcOffset = 0,
                 .dstOffset = dstOffset,
-                .size      = size,
+                .size      = std::ranges::size(data),
             };
             device.vkCmdCopyBuffer(cmd, buffer, dstBuffer, 1, &bufferCopy);
-            return buffer.map();
+            std::ranges::copy(data, buffer.map().begin());
         });
 }
 
@@ -360,23 +364,25 @@ uploadBytes(StagingAllocator& staging, const DeviceAndCommands& device, VkComman
     return srcBuffer->map();
 }
 
+// The returned BufferMapping is populated once the command buffer is submitted
+// and has completed execution. It must not outlive the staging memory. The
+// caller is responsible for inserting the appropriate memory barriers.
 template <class T, staging_allocator StagingAllocator, device_and_commands DeviceAndCommands,
           allocator Allocator = vko::vma::Allocator>
 BufferMapping<T, Allocator>
 download(StagingAllocator& staging, const DeviceAndCommands& device, VkCommandBuffer cmd,
-         vko::DeviceBuffer<T, Allocator>& srcBuffer, VkDeviceSize srcOffsetElements = 0u) {
+         vko::DeviceBuffer<T, Allocator>& srcBuffer, VkDeviceSize srcOffsetElements = 0u, std::optional<VkDeviceSize> srcSize = std::nullopt) {
     if (srcOffsetElements >= srcBuffer.size())
         throw std::out_of_range("source offset is beyond buffer size");
-    VkDeviceSize copySize = srcBuffer.size() - srcOffsetElements;
-    return staging.template with<T>(copySize, [&](const vko::BoundBuffer<T, Allocator>& buffer) {
-        VkBufferCopy bufferCopy{
-            .srcOffset = srcOffsetElements * sizeof(T),
-            .dstOffset = 0,
-            .size      = copySize * sizeof(T),
-        };
-        device.vkCmdCopyBuffer(cmd, srcBuffer, buffer, 1, &bufferCopy);
-        return buffer.map();
-    });
+    VkDeviceSize copySize = srcSize.value_or(srcBuffer.size() - srcOffsetElements);
+    const vko::BoundBuffer<T, Allocator>* buffer = staging.template make<T>(copySize);
+    VkBufferCopy                          bufferCopy{
+                                 .srcOffset = srcOffsetElements * sizeof(T),
+                                 .dstOffset = 0,
+                                 .size      = copySize * sizeof(T),
+    };
+    device.vkCmdCopyBuffer(cmd, srcBuffer, *buffer, 1, &bufferCopy);
+    return buffer->map();
 }
 
 // Non type-safe download. Avoid where possible.
