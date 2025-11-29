@@ -23,8 +23,9 @@ public:
         , vkEndCommandBuffer(vk.vkEndCommandBuffer) {
         check(vk.vkBeginCommandBuffer(m_commandBuffer, &beginInfo));
     }
-    operator VkCommandBuffer() const { return m_commandBuffer; }
-    explicit operator bool() const { return static_cast<bool>(m_commandBuffer); }
+    operator VkCommandBuffer() const & { return m_commandBuffer; }
+    //explicit operator bool() const & { return static_cast<bool>(m_commandBuffer); }
+    bool engaged() const { return m_commandBuffer.engaged(); }
     CommandBuffer&& end() {
         check(vkEndCommandBuffer(m_commandBuffer));
         return std::move(m_commandBuffer);

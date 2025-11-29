@@ -39,8 +39,6 @@
    NVSDK_NGX_DLSSD_Create_Params{...});
 
     // Upscale and denoise
-    glm::mat4 viewRowMajor       = glm::transpose(viewMatrix);
-    glm::mat4 projectionRowMajor = glm::transpose(projectionMatrix);
     // NOTE: Make sure these have VK_IMAGE_USAGE_SAMPLED_BIT!
     NVSDK_NGX_Resource_VK colorOut = NVSDK_NGX_Create_ImageView_Resource_VK(...);
     NVSDK_NGX_Resource_VK color    = NVSDK_NGX_Create_ImageView_Resource_VK(...);
@@ -61,8 +59,8 @@
     dlssdEvalParams.InMVScaleY                       = 1.0f;
     dlssdEvalParams.InRenderSubrectDimensions.Width  = inputSize.x;
     dlssdEvalParams.InRenderSubrectDimensions.Height = inputSize.y;
-    dlssdEvalParams.pInWorldToViewMatrix             = glm::value_ptr(viewRowMajor);
-    dlssdEvalParams.pInViewToClipMatrix              = glm::value_ptr(projectionRowMajor);
+    dlssdEvalParams.pInWorldToViewMatrix             = glm::value_ptr(viewMatrix);
+    dlssdEvalParams.pInViewToClipMatrix              = glm::value_ptr(projectionMatrix);
     dlssdEvalParams.InReset                          = frameIndex <= 1;
     dlssrr->evaluate(commandBuffer, ngxParameter, dlssdEvalParams);
 */
@@ -70,18 +68,97 @@
 namespace vko {
 namespace ngx {
 
-// template <NVSDK_NGX_Result result>
-class ResultException : public Exception {
-public:
-    ResultException(NVSDK_NGX_Result result)
-        : Exception("NGX error: " + std::wstring_convert<std::codecvt_utf8<wchar_t>>().to_bytes(
-                                        GetNGXResultAsString(result))) {}
+// std::wstring_convert is deprecated, utf8 is the future and enums
+// won't have non-ascii characters anyway
+inline std::string wchar_to_ascii(const wchar_t* wstr)
+{
+  if(!wstr)
+    return {};
+
+  std::string result;
+  for(; *wstr; ++wstr)
+  {
+    if(*wstr > 127)
+    {
+      throw std::runtime_error("Non-ASCII character encountered");
+    }
+    result += static_cast<char>(*wstr);
+  }
+  return result;
+}
+
+// Helper for converting string_view to wstring for NGX
+inline std::vector<const wchar_t*> makeWcharPtrs(const std::vector<std::wstring>& strings)
+{
+  std::vector<const wchar_t*> ptrs;
+  ptrs.reserve(strings.size());
+  for(const auto& str : strings)
+  {
+    ptrs.push_back(str.c_str());
+  }
+  return ptrs;
+}
+
+// Helper to set up NGX feature discovery with search paths
+struct FeatureDiscovery
+{
+#if defined(NDEBUG)
+  static constexpr NVSDK_NGX_Logging_Level minLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_OFF;
+#else
+  static constexpr NVSDK_NGX_Logging_Level minLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_ON;
+#endif
+  std::wstring                   applicationDataPath;
+  std::vector<std::wstring>      ngxSearchPaths;
+  std::vector<const wchar_t*>    ngxSearchPathPtrs;
+  NVSDK_NGX_FeatureCommonInfo    commonInfo;
+  NVSDK_NGX_FeatureDiscoveryInfo discoveryInfo;
+  
+  FeatureDiscovery(unsigned long long applicationId, const std::wstring& appDataPath,
+                   NVSDK_NGX_Feature feature, std::initializer_list<std::wstring_view> searchPaths)
+      : applicationDataPath(appDataPath)
+      , ngxSearchPaths(searchPaths.begin(), searchPaths.end())
+      , ngxSearchPathPtrs(makeWcharPtrs(ngxSearchPaths))
+      , commonInfo{
+        .PathListInfo = {.Path = ngxSearchPathPtrs.data(),
+                         .Length = static_cast<unsigned int>(ngxSearchPathPtrs.size())},
+        .InternalData = nullptr,
+        .LoggingInfo = {
+                .LoggingCallback = nullptr,
+                .MinimumLoggingLevel      = minLoggingLevel,
+                .DisableOtherLoggingSinks = {},
+            },
+        }
+      , discoveryInfo{
+            .SDKVersion = NVSDK_NGX_Version_API,
+            .FeatureID  = feature,
+            .Identifier = {.IdentifierType = NVSDK_NGX_Application_Identifier_Type_Application_Id,
+                            .v              = {.ApplicationId = applicationId}},
+            .ApplicationDataPath = applicationDataPath.c_str(),
+            .FeatureInfo         = &commonInfo,
+        }
+  {
+  }
+  operator const NVSDK_NGX_FeatureDiscoveryInfo&() const { return discoveryInfo; }
+  FeatureDiscovery(const FeatureDiscovery& other)            = delete;
+  FeatureDiscovery& operator=(const FeatureDiscovery& other) = delete;
 };
 
-inline void check(NVSDK_NGX_Result result) {
-    if (NVSDK_NGX_FAILED(result)) {
-        throw ResultException(result);
-    }
+// template <NVSDK_NGX_Result result>
+class ResultException : public std::runtime_error
+{
+public:
+  ResultException(NVSDK_NGX_Result result)
+      : std::runtime_error("NGX error: " + wchar_to_ascii(GetNGXResultAsString(result)))
+  {
+  }
+};
+
+inline void check(NVSDK_NGX_Result result)
+{
+  if(NVSDK_NGX_FAILED(result))
+  {
+    throw ResultException(result);
+  }
 }
 
 // Straight init wrapper and error handling
@@ -119,11 +196,11 @@ private:
     VkDevice m_device = VK_NULL_HANDLE;
 };
 
-namespace {
 struct ParameterDeleter {
     void operator()(NVSDK_NGX_Parameter* p) const { NVSDK_NGX_VULKAN_DestroyParameters(p); }
 };
 
+namespace {
 std::unique_ptr<NVSDK_NGX_Parameter, ParameterDeleter> capabilityParameter() {
     NVSDK_NGX_Parameter* parameter = nullptr;
     check(NVSDK_NGX_VULKAN_GetCapabilityParameters(&parameter));
@@ -208,12 +285,10 @@ private:
     NVSDK_NGX_Handle* m_handle = nullptr;
 };
 
-namespace {
-
 inline NVSDK_NGX_Handle* makeRayReconstruction(
     VkDevice device, VkCommandBuffer commandBuffer, unsigned int creationNodeMask,
     unsigned int visibilityNodeMask, NVSDK_NGX_Parameter& parameter,
-    NVSDK_NGX_DLSSD_Create_Params&
+    NVSDK_NGX_DLSSD_Create_Params
         dlssDCreateParams) { // To NGX: dlssDCreateParams should be able to be const
     NVSDK_NGX_Handle* handle = nullptr;
     check(NGX_VULKAN_CREATE_DLSSD_EXT1(device, commandBuffer, creationNodeMask, visibilityNodeMask,
@@ -221,6 +296,7 @@ inline NVSDK_NGX_Handle* makeRayReconstruction(
     return handle;
 }
 
+namespace {
 // Example/demonstration
 inline void assertRayReconstructionSupported(NVSDK_NGX_Parameter& parameter) {
     auto minMajor =

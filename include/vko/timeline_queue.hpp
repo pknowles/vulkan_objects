@@ -20,22 +20,18 @@ public:
     }
 };
 
-class TimelineSemaphore {
+class TimelineSemaphore : public Semaphore {
 public:
     template <device_and_commands DeviceAndCommands>
     TimelineSemaphore(const DeviceAndCommands& device, uint64_t initialValue)
-        : m_semaphore(device, VkSemaphoreCreateInfo{
-                                  .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-                                  .pNext = tmpPtr(VkSemaphoreTypeCreateInfo{
-                                      .sType         = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
-                                      .pNext         = nullptr,
-                                      .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
-                                      .initialValue  = initialValue}),
-                                  .flags = 0}) {}
-    operator VkSemaphore() const { return m_semaphore; }
-
-private:
-    Semaphore m_semaphore;
+        : Semaphore(device,
+                    VkSemaphoreCreateInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                                          .pNext = tmpPtr(VkSemaphoreTypeCreateInfo{
+                                              .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                              .pNext = nullptr,
+                                              .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+                                              .initialValue  = initialValue}),
+                                          .flags = 0}) {}
 };
 
 // Helper function to wait for a timeline semaphore and return true iff the
@@ -58,15 +54,17 @@ bool waitTimelineSemaphore(DeviceAndCommands& device, VkSemaphore semaphore, uin
     return true;
 }
 
+// A timeline semaphore future value, so the event can be shared before the
+// value is known. Must outlive the TimelineSemaphore it was created with.
 // Alternative name: 'TimelinePoint'?
 struct SemaphoreValue {
     using Clock = std::chrono::steady_clock;
 
     SemaphoreValue() = delete;
-    SemaphoreValue(VkSemaphore semaphore, const std::shared_future<uint64_t>& value)
+    SemaphoreValue(const TimelineSemaphore& semaphore, const std::shared_future<uint64_t>& value)
         : semaphore(semaphore)
         , value(value) {}
-    SemaphoreValue(VkSemaphore semaphore, std::shared_future<uint64_t>&& value)
+    SemaphoreValue(const TimelineSemaphore& semaphore, std::shared_future<uint64_t>&& value)
         : semaphore(semaphore)
         , value(std::move(value)) {}
 
@@ -156,6 +154,9 @@ struct SemaphoreValue {
                 .deviceIndex = deviceIndex};
     }
 
+    // TODO: there's an argument for making this a
+    // std::shared_ptr<TimelineSemaphore> instead. It allows the SemaphoreValue
+    // to own its own semaphore. E.g. to mark it as already signalled.
     VkSemaphore                  semaphore = VK_NULL_HANDLE;
     std::shared_future<uint64_t> value;
 };
@@ -242,7 +243,7 @@ class TimelineSubmission {
 // A promise semaphore value and a shared future. Useful for sharing copies of a
 // SemaphoreValue-to-be for a future submission.
 struct SubmitPromise {
-    SubmitPromise(VkSemaphore semaphore)
+    SubmitPromise(const TimelineSemaphore& semaphore)
         : signalFuture{semaphore, promiseValue.get_future()} {}
     SubmitPromise(const SubmitPromise& other)            = delete;
     SubmitPromise& operator=(const SubmitPromise& other) = delete;
@@ -454,9 +455,6 @@ public:
     uint32_t familyIndex() const { return m_familyIndex; }
 
     uint32_t deviceIndex() const { return m_deviceIndex; }
-
-    // Create a submit promise that can be used to get a SemaphoreValue for the next submit
-    SubmitPromise makePromise() { return SubmitPromise(m_semaphore); }
 
     operator VkQueue() const { return m_queue; }
     const VkQueue* ptr() const { return &m_queue; }
