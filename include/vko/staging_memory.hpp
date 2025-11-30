@@ -148,7 +148,7 @@ private:
         VmaAllocationCreateInfo sampleAllocCreateInfo = {
             .flags = vma::defaultAllocationCreateFlags(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-            .usage = VMA_MEMORY_USAGE_AUTO,
+            .usage = VMA_MEMORY_USAGE_UNKNOWN,  // Use legacy mode with only requiredFlags (supports both upload/download)
             .requiredFlags =
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             .preferredFlags = 0,

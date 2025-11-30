@@ -104,9 +104,9 @@ void cmdMemoryBarrier(const DeviceAndCommands& device, VkCommandBuffer cmd, Memo
 }
 
 // Debug messenger with a global callback (not using the user data pointer)
-template <instance_and_commands InstanceAndCommands = Instance>
-struct SimpleDebugMessenger {
-    SimpleDebugMessenger(const InstanceAndCommands&           vk,
+struct GlobalDebugMessenger {
+    template <instance_and_commands InstanceAndCommands = Instance>
+    GlobalDebugMessenger(const InstanceAndCommands&           vk,
                          PFN_vkDebugUtilsMessengerCallbackEXT callback)
         : messenger(vk, VkDebugUtilsMessengerCreateInfoEXT{
                             .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
@@ -122,6 +122,39 @@ struct SimpleDebugMessenger {
                             .pfnUserCallback = callback,
                             .pUserData       = nullptr}) {}
     vko::DebugUtilsMessengerEXT messenger;
+};
+
+struct DebugMessenger {
+    using Callback = std::function<bool(VkDebugUtilsMessageSeverityFlagBitsEXT, VkDebugUtilsMessageTypeFlagsEXT,
+                           const VkDebugUtilsMessengerCallbackDataEXT&)>;
+
+    template <instance_and_commands InstanceAndCommands = Instance, class Fn = Callback>
+    DebugMessenger(const InstanceAndCommands& vk, Fn&& callback)
+        : callback(std::forward<Fn>(callback))
+        , messenger(vk, VkDebugUtilsMessengerCreateInfoEXT{
+                            .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+                            .pNext = nullptr,
+                            .flags = 0,
+                            .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+                                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+                            .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                                           VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                                           VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+                            .pfnUserCallback = debugMessageCallback,
+                            .pUserData       = &callback}) {}
+    vko::DebugUtilsMessengerEXT                         messenger;
+    Callback callback;
+    static VkBool32 debugMessageCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+                                         VkDebugUtilsMessageTypeFlagsEXT        messageTypes,
+                                         const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+                                         void*                                       pUserData) {
+        return (*reinterpret_cast<Callback*>(pUserData))(messageSeverity, messageTypes,
+                                                                   *pCallbackData)
+                   ? VK_TRUE
+                   : VK_FALSE;
+    }
 };
 
 // Assumes the caller will add a pipeline barrier to make the vkCmdCopyBuffer()
