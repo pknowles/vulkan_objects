@@ -148,7 +148,7 @@ private:
         VmaAllocationCreateInfo sampleAllocCreateInfo = {
             .flags = vma::defaultAllocationCreateFlags(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-            .usage = VMA_MEMORY_USAGE_AUTO,
+            .usage = VMA_MEMORY_USAGE_UNKNOWN,  // Use legacy mode with only requiredFlags (supports both upload/download)
             .requiredFlags =
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             .preferredFlags = 0,
@@ -212,7 +212,7 @@ private:
                       "This wouldn't be very RAII");
         try {
             buffer = BoundBuffer<T, Allocator>(
-                device.get(), size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                device.get(), size, m_bufferUsageFlags,
                 vma::allocationCreateInfo(m_currentPools.back(),
                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
@@ -222,7 +222,7 @@ private:
             m_currentPools.push_back(makePool());
             m_totalPoolBytes += m_poolSize;
             buffer = BoundBuffer<T, Allocator>(
-                device.get(), size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                device.get(), size, m_bufferUsageFlags,
                 vma::allocationCreateInfo(m_currentPools.back(),
                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),

@@ -193,7 +193,7 @@ public:
     operator VkCommandBuffer() const & { return m_commandBuffers[0]; }
     //explicit               operator bool() const { return static_cast<bool>(m_commandBuffers); }
     const VkCommandBuffer* ptr() const { return &m_commandBuffers[0]; }
-    bool engaged() const { return m_commandBuffers.empty(); }
+    bool engaged() const { return !m_commandBuffers.empty(); }
 
 private:
     CommandBuffers m_commandBuffers;

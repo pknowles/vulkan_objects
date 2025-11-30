@@ -55,7 +55,7 @@ public:
                 const void* pNext, VkBufferCreateFlags flags, VkBufferUsageFlags usage,
                 VkSharingMode sharingMode, std::span<const uint32_t> queueFamilyIndices,
                 const AllocationCreateInfo& allocationCreateInfo, Allocator& allocator)
-        : m_size(elementCount)
+        : m_size(checkPositive(elementCount))
         , m_buffer(vk, device,
                    VkBufferCreateInfo{
                        .sType                 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -86,6 +86,10 @@ public:
     }
 
 private:
+    static VkDeviceSize checkPositive(VkDeviceSize size) {
+        assert(size > 0);
+        return size;
+    }
     VkDeviceSize m_size;
     Buffer       m_buffer;
     Allocation   m_allocation;

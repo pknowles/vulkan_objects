@@ -105,7 +105,7 @@ struct FeatureDiscovery
 #if defined(NDEBUG)
   static constexpr NVSDK_NGX_Logging_Level minLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_OFF;
 #else
-  static constexpr NVSDK_NGX_Logging_Level minLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_ON;
+  static constexpr NVSDK_NGX_Logging_Level minLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_OFF; // NVSDK_NGX_LOGGING_LEVEL_ON / NVSDK_NGX_LOGGING_LEVEL_VERBOSE
 #endif
   std::wstring                   applicationDataPath;
   std::vector<std::wstring>      ngxSearchPaths;
