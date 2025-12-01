@@ -212,7 +212,7 @@ private:
                       "This wouldn't be very RAII");
         try {
             buffer = BoundBuffer<T, Allocator>(
-                device.get(), size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                device.get(), size, m_bufferUsageFlags,
                 vma::allocationCreateInfo(m_currentPools.back(),
                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
@@ -222,7 +222,7 @@ private:
             m_currentPools.push_back(makePool());
             m_totalPoolBytes += m_poolSize;
             buffer = BoundBuffer<T, Allocator>(
-                device.get(), size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                device.get(), size, m_bufferUsageFlags,
                 vma::allocationCreateInfo(m_currentPools.back(),
                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),

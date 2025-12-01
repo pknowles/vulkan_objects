@@ -78,8 +78,8 @@ bool succeededOrPrintErrors(const std::filesystem::path&           path,
                             const ::shaderc::CompilationResult<T>& result, FILE* stream = stderr) {
     if (result.GetCompilationStatus() == ::shaderc_compilation_status_success)
         return true;
-    std::println(stream, "Shaderc compilation failed: %s: %s\n%s\n", path.string().c_str(),
-                 to_string(result.GetCompilationStatus()), result.GetErrorMessage().c_str());
+    fprintf(stream, "Shaderc compilation failed: %s: %s\n%s\n", path.string().c_str(),
+            to_string(result.GetCompilationStatus()), result.GetErrorMessage().c_str());
     return false;
 }
 
