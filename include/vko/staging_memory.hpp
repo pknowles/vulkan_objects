@@ -440,11 +440,15 @@ void immediateDownloadTo(
     if (srcOffsetElements + std::ranges::size(dstRange) > srcBuffer.size())
         throw std::out_of_range("source buffer is too small for requested download");
     using T = std::remove_cv_t<std::ranges::range_value_t<DstRange>>;
-    simple::ImmediateCommandBuffer cmd(device, pool, queue);
-    if (srcAccess)
-        cmdMemoryBarrier(device, cmd, *srcAccess,
-                         {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT});
-    auto mapping = download<T>(staging, device, cmd, srcBuffer, srcOffsetElements, std::ranges::size(dstRange));
+    BufferMapping<T, Allocator> mapping = [&]() {
+        simple::ImmediateCommandBuffer cmd(device, pool, queue);
+        if (srcAccess)
+            cmdMemoryBarrier(device, cmd, *srcAccess,
+                             {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT});
+        return download<T>(staging, device, cmd, srcBuffer, srcOffsetElements, std::ranges::size(dstRange));
+        // ImmediateCommandBuffer destructor is called here - submits and waits
+    }();
+    // After this point, the GPU copy should be complete and visible
     std::ranges::copy(mapping, std::ranges::begin(dstRange));
 }
 
@@ -468,11 +472,15 @@ void immediateDownloadToBytes(StagingAllocator& staging, const DeviceAndCommands
                               std::optional<MemoryAccess> srcAccess = std::nullopt) {
     if (size > std::ranges::size(dstRange))
         throw std::out_of_range("destination range is too small");
-    simple::ImmediateCommandBuffer cmd(device, pool, queue);
-    if (srcAccess)
-        cmdMemoryBarrier(device, cmd, *srcAccess,
-                         {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT});
-    auto mapping = downloadBytes(staging, device, cmd, buffer, offset, size);
+    auto mapping = [&]() {
+        simple::ImmediateCommandBuffer cmd(device, pool, queue);
+        if (srcAccess)
+            cmdMemoryBarrier(device, cmd, *srcAccess,
+                             {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT});
+        return downloadBytes(staging, device, cmd, buffer, offset, size);
+        // ImmediateCommandBuffer destructor is called here - submits and waits
+    }();
+    // After this point, the GPU copy should be complete and visible
     std::ranges::copy(mapping, std::ranges::begin(dstRange));
 }
 

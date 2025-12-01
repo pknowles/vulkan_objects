@@ -190,7 +190,15 @@ public:
                                .level              = level,
                                .commandBufferCount = 1,
                            }) {}
-    operator VkCommandBuffer() const & { return m_commandBuffers[0]; }
+    operator VkCommandBuffer() const & { 
+        if (m_commandBuffers.empty()) {
+            printf("DELETEME: CommandBuffer::operator VkCommandBuffer() - EMPTY m_commandBuffers!\n"); // DELETEME
+            return VK_NULL_HANDLE;
+        }
+        VkCommandBuffer handle = m_commandBuffers[0];
+        printf("DELETEME: CommandBuffer::operator VkCommandBuffer() - returning handle=%p, m_commandBuffers.size()=%zu\n", handle, m_commandBuffers.size()); // DELETEME
+        return handle;
+    }
     //explicit               operator bool() const { return static_cast<bool>(m_commandBuffers); }
     const VkCommandBuffer* ptr() const { return &m_commandBuffers[0]; }
     bool engaged() const { return !m_commandBuffers.empty(); }
