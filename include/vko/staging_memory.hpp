@@ -259,6 +259,30 @@ static_assert(staging_allocator<RecyclingStagingPool<Device>>);
 
 } // namespace vma
 
+template <class T, class Fn, staging_allocator StagingAllocator, device_and_commands DeviceAndCommands,
+          allocator Allocator = vko::vma::Allocator>
+void uploadMapped(
+    StagingAllocator& staging, const DeviceAndCommands& device, VkCommandBuffer cmd, Fn&& fn,
+    vko::DeviceBuffer<T, Allocator>& dstBuffer,
+    size_t dstOffsetElements = 0u, std::optional<VkDeviceSize> size = std::nullopt) {
+    if (dstOffsetElements > dstBuffer.size() ||
+        (size && dstOffsetElements + *size > dstBuffer.size()))
+        throw std::out_of_range("destination buffer is too small");
+    if (dstOffsetElements == dstBuffer.size() || (size && *size == 0))
+        throw std::runtime_error("uploading zero elements");
+    VkDeviceSize subspanSize = size.value_or(dstBuffer.size() - dstOffsetElements);
+    staging.template with<T>(
+        subspanSize, [&](const vko::BoundBuffer<T, Allocator>& buffer) {
+            fn(buffer.map().span());
+            VkBufferCopy bufferCopy{
+                .srcOffset = 0,
+                .dstOffset = dstOffsetElements * sizeof(T),
+                .size      = subspanSize * sizeof(T),
+            };
+            device.vkCmdCopyBuffer(cmd, buffer, dstBuffer, 1, &bufferCopy);
+        });
+}
+
 template <std::ranges::contiguous_range Range, staging_allocator StagingAllocator,
           device_and_commands DeviceAndCommands, allocator Allocator = vko::vma::Allocator>
 void uploadTo(
@@ -346,28 +370,31 @@ immediateUpload(StagingAllocator& staging, const DeviceAndCommands& device, Allo
     return result;
 }
 
-template <staging_allocator StagingAllocator, device_and_commands DeviceAndCommands,
+template <class Fn, staging_allocator StagingAllocator, device_and_commands DeviceAndCommands,
           allocator Allocator = vko::vma::Allocator>
-BufferMapping<std::byte, Allocator>
-uploadBytes(StagingAllocator& staging, const DeviceAndCommands& device, VkCommandBuffer cmd,
-            VkDeviceAddress dstAddress, VkDeviceSize size) {
-    auto* srcBuffer = staging.template make<std::byte>(size);
-
-    // Temporary buffer to hold the VkCopyMemoryIndirectCommandNV
-    auto* cmdBuffer     = staging.template make<VkCopyMemoryIndirectCommandNV>(1);
-    cmdBuffer->map()[0] = VkCopyMemoryIndirectCommandNV{
-        .srcAddress = srcBuffer->address(device),
-        .dstAddress = dstAddress,
-        .size       = size,
-    };
-    device.vkCmdCopyMemoryIndirectNV(cmd, cmdBuffer->address(device), 1,
-                                     static_cast<uint32_t>(cmdBuffer->sizeBytes()));
-    return srcBuffer->map();
+void uploadMappedBytes(
+    StagingAllocator& staging, const DeviceAndCommands& device, VkCommandBuffer cmd, Fn&& fn,
+    VkBuffer dstBuffer,
+    size_t offset, VkDeviceSize size) {
+    staging.template with<std::byte>(
+        size, [&](const vko::BoundBuffer<std::byte, Allocator>& buffer) {
+            fn(buffer.map().span());
+            VkBufferCopy bufferCopy{
+                .srcOffset = 0,
+                .dstOffset = offset,
+                .size      = size,
+            };
+            device.vkCmdCopyBuffer(cmd, buffer, dstBuffer, 1, &bufferCopy);
+        });
 }
 
-// The returned BufferMapping is populated once the command buffer is submitted
-// and has completed execution. It must not outlive the staging memory. The
-// caller is responsible for inserting the appropriate memory barriers.
+// TODO: this is totally not safe, but I've already learned this structure and
+// not sure how to do it better yet
+#if 1
+// DANGER: The returned BufferMapping is populated once the command buffer is
+// submitted and has completed execution. It does not include the staging offset
+// or size. It must not outlive the staging memory. The caller is responsible
+// for inserting the appropriate memory barriers.
 template <class T, staging_allocator StagingAllocator, device_and_commands DeviceAndCommands,
           allocator Allocator = vko::vma::Allocator>
 BufferMapping<T, Allocator>
@@ -385,8 +412,11 @@ download(StagingAllocator& staging, const DeviceAndCommands& device, VkCommandBu
     device.vkCmdCopyBuffer(cmd, srcBuffer, *buffer, 1, &bufferCopy);
     return buffer->map();
 }
+#endif
 
+#if 1
 // Non type-safe download. Avoid where possible.
+// DANGER: returns a mapping for the entire buffer, not the offset/size that was copied
 template <staging_allocator StagingAllocator, device_and_commands DeviceAndCommands,
           allocator Allocator = vko::vma::Allocator>
 BufferMapping<std::byte, Allocator>
@@ -397,6 +427,7 @@ downloadBytes(StagingAllocator& staging, const DeviceAndCommands& device, VkComm
     device.vkCmdCopyBuffer(cmd, srcBuffer, *buffer, 1, &bufferCopy);
     return buffer->map();
 }
+#endif
 
 template <std::ranges::contiguous_range DstRange, staging_allocator StagingAllocator,
           device_and_commands DeviceAndCommands, allocator Allocator = vko::vma::Allocator>
@@ -406,14 +437,18 @@ void immediateDownloadTo(
     vko::DeviceBuffer<std::remove_cv_t<std::ranges::range_value_t<DstRange>>, Allocator>& srcBuffer,
     size_t srcOffsetElements, DstRange&& dstRange,
     std::optional<MemoryAccess> srcAccess = std::nullopt) {
-    if (srcBuffer.size() > std::ranges::size(dstRange))
-        throw std::out_of_range("destination range is too small");
+    if (srcOffsetElements + std::ranges::size(dstRange) > srcBuffer.size())
+        throw std::out_of_range("source buffer is too small for requested download");
     using T = std::remove_cv_t<std::ranges::range_value_t<DstRange>>;
-    simple::ImmediateCommandBuffer cmd(device, pool, queue);
-    if (srcAccess)
-        cmdMemoryBarrier(device, cmd, *srcAccess,
-                         {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT});
-    auto mapping = download<T>(staging, device, cmd, srcBuffer, srcOffsetElements);
+    BufferMapping<T, Allocator> mapping = [&]() {
+        simple::ImmediateCommandBuffer cmd(device, pool, queue);
+        if (srcAccess)
+            cmdMemoryBarrier(device, cmd, *srcAccess,
+                             {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT});
+        return download<T>(staging, device, cmd, srcBuffer, srcOffsetElements, std::ranges::size(dstRange));
+        // ImmediateCommandBuffer destructor is called here - submits and waits
+    }();
+    // After this point, the GPU copy should be complete and visible
     std::ranges::copy(mapping, std::ranges::begin(dstRange));
 }
 
@@ -425,7 +460,7 @@ std::vector<T> immediateDownload(StagingAllocator& staging, const DeviceAndComma
                                  size_t                           srcOffsetElements = 0u,
                                  std::optional<MemoryAccess>      srcAccess = std::nullopt) {
     std::vector<T> result(srcBuffer.size());
-    immediateDownloadTo(staging, device, pool, queue, srcBuffer, srcOffsetElements, result);
+    immediateDownloadTo(staging, device, pool, queue, srcBuffer, srcOffsetElements, result, srcAccess);
     return result;
 }
 
@@ -437,11 +472,15 @@ void immediateDownloadToBytes(StagingAllocator& staging, const DeviceAndCommands
                               std::optional<MemoryAccess> srcAccess = std::nullopt) {
     if (size > std::ranges::size(dstRange))
         throw std::out_of_range("destination range is too small");
-    simple::ImmediateCommandBuffer cmd(device, pool, queue);
-    if (srcAccess)
-        cmdMemoryBarrier(device, cmd, *srcAccess,
-                         {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT});
-    auto mapping = downloadBytes(staging, device, cmd, buffer, offset, size);
+    auto mapping = [&]() {
+        simple::ImmediateCommandBuffer cmd(device, pool, queue);
+        if (srcAccess)
+            cmdMemoryBarrier(device, cmd, *srcAccess,
+                             {VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT});
+        return downloadBytes(staging, device, cmd, buffer, offset, size);
+        // ImmediateCommandBuffer destructor is called here - submits and waits
+    }();
+    // After this point, the GPU copy should be complete and visible
     std::ranges::copy(mapping, std::ranges::begin(dstRange));
 }
 
@@ -456,6 +495,7 @@ immediateDownloadBytes(StagingAllocator& staging, const DeviceAndCommands& devic
     return result;
 }
 
+#if 1
 // Non type-safe download. Avoid where possible. Downloads data from a device
 // address using VkCmdCopyMemoryIndirectNV. Requires VK_NV_copy_memory_indirect
 // to be enabled and the staging allocator must include
@@ -491,6 +531,7 @@ downloadBytes(StagingAllocator& staging, const DeviceAndCommands& device, VkComm
                                      static_cast<uint32_t>(cmdBuffer->sizeBytes()));
     return dstBuffer->map();
 }
+#endif
 
 // Non type-safe download. Avoid where possible.
 template <std::ranges::contiguous_range Range, staging_allocator StagingAllocator,

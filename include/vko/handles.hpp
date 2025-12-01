@@ -190,7 +190,12 @@ public:
                                .level              = level,
                                .commandBufferCount = 1,
                            }) {}
-    operator VkCommandBuffer() const & { return m_commandBuffers[0]; }
+    operator VkCommandBuffer() const & { 
+        if (m_commandBuffers.empty()) {
+            return VK_NULL_HANDLE;
+        }
+        return m_commandBuffers[0];
+    }
     //explicit               operator bool() const { return static_cast<bool>(m_commandBuffers); }
     const VkCommandBuffer* ptr() const { return &m_commandBuffers[0]; }
     bool engaged() const { return !m_commandBuffers.empty(); }
