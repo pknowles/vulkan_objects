@@ -11,6 +11,33 @@ namespace vko {
 
 namespace simple {
 
+// Creates a primary command buffer from a command pool and calls the provided
+// function between begin/end recording. It is expected the user
+// vkResetCommandPool() the command pool periodically as the returned command
+// buffer is raw and does not free itself.
+template <device_commands DeviceCommands, class Fn>
+VkCommandBuffer recordCommands(const DeviceCommands& vk, VkCommandPool commandPool, Fn&& fn) {
+    VkCommandBufferAllocateInfo allocateInfo = {
+        .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .pNext              = nullptr,
+        .commandPool        = commandPool,
+        .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VkCommandBuffer commandBuffer;
+    check(vk.vkAllocateCommandBuffers(vk, &allocateInfo, &commandBuffer));
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pNext            = nullptr,
+        .flags            = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        .pInheritanceInfo = nullptr,
+    };
+    check(vk.vkBeginCommandBuffer(commandBuffer, &beginInfo));
+    fn(commandBuffer);
+    check(vk.vkEndCommandBuffer(commandBuffer));
+    return commandBuffer;
+}
+
 // TODO: maybe remove. I love the compile-time state this provides, but for it
 // to actually be useful the vkCmd*() commands would need to only accept the
 // recording command buffer

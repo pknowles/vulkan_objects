@@ -244,37 +244,39 @@ class TimelineSubmission {
 // SemaphoreValue-to-be for a future submission.
 struct SubmitPromise {
     SubmitPromise(const TimelineSemaphore& semaphore)
-        : signalFuture{semaphore, promiseValue.get_future()} {}
+        : m_signalFuture{semaphore, m_promiseValue.get_future()} {}
     SubmitPromise(const SubmitPromise& other)            = delete;
     SubmitPromise& operator=(const SubmitPromise& other) = delete;
     SubmitPromise(SubmitPromise&& other) noexcept
-        : promiseValue(std::move(other.promiseValue))
-        , signalFuture(std::move(other.signalFuture))
-        , engaged(other.engaged) {
-        other.engaged = false;
+        : m_promiseValue(std::move(other.m_promiseValue))
+        , m_signalFuture(std::move(other.m_signalFuture))
+        , m_hasValue(other.m_hasValue) {
+        other.m_hasValue = false;
     }
     SubmitPromise& operator=(SubmitPromise&& other) noexcept {
-        if (engaged)
-            promiseValue.set_exception(std::make_exception_ptr(TimelineSubmitCancel()));
-        promiseValue  = std::move(other.promiseValue);
-        signalFuture  = std::move(other.signalFuture);
-        engaged       = other.engaged;
-        other.engaged = false;
+        if (m_hasValue)
+            m_promiseValue.set_exception(std::make_exception_ptr(TimelineSubmitCancel()));
+        m_promiseValue  = std::move(other.m_promiseValue);
+        m_signalFuture  = std::move(other.m_signalFuture);
+        m_hasValue       = other.m_hasValue;
+        other.m_hasValue = false;
         return *this;
     }
     ~SubmitPromise() {
-        if (engaged)
-            promiseValue.set_exception(std::make_exception_ptr(TimelineSubmitCancel()));
+        if (m_hasValue)
+            m_promiseValue.set_exception(std::make_exception_ptr(TimelineSubmitCancel()));
     }
     void setValue(uint64_t value) {
-        promiseValue.set_value(value);
-        engaged = false;
+        m_promiseValue.set_value(value);
+        m_hasValue = false;
     }
-    std::promise<uint64_t> promiseValue;
-    SemaphoreValue         signalFuture;
+
+    SemaphoreValue futureValue() const { return m_signalFuture; }
 
 private:
-    bool engaged = true;
+    std::promise<uint64_t> m_promiseValue;
+    SemaphoreValue         m_signalFuture;
+    bool                   m_hasValue = true;
 };
 
 // A VkQueue with a timeline semaphore that tracks submission. Not thread safe.
@@ -295,7 +297,7 @@ public:
     // Returns a SemaphoreValue for the next submission. Be careful something
     // else doesn't submit in the meantime. If this is unknown, use a
     // ConcurrentTimelineQueue.
-    SemaphoreValue nextSubmitSemaphore() const { return m_submitPromise.signalFuture; }
+    SemaphoreValue nextSubmitSemaphore() const { return m_submitPromise.futureValue(); }
 
     [[nodiscard]] VkSemaphoreSubmitInfo
     signalInfoAndAdvance(VkPipelineStageFlags2 timelineSemaphoreStageMask) {
@@ -312,8 +314,11 @@ public:
     }
 
     // Shortcut for submitting a single command buffer to the timeline queue
-    template <device_and_commands DeviceAndCommands>
-    void submit(DeviceAndCommands& device, std::span<VkSemaphoreSubmitInfo> waitInfos,
+    template <device_and_commands DeviceAndCommands,
+              std::ranges::contiguous_range WaitRange = std::initializer_list<VkSemaphoreSubmitInfo>>
+        requires std::same_as<std::remove_cv_t<std::ranges::range_value_t<WaitRange>>,
+                              VkSemaphoreSubmitInfo>
+    void submit(DeviceAndCommands& device, WaitRange&& waitInfos,
                 VkCommandBuffer commandBuffer, VkPipelineStageFlags2 timelineSemaphoreStageMask) {
         auto                      timelineSignalInfo = signalInfoAndAdvance(timelineSemaphoreStageMask);
         VkCommandBufferSubmitInfo commandBufferSubmitInfo = {
@@ -322,14 +327,20 @@ public:
             .commandBuffer = commandBuffer,
             .deviceMask    = 1u << m_deviceIndex,
         };
-        vko::submit(device, m_queue, waitInfos, {commandBufferSubmitInfo}, {timelineSignalInfo});
+        vko::submit(device, m_queue, std::forward<WaitRange>(waitInfos), {commandBufferSubmitInfo}, {timelineSignalInfo});
     }
 
     // Like above, but with additional user-provided signal infos.
-    template <device_and_commands DeviceAndCommands>
-    void submit(DeviceAndCommands& device, std::span<VkSemaphoreSubmitInfo> waitInfos,
+    template <device_and_commands DeviceAndCommands,
+              std::ranges::contiguous_range WaitRange = std::initializer_list<VkSemaphoreSubmitInfo>,
+              std::ranges::contiguous_range SignalRange = std::initializer_list<VkSemaphoreSubmitInfo>>
+        requires std::same_as<std::remove_cv_t<std::ranges::range_value_t<WaitRange>>,
+                              VkSemaphoreSubmitInfo> &&
+                 std::same_as<std::remove_cv_t<std::ranges::range_value_t<SignalRange>>,
+                              VkSemaphoreSubmitInfo>
+    void submit(DeviceAndCommands& device, WaitRange&& waitInfos,
                 VkCommandBuffer commandBuffer, VkPipelineStageFlags2 timelineSemaphoreStageMask,
-                std::span<VkSemaphoreSubmitInfo> extraSignalInfos) {
+                SignalRange&& extraSignalInfos) {
         auto                      timelineSignalInfo = signalInfoAndAdvance(timelineSemaphoreStageMask);
         VkCommandBufferSubmitInfo commandBufferSubmitInfo = {
             .sType         = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -338,10 +349,10 @@ public:
             .deviceMask    = 1u << m_deviceIndex,
         };
         std::vector<VkSemaphoreSubmitInfo> signals;
-        signals.reserve(extraSignalInfos.size() + 1);
-        signals.insert(signals.end(), extraSignalInfos.begin(), extraSignalInfos.end());
+        signals.reserve(std::ranges::size(extraSignalInfos) + 1);
+        signals.insert(signals.end(), std::ranges::begin(extraSignalInfos), std::ranges::end(extraSignalInfos));
         signals.push_back(timelineSignalInfo);
-        submit(device, m_queue, waitInfos, {commandBufferSubmitInfo}, signals);
+        vko::submit(device, m_queue, std::forward<WaitRange>(waitInfos), {commandBufferSubmitInfo}, signals);
     }
 
     // Not used internaly, but convenient for e.g. creating a VkCommandPool for

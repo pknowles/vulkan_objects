@@ -35,7 +35,8 @@ public:
     using DeviceAndCommands = DeviceAndCommandsType;
     using Allocator         = AllocatorType;
     DedicatedStaging(const DeviceAndCommands& device, Allocator& allocator,
-                     VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT)
+                     VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                                VK_BUFFER_USAGE_TRANSFER_DST_BIT)
         : device(device)
         , allocator(allocator)
         , m_bufferUsageFlags(usage) {}
