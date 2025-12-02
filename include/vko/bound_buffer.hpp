@@ -8,6 +8,11 @@
 
 namespace vko {
 
+template <class T>
+concept buffer = requires(T t) {
+    { static_cast<VkBuffer>(t) } -> std::convertible_to<VkBuffer>;
+} && std::is_trivially_destructible_v<typename T::ValueType>;
+
 template <class T, class Allocator>
 class BufferMapping {
 public:
@@ -42,7 +47,10 @@ inline constexpr VkBufferUsageFlags debugUsageFlags() {
 template <class T, class Allocator = vma::Allocator>
 class BoundBuffer {
 public:
+    using ValueType = T;
+    using AllocatorType = Allocator;
     using Allocation = typename Allocator::AllocationType;
+
     template <device_and_commands DeviceAndCommands, class AllocationCreateInfo>
     BoundBuffer(const DeviceAndCommands& device, VkDeviceSize elementCount,
                 VkBufferUsageFlags usage, const AllocationCreateInfo& allocationCreateInfo,
@@ -100,6 +108,9 @@ private:
 template <class T, class Allocator = vma::Allocator>
 class DeviceBuffer {
 public:
+    using ValueType = typename BoundBuffer<T, Allocator>::ValueType;
+    using AllocatorType = typename BoundBuffer<T, Allocator>::AllocatorType;
+
     template <device_and_commands DeviceAndCommands, class AllocationCreateInfo>
     DeviceBuffer(const DeviceAndCommands& device, VkDeviceSize elementCount,
                  VkBufferUsageFlags usage, const AllocationCreateInfo& allocationCreateInfo,
@@ -133,5 +144,33 @@ private:
     BoundBuffer<T, Allocator> m_buffer;
     VkDeviceAddress           m_address;
 };
+
+// Type-safe and bounds-checked vkCmdCopyBuffer().
+template <device_and_commands DeviceAndCommands, buffer SrcBuffer, buffer DstBuffer>
+    requires std::is_trivially_assignable_v<typename DstBuffer::ValueType,
+                                            typename SrcBuffer::ValueType>
+void copyBuffer(const DeviceAndCommands& device, VkCommandBuffer cmd, const SrcBuffer& src,
+                VkDeviceSize srcOffset, const DstBuffer& dst, VkDeviceSize dstOffset,
+                VkDeviceSize count) {
+    if (srcOffset + count > src.size())
+        throw std::out_of_range("source buffer is too small for requested copy");
+    if (dstOffset + count > dst.size())
+        throw std::out_of_range("destination buffer is too small for requested copy");
+    if (count == 0)
+        return;
+    using T = typename SrcBuffer::ValueType;
+    VkBufferCopy region{.srcOffset = srcOffset * sizeof(T),
+                        .dstOffset = dstOffset * sizeof(T),
+                        .size      = count * sizeof(T)};
+    device.vkCmdCopyBuffer(cmd, src, dst, 1, &region);
+}
+
+template <device_and_commands DeviceAndCommands, buffer SrcBuffer, buffer DstBuffer>
+    requires std::is_trivially_assignable_v<typename DstBuffer::ValueType,
+                                            typename SrcBuffer::ValueType>
+void copyBuffer(const DeviceAndCommands& device, VkCommandBuffer cmd, const SrcBuffer& src,
+                const DstBuffer& dst) {
+    copyBuffer<DeviceAndCommands, SrcBuffer, DstBuffer>(device, cmd, src, 0, dst, 0, src.size());
+}
 
 } // namespace vko

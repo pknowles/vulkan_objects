@@ -54,6 +54,19 @@ bool waitTimelineSemaphore(DeviceAndCommands& device, VkSemaphore semaphore, uin
     return true;
 }
 
+template <device_and_commands DeviceAndCommands>
+void waitTimelineSemaphore(DeviceAndCommands& device, VkSemaphore semaphore, uint64_t value) {
+    VkSemaphoreWaitInfo waitInfo{
+        .sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+        .pNext          = nullptr,
+        .flags          = 0,
+        .semaphoreCount = 1,
+        .pSemaphores    = &semaphore,
+        .pValues        = &value,
+    };
+    check(device.vkWaitSemaphores(device, &waitInfo, std::numeric_limits<uint64_t>::max()));
+}
+
 // A timeline semaphore future value, so the event can be shared before the
 // value is known. Must outlive the TimelineSemaphore it was created with.
 // Alternative name: 'TimelinePoint'?
@@ -70,22 +83,31 @@ struct SemaphoreValue {
 
     // Wait for the semaphore to be signaled. Returns false on cancellation.
     template <vko::device_and_commands DeviceAndCommands>
-    bool wait(DeviceAndCommands& device) const {
+    void wait(DeviceAndCommands& device) const {
         assert(semaphore != VK_NULL_HANDLE);
         assert(value.valid());
+        if(ready)
+            return;
+        waitTimelineSemaphore(device, semaphore, value.get());
+    }
+
+    // Wait for the semaphore to be signaled. Returns false on cancellation.
+    template <vko::device_and_commands DeviceAndCommands>
+    bool tryWait(DeviceAndCommands& device) const {
         try {
-            value.wait();
-            return waitTimelineSemaphore(device, semaphore, value.get(),
-                                         std::numeric_limits<uint64_t>::max());
+            wait(device);
         } catch (TimelineSubmitCancel&) {
             return false;
         }
+        return true;
     }
 
     // Wait for the semaphore to be signaled, up to the given duration. Returns
     // false on timeout or cancellation.
     template <vko::device_and_commands DeviceAndCommands, class Rep, class Period>
     bool waitFor(DeviceAndCommands& device, std::chrono::duration<Rep, Period> duration) const {
+        if(ready)
+            return true;
         uint64_t remainingNs = 0;
         if (duration.count() <= 0) {
             if (!hasValue())
@@ -93,7 +115,7 @@ struct SemaphoreValue {
         } else {
             const auto begin = Clock::now();
             try {
-                if (value.wait_until(begin + duration) == std::future_status::timeout)
+                if ((ready = value.wait_until(begin + duration) == std::future_status::timeout))
                     return false;
             } catch (TimelineSubmitCancel&) {
                 return false;
@@ -101,7 +123,7 @@ struct SemaphoreValue {
             auto remaining = std::max(begin + duration - Clock::now(), Clock::duration::zero());
             remainingNs = std::chrono::duration_cast<std::chrono::nanoseconds>(remaining).count();
         }
-        return waitTimelineSemaphore(device, semaphore, value.get(), remainingNs);
+        return ready = waitTimelineSemaphore(device, semaphore, value.get(), remainingNs);
     }
 
     // Wait for the semaphore to be signaled, up to the given time point. Returns
@@ -159,6 +181,297 @@ struct SemaphoreValue {
     // to own its own semaphore. E.g. to mark it as already signalled.
     VkSemaphore                  semaphore = VK_NULL_HANDLE;
     std::shared_future<uint64_t> value;
+    mutable bool                 ready = false; // caches semaphore status
+};
+
+template <class T>
+class TimelineFuture {
+public:
+    // Not like a std::future - we often have the object handle available
+    // immediately, we just shouldn't access it until the future is ready.
+    template <class U, class SV>
+    TimelineFuture(SV&& semaphore, U&& value)
+        : m_semaphore(std::forward<SV>(semaphore))
+        , m_value(std::forward<U>(value)) {}
+
+    template <vko::device_and_commands DeviceAndCommands>
+    T& get(const DeviceAndCommands& device) {
+        m_semaphore.wait(device);
+        return m_value;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    const T& get(const DeviceAndCommands& device) const {
+        m_semaphore.wait(device);
+        return m_value;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Rep, class Period>
+    bool waitFor(const DeviceAndCommands& device, std::chrono::duration<Rep, Period> duration) const {
+        return m_semaphore.waitFor(device, duration);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Clock, class Duration>
+    bool waitUntil(const DeviceAndCommands& device,
+                   std::chrono::time_point<Clock, Duration> deadline) const {
+        return m_semaphore.waitUntil(device, deadline);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    bool ready(const DeviceAndCommands& device) const { return m_semaphore.isSignaled(device); }
+
+    const SemaphoreValue& semaphore() const { return m_semaphore; }
+
+private:
+    SemaphoreValue m_semaphore;
+    T              m_value;
+};
+
+// For when we actually don't have a value until the semaphore is signaled. More
+// like a real std::future, except the value is cached.
+template <class T>
+class LazyTimelineFuture {
+public:
+    template <class SV, class Fn>
+    LazyTimelineFuture(SV&& semaphore, Fn&& producer)
+        : m_semaphore(std::forward<SV>(semaphore))
+        , m_producer(std::forward<Fn>(producer)) {}
+
+    template <vko::device_and_commands DeviceAndCommands>
+    T& get(const DeviceAndCommands& device) {
+        if (!m_value) {
+            m_semaphore.wait(device);
+            m_value = m_producer();  // Lazy evaluation
+        }
+        return *m_value;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    const T& get(const DeviceAndCommands& device) const {
+        if (!m_value) {
+            m_semaphore.wait(device);
+            m_value = m_producer();  // Lazy evaluation
+        }
+        return *m_value;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Rep, class Period>
+    bool waitFor(const DeviceAndCommands& device, std::chrono::duration<Rep, Period> duration) const {
+        return m_semaphore.waitFor(device, duration);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Clock, class Duration>
+    bool waitUntil(const DeviceAndCommands& device,
+                   std::chrono::time_point<Clock, Duration> deadline) const {
+        return m_semaphore.waitUntil(device, deadline);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    bool ready(const DeviceAndCommands& device) const { return m_semaphore.isSignaled(device); }
+
+    const SemaphoreValue& semaphore() const { return m_semaphore; }
+
+private:
+    SemaphoreValue           m_semaphore;
+    std::function<T()>       m_producer;
+    mutable std::optional<T> m_value;
+};
+
+
+// A shared version for a forced evaluation.
+template <class T>
+class SharedLazyTimelineFuture {
+public:
+    template <class SV, class Fn>
+    SharedLazyTimelineFuture(SV&& semaphore, Fn&& producer)
+        : m_state(std::make_shared<State>(std::forward<SV>(semaphore), std::forward<Fn>(producer))) {}
+
+    template <vko::device_and_commands DeviceAndCommands>
+    T& get(const DeviceAndCommands& device) {
+        if (!m_state->producer) {
+            throw TimelineSubmitCancel();
+        }
+        if (!m_state->value) {
+            m_state->semaphore.wait(device);
+            m_state->value = m_state->producer();  // Lazy evaluation
+        }
+        return *m_state->value;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    const T& get(const DeviceAndCommands& device) const {
+        if (!m_state->producer) {
+            throw TimelineSubmitCancel();
+        }
+        if (!m_state->value) {
+            m_state->semaphore.wait(device);
+            m_state->value = m_state->producer();  // Lazy evaluation
+        }
+        return *m_state->value;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Rep, class Period>
+    bool waitFor(const DeviceAndCommands& device, std::chrono::duration<Rep, Period> duration) const {
+        return m_state.semaphore.waitFor(device, duration);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Clock, class Duration>
+    bool waitUntil(const DeviceAndCommands& device,
+                   std::chrono::time_point<Clock, Duration> deadline) const {
+        return m_state.semaphore.waitUntil(device, deadline);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    bool ready(const DeviceAndCommands& device) const { return m_state->semaphore.isSignaled(device); }
+
+    const SemaphoreValue& semaphore() const { return m_state->semaphore; }
+
+    // Returns a type erased function that will produce the value if it's not
+    // already produced.
+    template <device_and_commands DeviceAndCommands>
+    std::function<void(bool)> evaluator(const DeviceAndCommands& device) const {
+        return [state = m_state, &device](bool call) {
+            if (call) {
+                if (!state->value) {
+                    state->semaphore.wait(device);
+                    state->value = state->producer();
+                }
+            } else {
+                state->producer = nullptr;
+            }
+        };
+    }
+
+    // Returns a type erased function that will produce the value if it's not
+    // already produced and the shared future still exists.
+    template<device_and_commands DeviceAndCommands>
+    std::function<void(bool)> weakEvaluator(const DeviceAndCommands& device) const {
+        return [weak = std::weak_ptr<State>(m_state), &device](bool call) {
+            if (auto state = weak.lock()) {
+                if (call) {
+                    if (!state->value) {
+                        state->semaphore.wait(device);
+                        state->value = state->producer();
+                    }
+                } else {
+                    state->producer = nullptr;
+                }
+            }
+        };
+    }
+
+private:
+    struct State {
+        std::function<T()>       producer;
+        mutable std::optional<T> value;
+        SemaphoreValue           semaphore; // already shared, but whatever
+    };
+
+    std::shared_ptr<State> m_state;
+};
+
+// Generic queue that tracks completion with a semaphore for each item. It is
+// assumed that semaphores will complete in the order they were pushed.
+template <typename T>
+class CompletionQueue {
+public:
+    CompletionQueue() = default;
+
+    // Push an entry with its completion semaphore
+    void push_back(T&& entry, SemaphoreValue semaphore) {
+        m_entries.push_back({std::move(entry), std::move(semaphore)});
+    }
+
+    // Allow direct semaphore access so user can wait with timeouts
+    const SemaphoreValue& frontSemaphore() const { return m_entries.front().semaphore; }
+
+    void pop_front() { m_entries.pop_front(); }
+
+    // Block until the front/oldest entry is ready and return a reference to it.
+    template <device_and_commands DeviceAndCommands>
+    T& front(const DeviceAndCommands& device) {
+        frontSemaphore().wait(device);
+        return m_entries.front().value;
+    }
+
+    // Checks all entries from the front and calls the callback for those that
+    // are ready
+    template <device_and_commands DeviceAndCommands>
+    size_t visitReady(const DeviceAndCommands& device, std::function<void(T&)> callback) {
+        auto next = m_entries.begin();
+        while (next != m_entries.end() && next->semaphore.isSignaled(device)) {
+            callback(next->value);
+            ++next;
+        }
+        return std::distance(m_entries.begin(), next);
+    }
+
+    // Same as visitReady, but also removes the ready entries from the queue
+    template <device_and_commands DeviceAndCommands>
+    size_t consumeReady(const DeviceAndCommands& device, std::function<void(T&)> callback) {
+        auto next = m_entries.begin();
+        while (next != m_entries.end() && next->semaphore.isSignaled(device)) {
+            callback(next->value);
+            ++next;
+        }
+        size_t processed = std::distance(m_entries.begin(), next);
+        m_entries.erase(m_entries.begin(), next);
+        return processed;
+    }
+
+    // Same as visitReady, but removes the ready entries from the queue as long
+    // there are at least keepReadyCount ready entries after it. Returns the
+    // number of entries removed.
+    template <device_and_commands DeviceAndCommands>
+    size_t visitAndConsumeReadyWithBuffer(const DeviceAndCommands& device, size_t keepReadyCount,
+                                          std::function<void(T&)> callback) {
+        auto next   = m_entries.begin();
+        auto remove = next;
+        while (next != m_entries.end() && next->semaphore.isSignaled(device)) {
+            callback(next->value);
+            ++next;
+            if (keepReadyCount > 0) {
+                --keepReadyCount;
+            } else {
+                ++remove;
+            }
+        }
+        size_t removed = std::distance(m_entries.begin(), remove);
+        m_entries.erase(m_entries.begin(), remove);
+        return removed;
+    }
+
+    // Waits for all entries to be ready and calls the callback for each.
+    template <device_and_commands DeviceAndCommands>
+    void waitAndConsume(const DeviceAndCommands& device, std::function<void(T&)> callback) {
+        if (!m_entries.empty()) {
+            // Assumes waiting on the newest semaphore guarantees all older
+            // semaphores are also signaled
+            m_entries.back().semaphore.wait(device);
+            for (auto& entry : m_entries) {
+                callback(entry.value);
+            }
+            m_entries.clear();
+        }
+    }
+
+    // Access to entries without checking if they are ready
+    void visitAll(std::function<void(T&)> callback) {
+        for (auto& entry : m_entries) {
+            callback(entry.value);
+        }
+    }
+
+    size_t size() const { return m_entries.size(); }
+    bool empty() const { return m_entries.empty(); }
+
+private:
+    struct Entry {
+        T              value;
+        SemaphoreValue semaphore;
+    };
+
+    std::deque<Entry> m_entries;
 };
 
 // Generic submit wrapper
@@ -244,37 +557,39 @@ class TimelineSubmission {
 // SemaphoreValue-to-be for a future submission.
 struct SubmitPromise {
     SubmitPromise(const TimelineSemaphore& semaphore)
-        : signalFuture{semaphore, promiseValue.get_future()} {}
+        : m_signalFuture{semaphore, m_promiseValue.get_future()} {}
     SubmitPromise(const SubmitPromise& other)            = delete;
     SubmitPromise& operator=(const SubmitPromise& other) = delete;
     SubmitPromise(SubmitPromise&& other) noexcept
-        : promiseValue(std::move(other.promiseValue))
-        , signalFuture(std::move(other.signalFuture))
-        , engaged(other.engaged) {
-        other.engaged = false;
+        : m_promiseValue(std::move(other.m_promiseValue))
+        , m_signalFuture(std::move(other.m_signalFuture))
+        , m_hasValue(other.m_hasValue) {
+        other.m_hasValue = false;
     }
     SubmitPromise& operator=(SubmitPromise&& other) noexcept {
-        if (engaged)
-            promiseValue.set_exception(std::make_exception_ptr(TimelineSubmitCancel()));
-        promiseValue  = std::move(other.promiseValue);
-        signalFuture  = std::move(other.signalFuture);
-        engaged       = other.engaged;
-        other.engaged = false;
+        if (m_hasValue)
+            m_promiseValue.set_exception(std::make_exception_ptr(TimelineSubmitCancel()));
+        m_promiseValue  = std::move(other.m_promiseValue);
+        m_signalFuture  = std::move(other.m_signalFuture);
+        m_hasValue       = other.m_hasValue;
+        other.m_hasValue = false;
         return *this;
     }
     ~SubmitPromise() {
-        if (engaged)
-            promiseValue.set_exception(std::make_exception_ptr(TimelineSubmitCancel()));
+        if (m_hasValue)
+            m_promiseValue.set_exception(std::make_exception_ptr(TimelineSubmitCancel()));
     }
     void setValue(uint64_t value) {
-        promiseValue.set_value(value);
-        engaged = false;
+        m_promiseValue.set_value(value);
+        m_hasValue = false;
     }
-    std::promise<uint64_t> promiseValue;
-    SemaphoreValue         signalFuture;
+
+    SemaphoreValue futureValue() const { return m_signalFuture; }
 
 private:
-    bool engaged = true;
+    std::promise<uint64_t> m_promiseValue;
+    SemaphoreValue         m_signalFuture;
+    bool                   m_hasValue = true;
 };
 
 // A VkQueue with a timeline semaphore that tracks submission. Not thread safe.
@@ -295,7 +610,7 @@ public:
     // Returns a SemaphoreValue for the next submission. Be careful something
     // else doesn't submit in the meantime. If this is unknown, use a
     // ConcurrentTimelineQueue.
-    SemaphoreValue nextSubmitSemaphore() const { return m_submitPromise.signalFuture; }
+    SemaphoreValue nextSubmitSemaphore() const { return m_submitPromise.futureValue(); }
 
     [[nodiscard]] VkSemaphoreSubmitInfo
     signalInfoAndAdvance(VkPipelineStageFlags2 timelineSemaphoreStageMask) {
@@ -312,8 +627,11 @@ public:
     }
 
     // Shortcut for submitting a single command buffer to the timeline queue
-    template <device_and_commands DeviceAndCommands>
-    void submit(DeviceAndCommands& device, std::span<VkSemaphoreSubmitInfo> waitInfos,
+    template <device_and_commands DeviceAndCommands,
+              std::ranges::contiguous_range WaitRange = std::initializer_list<VkSemaphoreSubmitInfo>>
+        requires std::same_as<std::remove_cv_t<std::ranges::range_value_t<WaitRange>>,
+                              VkSemaphoreSubmitInfo>
+    void submit(DeviceAndCommands& device, WaitRange&& waitInfos,
                 VkCommandBuffer commandBuffer, VkPipelineStageFlags2 timelineSemaphoreStageMask) {
         auto                      timelineSignalInfo = signalInfoAndAdvance(timelineSemaphoreStageMask);
         VkCommandBufferSubmitInfo commandBufferSubmitInfo = {
@@ -322,14 +640,20 @@ public:
             .commandBuffer = commandBuffer,
             .deviceMask    = 1u << m_deviceIndex,
         };
-        vko::submit(device, m_queue, waitInfos, {commandBufferSubmitInfo}, {timelineSignalInfo});
+        vko::submit(device, m_queue, std::forward<WaitRange>(waitInfos), {commandBufferSubmitInfo}, {timelineSignalInfo});
     }
 
     // Like above, but with additional user-provided signal infos.
-    template <device_and_commands DeviceAndCommands>
-    void submit(DeviceAndCommands& device, std::span<VkSemaphoreSubmitInfo> waitInfos,
+    template <device_and_commands DeviceAndCommands,
+              std::ranges::contiguous_range WaitRange = std::initializer_list<VkSemaphoreSubmitInfo>,
+              std::ranges::contiguous_range SignalRange = std::initializer_list<VkSemaphoreSubmitInfo>>
+        requires std::same_as<std::remove_cv_t<std::ranges::range_value_t<WaitRange>>,
+                              VkSemaphoreSubmitInfo> &&
+                 std::same_as<std::remove_cv_t<std::ranges::range_value_t<SignalRange>>,
+                              VkSemaphoreSubmitInfo>
+    void submit(DeviceAndCommands& device, WaitRange&& waitInfos,
                 VkCommandBuffer commandBuffer, VkPipelineStageFlags2 timelineSemaphoreStageMask,
-                std::span<VkSemaphoreSubmitInfo> extraSignalInfos) {
+                SignalRange&& extraSignalInfos) {
         auto                      timelineSignalInfo = signalInfoAndAdvance(timelineSemaphoreStageMask);
         VkCommandBufferSubmitInfo commandBufferSubmitInfo = {
             .sType         = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -338,10 +662,10 @@ public:
             .deviceMask    = 1u << m_deviceIndex,
         };
         std::vector<VkSemaphoreSubmitInfo> signals;
-        signals.reserve(extraSignalInfos.size() + 1);
-        signals.insert(signals.end(), extraSignalInfos.begin(), extraSignalInfos.end());
+        signals.reserve(std::ranges::size(extraSignalInfos) + 1);
+        signals.insert(signals.end(), std::ranges::begin(extraSignalInfos), std::ranges::end(extraSignalInfos));
         signals.push_back(timelineSignalInfo);
-        submit(device, m_queue, waitInfos, {commandBufferSubmitInfo}, signals);
+        vko::submit(device, m_queue, std::forward<WaitRange>(waitInfos), {commandBufferSubmitInfo}, signals);
     }
 
     // Not used internaly, but convenient for e.g. creating a VkCommandPool for
