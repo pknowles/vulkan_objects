@@ -22,14 +22,11 @@ public:
         : m_commandBuffer(std::move(commandBuffer))
         , vkEndCommandBuffer(vk.vkEndCommandBuffer) {
         check(vk.vkBeginCommandBuffer(m_commandBuffer, &beginInfo));
-        printf("DELETEME: RecordingCommandBuffer::RecordingCommandBuffer() handle=%p (object at %p), engaged=%d\n", static_cast<VkCommandBuffer>(m_commandBuffer), &m_commandBuffer, m_commandBuffer.engaged()); // DELETEME
     }
     operator VkCommandBuffer() const & { return m_commandBuffer; }
     //explicit operator bool() const & { return static_cast<bool>(m_commandBuffer); }
     bool engaged() const { return m_commandBuffer.engaged(); }
     CommandBuffer&& end() {
-        VkCommandBuffer handle = static_cast<VkCommandBuffer>(m_commandBuffer);
-        printf("DELETEME: RecordingCommandBuffer::end() handle=%p (object at %p), engaged=%d\n", handle, &m_commandBuffer, m_commandBuffer.engaged()); // DELETEME
         check(vkEndCommandBuffer(m_commandBuffer));
         return std::move(m_commandBuffer);
     }
@@ -59,11 +56,8 @@ public:
         , vkQueueSubmit(vk.vkQueueSubmit)
         , vkQueueWaitIdle(vk.vkQueueWaitIdle) {}
     ~ImmediateCommandBuffer() {
-        printf("DELETEME: ImmediateCommandBuffer::~ImmediateCommandBuffer() engaged=%d\n", m_commandBuffer.engaged()); // DELETEME
         if (static_cast<bool>(m_commandBuffer)) {
-            printf("DELETEME: ImmediateCommandBuffer calling end()\n"); // DELETEME
             CommandBuffer cmd(m_commandBuffer.end());
-            printf("DELETEME: ImmediateCommandBuffer end() returned, cmd=%p\n", static_cast<VkCommandBuffer>(cmd)); // DELETEME
             VkSubmitInfo  submitInfo{
                  .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                  .pNext                = nullptr,
