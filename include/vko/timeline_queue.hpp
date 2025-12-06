@@ -161,6 +161,192 @@ struct SemaphoreValue {
     std::shared_future<uint64_t> value;
 };
 
+template <class T>
+class TimelineFuture {
+public:
+    // Not like a std::future - we often have the object handle available
+    // immediately, we just shouldn't access it until the future is ready.
+    template <class U, class SV>
+    TimelineFuture(SV&& semaphore, U&& value)
+        : m_semaphore(std::forward<SV>(semaphore))
+        , m_value(std::forward<U>(value)) {}
+
+    template <vko::device_and_commands DeviceAndCommands>
+    T& get(const DeviceAndCommands& device) {
+        m_semaphore.wait(device);
+        return m_value;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    const T& get(const DeviceAndCommands& device) const {
+        m_semaphore.wait(device);
+        return m_value;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Rep, class Period>
+    bool waitFor(const DeviceAndCommands& device, std::chrono::duration<Rep, Period> duration) const {
+        return m_semaphore.waitFor(device, duration);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Clock, class Duration>
+    bool waitUntil(const DeviceAndCommands& device,
+                   std::chrono::time_point<Clock, Duration> deadline) const {
+        return m_semaphore.waitUntil(device, deadline);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    bool ready(const DeviceAndCommands& device) const { return m_semaphore.isSignaled(device); }
+
+    const SemaphoreValue& semaphore() const { return m_semaphore; }
+
+private:
+    SemaphoreValue m_semaphore;
+    T              m_value;
+};
+
+// For when we actually don't have a value until the semaphore is signaled. More
+// like a real std::future, except the value is cached.
+template <class T>
+class LazyTimelineFuture {
+public:
+    template <class SV, class Fn>
+    LazyTimelineFuture(SV&& semaphore, Fn&& producer)
+        : m_semaphore(std::forward<SV>(semaphore))
+        , m_producer(std::forward<Fn>(producer)) {}
+
+    template <vko::device_and_commands DeviceAndCommands>
+    T& get(const DeviceAndCommands& device) {
+        if (!m_value) {
+            m_semaphore.wait(device);
+            m_value = m_producer();  // Lazy evaluation
+        }
+        return *m_value;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    const T& get(const DeviceAndCommands& device) const {
+        if (!m_value) {
+            m_semaphore.wait(device);
+            m_value = m_producer();  // Lazy evaluation
+        }
+        return *m_value;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Rep, class Period>
+    bool waitFor(const DeviceAndCommands& device, std::chrono::duration<Rep, Period> duration) const {
+        return m_semaphore.waitFor(device, duration);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Clock, class Duration>
+    bool waitUntil(const DeviceAndCommands& device,
+                   std::chrono::time_point<Clock, Duration> deadline) const {
+        return m_semaphore.waitUntil(device, deadline);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    bool ready(const DeviceAndCommands& device) const { return m_semaphore.isSignaled(device); }
+
+    const SemaphoreValue& semaphore() const { return m_semaphore; }
+
+private:
+    SemaphoreValue           m_semaphore;
+    std::function<T()>       m_producer;
+    mutable std::optional<T> m_value;
+};
+
+
+// A shared version for a forced evaluation.
+template <class T>
+class SharedLazyTimelineFuture {
+public:
+    template <class SV, class Fn>
+    SharedLazyTimelineFuture(SV&& semaphore, Fn&& producer)
+        : m_state(std::make_shared<State>(std::forward<SV>(semaphore), std::forward<Fn>(producer))) {}
+
+    template <vko::device_and_commands DeviceAndCommands>
+    T& get(const DeviceAndCommands& device) {
+        if (!m_state->producer) {
+            throw TimelineSubmitCancel();
+        }
+        if (!m_state->value) {
+            m_state->semaphore.wait(device);
+            m_state->value = m_state->producer();  // Lazy evaluation
+        }
+        return *m_state->value;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    const T& get(const DeviceAndCommands& device) const {
+        if (!m_state->producer) {
+            throw TimelineSubmitCancel();
+        }
+        if (!m_state->value) {
+            m_state->semaphore.wait(device);
+            m_state->value = m_state->producer();  // Lazy evaluation
+        }
+        return *m_state->value;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Rep, class Period>
+    bool waitFor(const DeviceAndCommands& device, std::chrono::duration<Rep, Period> duration) const {
+        return m_state.semaphore.waitFor(device, duration);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Clock, class Duration>
+    bool waitUntil(const DeviceAndCommands& device,
+                   std::chrono::time_point<Clock, Duration> deadline) const {
+        return m_state.semaphore.waitUntil(device, deadline);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    bool ready(const DeviceAndCommands& device) const { return m_state->semaphore.isSignaled(device); }
+
+    const SemaphoreValue& semaphore() const { return m_state->semaphore; }
+
+    // Returns a type erased function that will produce the value if it's not
+    // already produced.
+    template <device_and_commands DeviceAndCommands>
+    std::function<void(bool)> evaluator(const DeviceAndCommands& device) const {
+        return [state = m_state, &device](bool call) {
+            if (call) {
+                if (!state->value) {
+                    state->semaphore.wait(device);
+                    state->value = state->producer();
+                }
+            } else {
+                state->producer = nullptr;
+            }
+        };
+    }
+
+    // Returns a type erased function that will produce the value if it's not
+    // already produced and the shared future still exists.
+    template<device_and_commands DeviceAndCommands>
+    std::function<void(bool)> weakEvaluator(const DeviceAndCommands& device) const {
+        return [weak = std::weak_ptr<State>(m_state), &device](bool call) {
+            if (auto state = weak.lock()) {
+                if (call) {
+                    if (!state->value) {
+                        state->semaphore.wait(device);
+                        state->value = state->producer();
+                    }
+                } else {
+                    state->producer = nullptr;
+                }
+            }
+        };
+    }
+
+private:
+    struct State {
+        std::function<T()>       producer;
+        mutable std::optional<T> value;
+        SemaphoreValue           semaphore; // already shared, but whatever
+    };
+
+    std::shared_ptr<State> m_state;
+};
+
 // Generic submit wrapper
 template <device_and_commands           DeviceAndCommands,
           std::ranges::contiguous_range Range = std::initializer_list<VkSubmitInfo2>>

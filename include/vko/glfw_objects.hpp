@@ -261,6 +261,7 @@ using Window = std::unique_ptr<GLFWwindow, WindowDeleter>;
 inline Window makeWindow(int width, int height, const char* title, GLFWmonitor* monitor = nullptr,
                          GLFWwindow* share = nullptr) {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);  // Aware of DPI scaling
     GLFWwindow* window = glfwCreateWindow(width, height, title, monitor, share);
     if (!window) {
         throw Exception("glfwCreateWindow failed");
