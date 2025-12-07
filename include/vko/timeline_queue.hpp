@@ -54,6 +54,19 @@ bool waitTimelineSemaphore(DeviceAndCommands& device, VkSemaphore semaphore, uin
     return true;
 }
 
+template <device_and_commands DeviceAndCommands>
+void waitTimelineSemaphore(DeviceAndCommands& device, VkSemaphore semaphore, uint64_t value) {
+    VkSemaphoreWaitInfo waitInfo{
+        .sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+        .pNext          = nullptr,
+        .flags          = 0,
+        .semaphoreCount = 1,
+        .pSemaphores    = &semaphore,
+        .pValues        = &value,
+    };
+    check(device.vkWaitSemaphores(device, &waitInfo, std::numeric_limits<uint64_t>::max()));
+}
+
 // A timeline semaphore future value, so the event can be shared before the
 // value is known. Must outlive the TimelineSemaphore it was created with.
 // Alternative name: 'TimelinePoint'?
@@ -70,22 +83,31 @@ struct SemaphoreValue {
 
     // Wait for the semaphore to be signaled. Returns false on cancellation.
     template <vko::device_and_commands DeviceAndCommands>
-    bool wait(DeviceAndCommands& device) const {
+    void wait(DeviceAndCommands& device) const {
         assert(semaphore != VK_NULL_HANDLE);
         assert(value.valid());
+        if(ready)
+            return;
+        waitTimelineSemaphore(device, semaphore, value.get());
+    }
+
+    // Wait for the semaphore to be signaled. Returns false on cancellation.
+    template <vko::device_and_commands DeviceAndCommands>
+    bool tryWait(DeviceAndCommands& device) const {
         try {
-            value.wait();
-            return waitTimelineSemaphore(device, semaphore, value.get(),
-                                         std::numeric_limits<uint64_t>::max());
+            wait(device);
         } catch (TimelineSubmitCancel&) {
             return false;
         }
+        return true;
     }
 
     // Wait for the semaphore to be signaled, up to the given duration. Returns
     // false on timeout or cancellation.
     template <vko::device_and_commands DeviceAndCommands, class Rep, class Period>
     bool waitFor(DeviceAndCommands& device, std::chrono::duration<Rep, Period> duration) const {
+        if(ready)
+            return true;
         uint64_t remainingNs = 0;
         if (duration.count() <= 0) {
             if (!hasValue())
@@ -93,7 +115,7 @@ struct SemaphoreValue {
         } else {
             const auto begin = Clock::now();
             try {
-                if (value.wait_until(begin + duration) == std::future_status::timeout)
+                if ((ready = value.wait_until(begin + duration) == std::future_status::timeout))
                     return false;
             } catch (TimelineSubmitCancel&) {
                 return false;
@@ -101,7 +123,7 @@ struct SemaphoreValue {
             auto remaining = std::max(begin + duration - Clock::now(), Clock::duration::zero());
             remainingNs = std::chrono::duration_cast<std::chrono::nanoseconds>(remaining).count();
         }
-        return waitTimelineSemaphore(device, semaphore, value.get(), remainingNs);
+        return ready = waitTimelineSemaphore(device, semaphore, value.get(), remainingNs);
     }
 
     // Wait for the semaphore to be signaled, up to the given time point. Returns
@@ -159,6 +181,7 @@ struct SemaphoreValue {
     // to own its own semaphore. E.g. to mark it as already signalled.
     VkSemaphore                  semaphore = VK_NULL_HANDLE;
     std::shared_future<uint64_t> value;
+    mutable bool                 ready = false; // caches semaphore status
 };
 
 template <class T>
@@ -345,6 +368,110 @@ private:
     };
 
     std::shared_ptr<State> m_state;
+};
+
+// Generic queue that tracks completion with a semaphore for each item. It is
+// assumed that semaphores will complete in the order they were pushed.
+template <typename T>
+class CompletionQueue {
+public:
+    CompletionQueue() = default;
+
+    // Push an entry with its completion semaphore
+    void push_back(T&& entry, SemaphoreValue semaphore) {
+        m_entries.push_back({std::move(entry), std::move(semaphore)});
+    }
+
+    // Allow direct semaphore access so user can wait with timeouts
+    const SemaphoreValue& frontSemaphore() const { return m_entries.front().semaphore; }
+
+    void pop_front() { m_entries.pop_front(); }
+
+    // Block until the front/oldest entry is ready and return a reference to it.
+    template <device_and_commands DeviceAndCommands>
+    T& front(const DeviceAndCommands& device) {
+        frontSemaphore().wait(device);
+        return m_entries.front().value;
+    }
+
+    // Checks all entries from the front and calls the callback for those that
+    // are ready
+    template <device_and_commands DeviceAndCommands>
+    size_t visitReady(const DeviceAndCommands& device, std::function<void(T&)> callback) {
+        auto next = m_entries.begin();
+        while (next != m_entries.end() && next->semaphore.isSignaled(device)) {
+            callback(next->value);
+            ++next;
+        }
+        return std::distance(m_entries.begin(), next);
+    }
+
+    // Same as visitReady, but also removes the ready entries from the queue
+    template <device_and_commands DeviceAndCommands>
+    size_t consumeReady(const DeviceAndCommands& device, std::function<void(T&)> callback) {
+        auto next = m_entries.begin();
+        while (next != m_entries.end() && next->semaphore.isSignaled(device)) {
+            callback(next->value);
+            ++next;
+        }
+        size_t processed = std::distance(m_entries.begin(), next);
+        m_entries.erase(m_entries.begin(), next);
+        return processed;
+    }
+
+    // Same as visitReady, but removes the ready entries from the queue as long
+    // there are at least keepReadyCount ready entries after it. Returns the
+    // number of entries removed.
+    template <device_and_commands DeviceAndCommands>
+    size_t visitAndConsumeReadyWithBuffer(const DeviceAndCommands& device, size_t keepReadyCount,
+                                          std::function<void(T&)> callback) {
+        auto next   = m_entries.begin();
+        auto remove = next;
+        while (next != m_entries.end() && next->semaphore.isSignaled(device)) {
+            callback(next->value);
+            ++next;
+            if (keepReadyCount > 0) {
+                --keepReadyCount;
+            } else {
+                ++remove;
+            }
+        }
+        size_t removed = std::distance(m_entries.begin(), remove);
+        m_entries.erase(m_entries.begin(), remove);
+        return removed;
+    }
+
+    // Waits for all entries to be ready and calls the callback for each.
+    template <device_and_commands DeviceAndCommands>
+    void waitAndConsume(const DeviceAndCommands& device, std::function<void(T&)> callback) {
+        if (!m_entries.empty()) {
+            // Assumes waiting on the newest semaphore guarantees all older
+            // semaphores are also signaled
+            m_entries.back().semaphore.wait(device);
+            for (auto& entry : m_entries) {
+                callback(entry.value);
+            }
+            m_entries.clear();
+        }
+    }
+
+    // Access to entries without checking if they are ready
+    void visitAll(std::function<void(T&)> callback) {
+        for (auto& entry : m_entries) {
+            callback(entry.value);
+        }
+    }
+
+    size_t size() const { return m_entries.size(); }
+    bool empty() const { return m_entries.empty(); }
+
+private:
+    struct Entry {
+        T              value;
+        SemaphoreValue semaphore;
+    };
+
+    std::deque<Entry> m_entries;
 };
 
 // Generic submit wrapper
