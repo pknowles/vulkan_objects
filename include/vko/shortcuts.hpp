@@ -103,11 +103,11 @@ void cmdMemoryBarrier(const DeviceAndCommands& device, VkCommandBuffer cmd, Memo
                                 nullptr);
 }
 
-// Debug messenger with a global callback (not using the user data pointer)
+// Debug messenger with a global callback. Better to use DebugMessenger.
 struct GlobalDebugMessenger {
     template <instance_and_commands InstanceAndCommands = Instance>
     GlobalDebugMessenger(const InstanceAndCommands&           vk,
-                         PFN_vkDebugUtilsMessengerCallbackEXT callback)
+                         PFN_vkDebugUtilsMessengerCallbackEXT callback, void* userData = nullptr)
         : messenger(vk, VkDebugUtilsMessengerCreateInfoEXT{
                             .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
                             .pNext = nullptr,
@@ -120,18 +120,20 @@ struct GlobalDebugMessenger {
                                            VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                                            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
                             .pfnUserCallback = callback,
-                            .pUserData       = nullptr}) {}
+                            .pUserData       = userData}) {}
     vko::DebugUtilsMessengerEXT messenger;
 };
 
-struct DebugMessenger {
-    using Callback = std::function<bool(VkDebugUtilsMessageSeverityFlagBitsEXT, VkDebugUtilsMessageTypeFlagsEXT,
+class DebugMessenger {
+public:
+    using Callback =
+        std::function<bool(VkDebugUtilsMessageSeverityFlagBitsEXT, VkDebugUtilsMessageTypeFlagsEXT,
                            const VkDebugUtilsMessengerCallbackDataEXT&)>;
 
     template <instance_and_commands InstanceAndCommands = Instance, class Fn = Callback>
     DebugMessenger(const InstanceAndCommands& vk, Fn&& callback)
-        : callback(std::forward<Fn>(callback))
-        , messenger(vk, VkDebugUtilsMessengerCreateInfoEXT{
+        : m_callback(std::forward<Fn>(callback))
+        , m_messenger(vk, VkDebugUtilsMessengerCreateInfoEXT{
                             .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
                             .pNext = nullptr,
                             .flags = 0,
@@ -143,15 +145,23 @@ struct DebugMessenger {
                                            VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                                            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
                             .pfnUserCallback = debugMessageCallback,
-                            .pUserData       = &callback}) {}
-    vko::DebugUtilsMessengerEXT                         messenger;
-    Callback callback;
+                            .pUserData       = &m_callback}) {}
+
+    // Disable copying since we store a pointer to a member. We could implement
+    // copying, but would have to store a pointer to InstanceAndCommands just
+    // for that.
+    DebugMessenger(const DebugMessenger& other)            = delete;
+    DebugMessenger& operator=(const DebugMessenger& other) = delete;
+
+private:
+    Callback                    m_callback;
+    vko::DebugUtilsMessengerEXT m_messenger;
     static VkBool32 debugMessageCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
                                          VkDebugUtilsMessageTypeFlagsEXT        messageTypes,
                                          const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
                                          void*                                       pUserData) {
         return (*reinterpret_cast<Callback*>(pUserData))(messageSeverity, messageTypes,
-                                                                   *pCallbackData)
+                                                         *pCallbackData)
                    ? VK_TRUE
                    : VK_FALSE;
     }

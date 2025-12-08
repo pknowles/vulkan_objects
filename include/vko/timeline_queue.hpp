@@ -1,15 +1,23 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
-#include "vulkan/vulkan_core.h"
+#include <cassert>
+#include <chrono>
 #include <concepts>
+#include <deque>
+#include <functional>
 #include <future>
+#include <limits>
+#include <mutex>
+#include <optional>
 #include <ranges>
+#include <span>
 #include <type_traits>
 #include <vector>
 #include <vko/adapters.hpp>
 #include <vko/exceptions.hpp>
 #include <vko/handles.hpp>
+#include <vulkan/vulkan_core.h>
 
 namespace vko {
 
@@ -70,7 +78,8 @@ void waitTimelineSemaphore(DeviceAndCommands& device, VkSemaphore semaphore, uin
 // A timeline semaphore future value, so the event can be shared before the
 // value is known. Must outlive the TimelineSemaphore it was created with.
 // Alternative name: 'TimelinePoint'?
-struct SemaphoreValue {
+class SemaphoreValue {
+public:
     using Clock = std::chrono::steady_clock;
 
     SemaphoreValue() = delete;
@@ -81,13 +90,20 @@ struct SemaphoreValue {
         : semaphore(semaphore)
         , value(std::move(value)) {}
 
+    // Since we cache the signalled state we can provide a special constructor
+    // for an already-signalled semaphore.
+    struct already_signalled_t {};
+    SemaphoreValue(already_signalled_t)
+        : ready(true) {}
+    static SemaphoreValue makeSignalled() { return SemaphoreValue(already_signalled_t{}); }
+
     // Wait for the semaphore to be signaled. Returns false on cancellation.
     template <vko::device_and_commands DeviceAndCommands>
     void wait(DeviceAndCommands& device) const {
-        assert(semaphore != VK_NULL_HANDLE);
-        assert(value.valid());
         if(ready)
             return;
+        assert(semaphore != VK_NULL_HANDLE);
+        assert(value.valid());
         waitTimelineSemaphore(device, semaphore, value.get());
     }
 
@@ -176,6 +192,7 @@ struct SemaphoreValue {
                 .deviceIndex = deviceIndex};
     }
 
+private:
     // TODO: there's an argument for making this a
     // std::shared_ptr<TimelineSemaphore> instead. It allows the SemaphoreValue
     // to own its own semaphore. E.g. to mark it as already signalled.
@@ -372,6 +389,7 @@ private:
 
 // Generic queue that tracks completion with a semaphore for each item. It is
 // assumed that semaphores will complete in the order they were pushed.
+// TODO: heavy use of callbacks. would views be nicer or good in addition?
 template <typename T>
 class CompletionQueue {
 public:
@@ -396,22 +414,35 @@ public:
 
     // Checks all entries from the front and calls the callback for those that
     // are ready
-    template <device_and_commands DeviceAndCommands>
-    size_t visitReady(const DeviceAndCommands& device, std::function<void(T&)> callback) {
+    template <device_and_commands DeviceAndCommands, class Fn>
+        requires std::invocable<Fn, T&>
+    size_t visitReady(const DeviceAndCommands& device, Fn&& callback) {
         auto next = m_entries.begin();
         while (next != m_entries.end() && next->semaphore.isSignaled(device)) {
-            callback(next->value);
+            if constexpr (std::same_as<std::invoke_result_t<Fn, T&>, bool>) {
+                if(!callback(next->value))
+                    break;
+            } else {
+                callback(next->value);
+            }
             ++next;
         }
         return std::distance(m_entries.begin(), next);
     }
 
     // Same as visitReady, but also removes the ready entries from the queue
-    template <device_and_commands DeviceAndCommands>
-    size_t consumeReady(const DeviceAndCommands& device, std::function<void(T&)> callback) {
+    template <device_and_commands DeviceAndCommands, class Fn>
+        requires std::invocable<Fn, T&>
+    size_t consumeReady(const DeviceAndCommands& device, Fn&& callback) {
         auto next = m_entries.begin();
         while (next != m_entries.end() && next->semaphore.isSignaled(device)) {
-            callback(next->value);
+            if constexpr (std::same_as<std::invoke_result_t<Fn, T&>, bool>) {
+                if(!callback(next->value))
+                    break;
+            } else {
+                callback(next->value);
+            }
+                break;
             ++next;
         }
         size_t processed = std::distance(m_entries.begin(), next);
@@ -423,7 +454,7 @@ public:
     // there are at least keepReadyCount ready entries after it. Returns the
     // number of entries removed.
     template <device_and_commands DeviceAndCommands>
-    size_t visitAndConsumeReadyWithBuffer(const DeviceAndCommands& device, size_t keepReadyCount,
+    size_t visitAndConsumeReadyWithMargin(const DeviceAndCommands& device, size_t keepReadyCount,
                                           std::function<void(T&)> callback) {
         auto next   = m_entries.begin();
         auto remove = next;
@@ -441,9 +472,21 @@ public:
         return removed;
     }
 
-    // Waits for all entries to be ready and calls the callback for each.
+    // Waits for all entries to be ready
     template <device_and_commands DeviceAndCommands>
-    void waitAndConsume(const DeviceAndCommands& device, std::function<void(T&)> callback) {
+    void wait(const DeviceAndCommands& device) {
+        if (!m_entries.empty()) {
+            // Assumes waiting on the newest semaphore guarantees all older
+            // semaphores are also signaled
+            m_entries.back().semaphore.wait(device);
+        }
+    }
+
+    // Waits for all entries to be ready and calls the callback for each and
+    // clears the queue
+    template <device_and_commands DeviceAndCommands, class Fn>
+        requires std::invocable<Fn, T&>
+    void waitAndConsume(const DeviceAndCommands& device, Fn&& callback) {
         if (!m_entries.empty()) {
             // Assumes waiting on the newest semaphore guarantees all older
             // semaphores are also signaled
