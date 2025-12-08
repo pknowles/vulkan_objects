@@ -292,24 +292,41 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_SemaphoreNotSignaled) {
     EXPECT_EQ(staging.size(), 0u);
 }
 
-TEST_F(UnitTestFixture, RecyclingStagingPool_GreedyCallbackInvocation) {
+TEST_F(UnitTestFixture, RecyclingStagingPool_CallbackOnRecycle) {
+    // This test verifies that destroy callbacks are invoked at the last possible
+    // moment: when we actually recycle a pool from a completed batch. They should
+    // NOT be invoked during endBatch() or allocation attempts - only when the pool
+    // is being reclaimed for reuse.
     vko::vma::RecyclingStagingPool<vko::Device> staging(ctx->device, ctx->allocator,
-        /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 16);
+        /*minPools=*/3, /*maxPools=*/3, /*poolSize=*/1 << 16);
     
-    int callbacksInvoked = 0;
+    int callbackCount = 0;
     
-    // First batch - already signaled
-    staging.tryMake<uint32_t>(100, [&](bool s) { if(s) callbacksInvoked++; });
+    // Allocate a buffer with callback from first pool
+    staging.tryMake<uint32_t>(100, [&](bool s) { 
+        if(s) callbackCount++; 
+    });
     staging.endBatch(vko::SemaphoreValue::makeSignalled());
     
-    EXPECT_EQ(callbacksInvoked, 0); // Not called yet
+    // Callback should NOT be invoked by endBatch
+    EXPECT_EQ(callbackCount, 0) << "endBatch() should not invoke callbacks";
     
-    // Allocate again - this should trigger greedy callback invocation
-    auto* buffer = staging.tryMake<uint32_t>(100, [](bool) {});
-    ASSERT_NE(buffer, nullptr);
+    // Allocate from second pool - first pool is still not recycled
+    staging.tryMake<uint32_t>(100, [](bool) {});
+    EXPECT_EQ(callbackCount, 0) << "Callback not yet invoked (using different pool)";
+    staging.endBatch(vko::SemaphoreValue::makeSignalled());
+    EXPECT_EQ(callbackCount, 0) << "endBatch() should not invoke callbacks";
     
-    // The first batch's callback should have been invoked greedily
-    EXPECT_EQ(callbacksInvoked, 1);
+    // Allocate from third pool - first pool still not recycled
+    staging.tryMake<uint32_t>(100, [](bool) {});
+    EXPECT_EQ(callbackCount, 0) << "Callback not yet invoked (using third pool)";
+    staging.endBatch(vko::SemaphoreValue::makeSignalled());
+    EXPECT_EQ(callbackCount, 0) << "endBatch() should not invoke callbacks";
+    
+    // Now all 3 pools are in use. Next allocation MUST recycle first batch's pool.
+    // This is when the callback gets invoked - at the last possible moment.
+    staging.tryMake<uint32_t>(100, [](bool) {});
+    EXPECT_EQ(callbackCount, 1) << "Callback should be invoked when recycling pool";
     
     staging.endBatch(vko::SemaphoreValue::makeSignalled());
     staging.wait();
@@ -513,9 +530,75 @@ TEST_F(UnitTestFixture, DISABLED_RecyclingStagingPool_BlockingBehavior) {
     }
 }
 
+TEST_F(UnitTestFixture, RecyclingStagingPool_PartialAllocationWithRemainder) {
+    // This test verifies the 2-attempt allocation strategy handles pool exhaustion correctly
+    // and accounts for alignment padding in m_currentPoolUsedBytes tracking
+    
+    VkDeviceSize poolSize = 1 << 16; // 64KB
+    vko::vma::RecyclingStagingPool<vko::Device> staging(ctx->device, ctx->allocator,
+        /*minPools=*/1, /*maxPools=*/3, poolSize);
+    
+    VkDeviceSize elementsInPool = poolSize / sizeof(uint32_t);
+    
+    // Query alignment requirement by creating a temporary buffer
+    VkBufferCreateInfo tempBufferInfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = 0,
+        .size = 1,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = nullptr,
+    };
+    vko::Buffer tempBuffer(ctx->device, tempBufferInfo);
+    VkMemoryRequirements req;
+    ctx->device.vkGetBufferMemoryRequirements(ctx->device, tempBuffer, &req);
+    VkDeviceSize alignment = req.alignment;
+    
+    // Leave enough space for 1 element PLUS alignment padding to ensure
+    // after align_up() there's still space for buffer2
+    VkDeviceSize bytesToLeave = sizeof(uint32_t) + alignment;
+    VkDeviceSize almostFullSize = (poolSize - bytesToLeave) / sizeof(uint32_t);
+    
+    // Step 1: Allocate almost the entire pool
+    auto* buffer1 = staging.tryMake<uint32_t>(almostFullSize, [](bool) {});
+    ASSERT_NE(buffer1, nullptr);
+    EXPECT_EQ(buffer1->size(), almostFullSize);
+    
+    // Step 2: Allocate 1 element - should fit in remaining space
+    auto* buffer2 = staging.tryMake<uint32_t>(1, [](bool) {});
+    ASSERT_NE(buffer2, nullptr);
+    EXPECT_EQ(buffer2->size(), 1u);
+    
+    // Should still be on first pool only
+    EXPECT_EQ(staging.capacity(), poolSize) 
+        << "Should still be on first pool only";
+    
+    // Step 3: Request a full pool's worth - current pool is exhausted after alignment
+    // Attempt 0: Current pool has insufficient space after alignment, skips
+    // Attempt 1: Gets new pool and allocates from it
+    auto* buffer3 = staging.tryMake<uint32_t>(elementsInPool, [](bool) {});
+    ASSERT_NE(buffer3, nullptr);
+    
+    // Should get exactly what we requested from the fresh pool
+    EXPECT_EQ(buffer3->size(), elementsInPool) 
+        << "Should get full allocation from fresh pool";
+    
+    // Should have allocated a second pool
+    EXPECT_EQ(staging.capacity(), 2 * poolSize) 
+        << "Should have exactly 2 pools";
+    
+    staging.endBatch(vko::SemaphoreValue::makeSignalled());
+    staging.wait();
+    
+    EXPECT_EQ(staging.size(), 0u);
+}
+
 // Additional test ideas for future coverage:
 // - RecyclingStagingPool_ZeroSizeAllocation: Test edge case of size=0
 // - RecyclingStagingPool_ActualDataTransfer: Test actual upload/download with command buffers
+// - RecyclingStagingPool_AllocationFailureRecovery: Test recovery when VMA throws (pool exhaustion)
 // - StreamingStaging_BasicUsage: Test StreamingStaging wrapper
 // - StreamingStaging_AutoSubmit: Test automatic submission on threshold
 // - StreamingStaging_CommandBufferReuse: Test command buffer recycling
