@@ -15,6 +15,7 @@
 #include <type_traits>
 #include <vector>
 #include <vko/adapters.hpp>
+#include <vko/bound_buffer.hpp>
 #include <vko/exceptions.hpp>
 #include <vko/handles.hpp>
 #include <vulkan/vulkan_core.h>
@@ -107,7 +108,8 @@ public:
         waitTimelineSemaphore(device, semaphore, value.get());
     }
 
-    // Wait for the semaphore to be signaled. Returns false on cancellation.
+    // Wait for the semaphore to be signaled. Returns false on cancellation. Use
+    // isSignaled() to poll instead of waiting.
     template <vko::device_and_commands DeviceAndCommands>
     bool tryWait(DeviceAndCommands& device) const {
         try {
@@ -387,6 +389,98 @@ private:
     std::shared_ptr<State> m_state;
 };
 
+template <class Fn, std::ranges::input_range RangeIn, std::ranges::range RangeOut>
+class SharedLazyTimelineFutureVector {
+public:
+    using T          = std::ranges::range_value_t<RangeIn>;
+    using ResultType = std::ranges::range_value_t<RangeOut>;
+
+    template <class SV>
+    SharedLazyTimelineFutureVector(SV&& semaphore, Fn&& producer, size_t size)
+        : m_state(std::make_shared<State>(std::forward<SV>(semaphore), std::forward<Fn>(producer),
+                                          std::vector<ResultType>(size))) {}
+
+    template <vko::device_and_commands DeviceAndCommands>
+    std::vector<ResultType>& get(const DeviceAndCommands& device) {
+        m_state->semaphore.wait(device);
+        if (m_state->output.empty()) {
+            throw TimelineSubmitCancel();
+        }
+        // TODO: call evaluators that have not yet been called
+        return m_state->output;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    const std::vector<ResultType>& get(const DeviceAndCommands& device) const {
+        m_state->semaphore.wait(device);
+        if (m_state->output.empty()) {
+            throw TimelineSubmitCancel();
+        }
+        // TODO: call evaluators that have not yet been called
+        return m_state->output;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Rep, class Period>
+    bool waitFor(const DeviceAndCommands& device, std::chrono::duration<Rep, Period> duration) const {
+        return m_state.semaphore.waitFor(device, duration);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Clock, class Duration>
+    bool waitUntil(const DeviceAndCommands& device,
+                std::chrono::time_point<Clock, Duration> deadline) const {
+        return m_state.semaphore.waitUntil(device, deadline);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    bool ready(const DeviceAndCommands& device) const { return m_state->semaphore.isSignaled(device); }
+
+    const SemaphoreValue& semaphore() const { return m_state->semaphore; }
+
+    // Returns a type erased function that will produce the value if it's not
+    // already produced.
+    template <device_and_commands DeviceAndCommands, allocator Allocator>
+    std::function<void(bool)> evaluator(const DeviceAndCommands& device, VkDeviceSize writeOffset, BufferMapping<T, Allocator>&& mapping) const {
+        return [state   = m_state, writeOffset, &device,
+                mapping = std::make_shared<BufferMapping<T, Allocator>>(std::move(mapping))](bool call) {
+            if (call) {
+                state->semaphore.wait(device);
+                state->producer(
+                    writeOffset, mapping->span(),
+                    std::span(state->output).subspan(writeOffset, mapping->span().size()));
+            } else {
+                state->output.clear();
+            }
+        };
+    }
+
+    // Returns a type erased function that will produce the value if it's not
+    // already produced and the shared future still exists.
+    template<device_and_commands DeviceAndCommands, allocator Allocator>
+    std::function<void(bool)> weakEvaluator(const DeviceAndCommands& device, VkDeviceSize writeOffset, BufferMapping<T, Allocator>&& mapping) const {
+        return [weak = std::weak_ptr<State>(m_state), writeOffset, &device, mapping=std::make_shared(std::move(mapping))](bool call) {
+            if (auto state = weak.lock()) {
+                if (call) {
+                    state->semaphore.wait(device);
+                    state->producer(
+                        writeOffset, mapping->span(),
+                        std::span(state->output).subspan(writeOffset, mapping->span().size()));
+                } else {
+                    state->output.clear();
+                }
+            }
+        };
+    }
+
+private:
+    struct State {
+        SemaphoreValue semaphore;
+        Fn producer;
+        std::vector<ResultType> output;
+    };
+
+    std::shared_ptr<State> m_state;
+};
+
 // Generic queue that tracks completion with a semaphore for each item. It is
 // assumed that semaphores will complete in the order they were pushed.
 // TODO: heavy use of callbacks. would views be nicer or good in addition?
@@ -521,7 +615,7 @@ private:
 template <device_and_commands           DeviceAndCommands,
           std::ranges::contiguous_range Range = std::initializer_list<VkSubmitInfo2>>
     requires std::same_as<std::ranges::range_value_t<Range>, VkSubmitInfo2>
-void submit(DeviceAndCommands& device, VkQueue queue, Range&& submitInfos,
+void submit(const DeviceAndCommands& device, VkQueue queue, Range&& submitInfos,
             VkFence fence = VK_NULL_HANDLE) {
     check(device.vkQueueSubmit2(queue, uint32_t(std::ranges::size(submitInfos)),
                                 std::ranges::data(submitInfos), fence));
@@ -562,7 +656,7 @@ template <std::ranges::contiguous_range WaitRange = std::initializer_list<VkSema
                           VkCommandBufferSubmitInfo> &&
              std::same_as<std::remove_cv_t<std::ranges::range_value_t<SignalRange>>,
                           VkSemaphoreSubmitInfo>
-void submit(DeviceAndCommands& device, VkQueue queue, WaitRange&& waitInfos,
+void submit(const DeviceAndCommands& device, VkQueue queue, WaitRange&& waitInfos,
             CmdRange&& commandBufferInfos, SignalRange&& signalInfos) {
     submit(device, queue,
            {makeSubmitInfo(std::forward<WaitRange>(waitInfos),
@@ -578,7 +672,7 @@ template <std::ranges::contiguous_range WaitRange   = std::initializer_list<VkSe
                           VkSemaphoreSubmitInfo> &&
              std::same_as<std::remove_cv_t<std::ranges::range_value_t<SignalRange>>,
                           VkSemaphoreSubmitInfo>
-void submit(DeviceAndCommands& device, VkQueue queue, WaitRange&& waitInfos,
+void submit(const DeviceAndCommands& device, VkQueue queue, WaitRange&& waitInfos,
             VkCommandBuffer commandBuffer, SignalRange&& signalInfos) {
     VkCommandBufferSubmitInfo commandBufferSubmitInfo{
         .sType         = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -674,7 +768,7 @@ public:
               std::ranges::contiguous_range WaitRange = std::initializer_list<VkSemaphoreSubmitInfo>>
         requires std::same_as<std::remove_cv_t<std::ranges::range_value_t<WaitRange>>,
                               VkSemaphoreSubmitInfo>
-    void submit(DeviceAndCommands& device, WaitRange&& waitInfos,
+    void submit(const DeviceAndCommands& device, WaitRange&& waitInfos,
                 VkCommandBuffer commandBuffer, VkPipelineStageFlags2 timelineSemaphoreStageMask) {
         auto                      timelineSignalInfo = signalInfoAndAdvance(timelineSemaphoreStageMask);
         VkCommandBufferSubmitInfo commandBufferSubmitInfo = {
@@ -694,7 +788,7 @@ public:
                               VkSemaphoreSubmitInfo> &&
                  std::same_as<std::remove_cv_t<std::ranges::range_value_t<SignalRange>>,
                               VkSemaphoreSubmitInfo>
-    void submit(DeviceAndCommands& device, WaitRange&& waitInfos,
+    void submit(const DeviceAndCommands& device, WaitRange&& waitInfos,
                 VkCommandBuffer commandBuffer, VkPipelineStageFlags2 timelineSemaphoreStageMask,
                 SignalRange&& extraSignalInfos) {
         auto                      timelineSignalInfo = signalInfoAndAdvance(timelineSemaphoreStageMask);

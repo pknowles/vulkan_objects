@@ -3,6 +3,9 @@
 
 #include <functional>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
+#include <vko/adapters.hpp>
 #include <vko/allocator.hpp>
 #include <vko/bound_buffer.hpp>
 #include <vko/command_recording.hpp>
@@ -38,10 +41,17 @@ concept staging_allocator =
         {
             t.template tryMake<int>(size, destruct)
         } -> std::same_as<BoundBuffer<int, typename T::Allocator>*>;
+        // Simpler overloads without per-buffer callbacks
+        { t.template tryWith<int>(size, populate) } -> std::same_as<bool>;
+        { t.template tryMake<int>(size) } -> std::same_as<BoundBuffer<int, typename T::Allocator>*>;
+        // Register a callback for the current batch
+        { t.registerBatchCallback(destruct) } -> std::same_as<void>;
         // Provide a ready-semaphore for all buffers allocated since the last
         // call to endBatch(). Buffers cannot be destroyed until the
         // semaphore is signalled.
         { t.endBatch(releaseSemaphore) } -> std::same_as<void>;
+        // Process any completed GPU work and invoke associated callbacks
+        { t.processCompletedWork() } -> std::same_as<void>;
         // Total bytes currently in use by staging buffers (current + unreleased batches)
         { t.size() } -> std::same_as<VkDeviceSize>;
         // Total allocated staging memory (including recyclable/idle memory)
@@ -55,7 +65,7 @@ template <staging_allocator Staging, class Fn, buffer DstBuffer>
     requires (!Staging::TryCanFail)
 void upload(Staging& staging, VkCommandBuffer cmd, const DstBuffer& dstBuffer, VkDeviceSize offset,
             VkDeviceSize size, Fn&& fn) {
-    auto* stagingBuf = staging.template tryMake<typename DstBuffer::ValueType>(size, [](bool) {});
+    auto* stagingBuf = staging.template tryMake<typename DstBuffer::ValueType>(size);
     assert(stagingBuf);
     fn(stagingBuf->map().span());
     copyBuffer<typename Staging::DeviceAndCommands, decltype(*stagingBuf), DstBuffer>(
@@ -69,7 +79,7 @@ template <staging_allocator Staging, std::ranges::contiguous_range SrcRange, buf
                                            typename std::ranges::range_value_t<SrcRange>>
 void upload(Staging& staging, VkCommandBuffer cmd, SrcRange&& data, const DstBuffer& dstBuffer) {
     using T          = std::remove_cv_t<std::ranges::range_value_t<SrcRange>>;
-    auto* stagingBuf = staging.template tryMake<T>(std::ranges::size(data), [](bool) {});
+    auto* stagingBuf = staging.template tryMake<T>(std::ranges::size(data));
     assert(stagingBuf);
     std::ranges::copy(data, stagingBuf->map().begin());
     copyBuffer<typename Staging::DeviceAndCommands, decltype(*stagingBuf), DstBuffer>(
@@ -83,7 +93,7 @@ template <staging_allocator Staging, buffer SrcBuffer, class SV, class Fn>
 LazyTimelineFuture<std::invoke_result_t<Fn, std::span<const typename SrcBuffer::ValueType>>>
 download(Staging& staging, VkCommandBuffer cmd, SV&& submitPromise, const SrcBuffer& srcBuffer,
          VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
-    auto* stagingBuf = staging.template tryMake<typename SrcBuffer::ValueType>(size, [](bool) {});
+    auto* stagingBuf = staging.template tryMake<typename SrcBuffer::ValueType>(size);
     assert(stagingBuf);
     copyBuffer<typename Staging::DeviceAndCommands, SrcBuffer, decltype(*stagingBuf)>(
         staging.device(), cmd, srcBuffer, offset, *stagingBuf, 0, size);
@@ -125,9 +135,9 @@ public:
         });
     }
 
+    // Primary implementation without per-buffer callback
     template <class T>
-    bool tryWith(size_t size, std::function<void(const vko::BoundBuffer<T, Allocator>&)> populate,
-                 std::function<void(bool)> destruct) {
+    bool tryWith(size_t size, std::function<void(const vko::BoundBuffer<T, Allocator>&)> populate) {
         auto [any, ptr] = makeUniqueAny<vko::BoundBuffer<T, Allocator>>(
             m_device.get(), size, m_bufferUsageFlags,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -136,15 +146,23 @@ public:
         m_totalSize += ptr->sizeBytes();
         populate(*ptr);
         m_current.buffers.emplace_back(std::move(any));
-        m_current.destroyCallbacks.emplace_back(std::move(destruct));
         return true; // Always succeeds with full allocation
     }
 
-    // Returns a non-owning pointer to a temporary buffer to use for staging
-    // memory
+    // Overload with per-buffer callback
     template <class T>
-    vko::BoundBuffer<T, Allocator>* tryMake(size_t size,
-                                             std::function<void(bool)> destruct) {
+    bool tryWith(size_t size, std::function<void(const vko::BoundBuffer<T, Allocator>&)> populate,
+                 std::function<void(bool)> destruct) {
+        bool result = tryWith<T>(size, populate);
+        if (result) {
+            m_current.destroyCallbacks.emplace_back(std::move(destruct));
+        }
+        return result;
+    }
+
+    // Primary implementation: returns a non-owning pointer to a temporary buffer
+    template <class T>
+    vko::BoundBuffer<T, Allocator>* tryMake(size_t size) {
         auto [any, ptr] = makeUniqueAny<vko::BoundBuffer<T, Allocator>>(
             m_device.get(), size, m_bufferUsageFlags,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -152,17 +170,29 @@ public:
         m_current.size += ptr->sizeBytes();
         m_totalSize += ptr->sizeBytes();
         m_current.buffers.emplace_back(std::move(any));
-        m_current.destroyCallbacks.emplace_back(std::move(destruct));
         return ptr; // Always succeeds with full allocation
+    }
+
+    // Overload with per-buffer callback
+    template <class T>
+    vko::BoundBuffer<T, Allocator>* tryMake(size_t size,
+                                             std::function<void(bool)> destruct) {
+        auto* ptr = tryMake<T>(size);
+        if (ptr) {
+            m_current.destroyCallbacks.emplace_back(std::move(destruct));
+        }
+        return ptr;
+    }
+
+    // Register a callback for the current batch
+    void registerBatchCallback(std::function<void(bool)> callback) {
+        m_current.destroyCallbacks.emplace_back(std::move(callback));
     }
 
     void endBatch(SemaphoreValue releaseSemaphore) {
         // Move current batch to completion queue
         m_released.push_back(std::move(m_current), releaseSemaphore);
         m_current = {};
-
-        // Greedily check for completed semaphores and call callbacks
-        checkAndInvokeCompletedCallbacks();
     }
 
     void wait() {
@@ -316,6 +346,13 @@ public:
         });
     }
 
+    // Primary implementation without per-buffer callback
+    template <class T>
+    vko::BoundBuffer<T, Allocator>* tryMake(size_t size) {
+        return makeTmpBuffer<T>(size);
+    }
+
+    // Overload with per-buffer callback
     template <class T>
     vko::BoundBuffer<T, Allocator>* tryMake(size_t size,
                                              std::function<void(bool)> destruct) {
@@ -326,6 +363,18 @@ public:
         return result;
     }
 
+    // Primary implementation without per-buffer callback
+    template <class T>
+    bool tryWith(size_t size, std::function<void(const BoundBuffer<T, Allocator>&)> populate) {
+        auto result = makeTmpBuffer<T>(size);
+        if (result) {
+            populate(*result);
+            return true;
+        }
+        return false;
+    }
+
+    // Overload with per-buffer callback
     template <class T>
     bool tryWith(size_t size, std::function<void(const BoundBuffer<T, Allocator>&)> populate,
                  std::function<void(bool)> destruct) {
@@ -338,13 +387,14 @@ public:
         return false;
     }
 
+    // Register a callback for the current batch
+    void registerBatchCallback(std::function<void(bool)> callback) {
+        m_current.destroyCallbacks.push_back(std::move(callback));
+    }
+
     // Mark all buffers in the 'current' pools as free to be recycled once the
     // reuseSemaphore is signaled
     void endBatch(SemaphoreValue reuseSemaphore) {
-        // Greedily invoke ready callbacks of previous batches that have been
-        // signalled.
-        invokeReadyCallbacks();
-
         // Only move batch to m_inUse if it has pools (RAII: no empty batches)
         if (!m_current.pools.empty()) {
             m_inUse.push_back(std::move(m_current), reuseSemaphore);
@@ -442,36 +492,46 @@ private:
 
     template <class T>
     BoundBuffer<T, Allocator>* makeTmpBuffer(VkDeviceSize size) {
-        // Ensure we have a pool with space for at least one element
-        if (!ensureCurrentPoolHasSpace(sizeof(T))) {
-            return nullptr; // No pools available
+        // Try up to 2 times: once with current pool, once with a fresh pool
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            // On second attempt, try to get a new pool
+            if (attempt > 0) {
+                if (!addPoolToCurrentBatch()) {
+                    return nullptr; // Can't allocate a new pool
+                }
+            }
+            
+            // If we have a pool, try to allocate
+            if (hasCurrentPool()) {
+                VkDeviceSize availableBytes = m_poolSize - m_currentPoolUsedBytes;
+                VkDeviceSize trySize = availableBytes / static_cast<VkDeviceSize>(sizeof(T));
+                
+                if (trySize > 0) {
+                    trySize = std::min(size, trySize);
+                    
+                    // Allocate from current pool
+                    // Note: This can still fail if our tracking is wrong due to VMA's
+                    // internal fragmentation. In that case, we'll try with a fresh pool.
+                    try {
+                        auto buffer = allocateFromCurrentPool<T>(trySize);
+                        auto [any, ptr] = toUniqueAnyWithPtr(std::move(buffer));
+                        m_current.buffers.emplace_back(std::move(any));
+                        return ptr;
+                    } catch (const ResultException<VK_ERROR_OUT_OF_DEVICE_MEMORY>&) {
+                        // VMA allocation failed despite our tracking saying we have space.
+                        // This can happen due to internal fragmentation or alignment issues.
+                        // Mark this pool as full and try again with a new pool.
+                        m_currentPoolUsedBytes = m_poolSize;
+                        if (attempt == 1) {
+                            throw; // Already tried with fresh pool, propagate error
+                        }
+                        // Continue to attempt 1, which will get a new pool
+                    }
+                }
+            }
         }
-
-        // Calculate how much we can allocate from current pool
-        VkDeviceSize availableBytes = m_poolSize - m_currentPoolUsedBytes;
-        VkDeviceSize trySize = std::min(size, availableBytes / static_cast<VkDeviceSize>(sizeof(T)));
-        assert(trySize > 0); // ensureCurrentPoolHasSpace should guarantee this
-
-        // Allocate from current pool - if this fails, it's a real VMA error
-        auto buffer = allocateFromCurrentPool<T>(trySize);
         
-        auto [any, ptr] = toUniqueAnyWithPtr(std::move(buffer));
-        m_current.buffers.emplace_back(std::move(any));
-        return ptr;
-    }
-
-    // Ensures we have a pool with space for at least one element of given size
-    bool ensureCurrentPoolHasSpace(size_t elementSize) {
-        // Greedily invoke ready callbacks
-        invokeReadyCallbacks();
-
-        // Check if current pool has space
-        if (hasCurrentPool() && (m_poolSize - m_currentPoolUsedBytes) >= elementSize) {
-            return true;
-        }
-
-        // Need a new pool
-        return addPoolToCurrentBatch();
+        return nullptr;
     }
 
     // Adds a pool to current batch (recycled if available, otherwise new)
@@ -601,10 +661,14 @@ private:
     }
 
     void freeExcessPools() {
-        invokeReadyCallbacks();
-        
         // Free excess pools from ready batches
         m_inUse.consumeReady(m_device.get(), [this](PoolBatch& batch) {
+            // Invoke callbacks before freeing pools from this batch
+            for (auto& callback : batch.destroyCallbacks) {
+                callback(true);
+            }
+            batch.destroyCallbacks.clear();
+            
             // Free pools from this batch until we're at minPools
             while (m_totalPoolCount > m_minPools && !batch.pools.empty()) {
                 m_totalPoolBytes -= m_poolSize;
@@ -638,90 +702,158 @@ static_assert(staging_allocator<RecyclingStagingPool<Device>>);
 // Staging wrapper that also holds a queue and command buffer for
 // staging/streaming memory and automatically submits command buffers as needed
 // to reduce staging memory usage.
-template<class StagingAllocator>
+template <class StagingAllocator>
 class StreamingStaging {
 public:
     using DeviceAndCommands = typename StagingAllocator::DeviceAndCommands;
-    StreamingStaging(const TimelineQueue& queue, StagingAllocator&& staging, VkDeviceSize submitThresholdBytes)
+    using Allocator         = typename StagingAllocator::Allocator;
+    StreamingStaging(TimelineQueue& queue, StagingAllocator&& staging)
         : m_queue(queue)
         , m_staging(std::move(staging))
-        , m_commandPool(m_staging.device(), VkCommandPoolCreateInfo{
-                                    .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-                                    .pNext            = nullptr,
-                                    .flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                                    .queueFamilyIndex = queue.familyIndex(),
-                                })
-        , m_submitThresholdBytes(submitThresholdBytes) {}
-
-    template <class T>
-    bool with(size_t size,
-              std::function<void(const vko::BoundBuffer<T, typename StagingAllocator::Allocator>&, VkCommandBuffer)>
-                  func) {
-        return m_staging.template tryWith<T>(
-            size, [&](const vko::BoundBuffer<T, typename StagingAllocator::Allocator>& tmpBuffer) {
-                func(tmpBuffer, commandBuffer());
-            }, [](bool) {});
-    }
+        , m_commandPool(m_staging.device(),
+                        VkCommandPoolCreateInfo{
+                            .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                            .pNext            = nullptr,
+                            .flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                            .queueFamilyIndex = queue.familyIndex(),
+                        }) {}
 
     template <buffer DstBuffer, class Fn>
-    bool upload(const DstBuffer& dstBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
-        auto* stagingBuf = m_staging.template tryMake<typename DstBuffer::ValueType>(size, [](bool) {});
-        if (!stagingBuf)
-            return false;
-        fn(stagingBuf->map().span());
-        copyBuffer<DeviceAndCommands, decltype(*stagingBuf), DstBuffer>(
-            m_staging.device(), commandBuffer(), *stagingBuf, 0, dstBuffer, offset, size);
+    void upload(const DstBuffer& dstBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
+        using T = typename DstBuffer::ValueType;
+        while (size > 0) {
+            vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template tryMake<T>(size);
+            if (stagingBuf) {
+                fn(offset, stagingBuf->map().span());
+                copyBuffer<DeviceAndCommands, std::remove_reference_t<decltype(*stagingBuf)>,
+                           DstBuffer>(m_staging.device(), commandBuffer(), *stagingBuf, 0,
+                                      dstBuffer, offset, stagingBuf->size());
 
-        // TODO: do before allocation? account for alignment? callback if
-        // m_staging actually overflows?
-        if (m_staging.size() > m_submitThresholdBytes) {
-            submit();
+                // The staging buffer may not necessarily be the full size
+                // requested. Loop until the entire range is uploaded.
+                offset += stagingBuf->size();
+                size -= stagingBuf->size();
+            } else {
+                if constexpr (StagingAllocator::TryCanFail) {
+                    // Staging allocator is full. We must make a submit now, which
+                    // will call m_staging.endBatch() and allow the staging
+                    // allocator to block and wait for some memory to be recycled.
+                    submit();
+                    continue;
+                } else {
+                    //std::unreachable();
+                    throw std::runtime_error("!StagingAllocator::TryCanFail but it failed");
+                }
+            }
         }
-        return true;
     }
 
-    // NOTE: callback may be called even if the return value is destroyed
-    // TODO: void return specialization?
-    template <buffer SrcBuffer, class Fn>
-    std::optional<SharedLazyTimelineFuture<std::invoke_result_t<Fn, std::span<const typename SrcBuffer::ValueType>>>> download(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
-        SharedLazyTimelineFuture<std::invoke_result_t<Fn, std::span<const typename SrcBuffer::ValueType>>> result(
-            m_queue.get().nextSubmitSemaphore(),
-            [fn=std::forward<Fn>(fn)]() { return fn(std::span<const typename SrcBuffer::ValueType>{}); });
-        
-        auto* stagingBuf = m_staging.template tryMake<typename SrcBuffer::ValueType>(
-            size, result.evaluator(m_staging.device()));
-        if (!stagingBuf)
-            return std::nullopt;
-            
-        copyBuffer<DeviceAndCommands, SrcBuffer, decltype(*stagingBuf)>(
-            m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, size);
-        
-        // Update the result with the actual mapping
-        result = SharedLazyTimelineFuture<std::invoke_result_t<Fn, std::span<const typename SrcBuffer::ValueType>>>(
-            m_queue.get().nextSubmitSemaphore(),
-            [mapping = stagingBuf->map(), fn=std::forward<Fn>(fn)]() { return fn(mapping.span()); });
+    template <std::ranges::input_range SrcRange, buffer DstBuffer>
+    void upload(const DstBuffer& dstBuffer, SrcRange&& srcRange, VkDeviceSize offset,
+                VkDeviceSize size) {
+        upload(dstBuffer, offset, size,
+               [begin = std::ranges::begin(srcRange), next = std::ranges::begin(srcRange),
+                end = std::ranges::end(srcRange)](
+                   [[maybe_unused]] VkDeviceSize            offset,
+                   std::span<typename DstBuffer::ValueType> mapped) mutable {
+                   assert(offset == std::distance(begin, next));
+                   next = std::ranges::copy(next, next + mapped.size(), mapped.begin());
+               });
+    }
 
-        // TODO: do before allocation? account for alignment? callback if
-        // m_staging actually overflows?
-        if (m_staging.size() > m_submitThresholdBytes) {
-            submit();
+    // Download to a vector via a transform function that operates in batches
+    // NOTE: callback may be called even if the return value is destroyed
+    template <class DstT, buffer SrcBuffer, class Fn>
+    SharedLazyTimelineFutureVector<Fn, std::span<const typename SrcBuffer::ValueType>, std::span<DstT>>
+    downloadTransform(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
+        using T = typename SrcBuffer::ValueType;
+        SharedLazyTimelineFutureVector<Fn, std::span<const T>,
+                                       std::span<DstT>>
+            result(m_queue.get().nextSubmitSemaphore(), std::forward<Fn>(fn), size);
+
+        while (size > 0) {
+            vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template tryMake<T>(size);
+            if (stagingBuf) {
+                copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(*stagingBuf)>>(
+                    m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, stagingBuf->size());
+
+                m_staging.registerBatchCallback(
+                    result.evaluator(m_staging.device(), offset, stagingBuf->map()));
+
+                // The staging buffer may not necessarily be the full size
+                // requested. Loop until the entire range is uploaded.
+                offset += stagingBuf->size();
+                size -= stagingBuf->size();
+            } else {
+                if constexpr (StagingAllocator::TryCanFail) {
+                    submit();
+                    continue;
+                } else {
+                    //std::unreachable();
+                    throw std::runtime_error("!StagingAllocator::TryCanFail but it failed");
+                }
+            }
         }
-        
+
         return result;
     }
 
+    // Regular download function with an identity transform to a vector
+    template <buffer SrcBuffer>
+    auto download(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size) {
+        return downloadTransform<typename SrcBuffer::ValueType, SrcBuffer>(
+            srcBuffer, offset, size,
+            [](VkDeviceSize /* offset */, std::span<const typename SrcBuffer::ValueType> mapped) {
+                std::ranges::copy(mapped, std::ranges::begin(mapped));
+            });
+    }
+
+    // Call the given function on each batch of the download
+    template <buffer SrcBuffer, class Fn>
+    void downloadVisit(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
+        using T = typename SrcBuffer::ValueType;
+        auto sharedFn = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
+        while (size > 0) {
+            vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template tryMake<T>(size);
+            if (stagingBuf) {
+                copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(*stagingBuf)>>(
+                    m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, stagingBuf->size());
+
+                auto sharedMapping = std::make_shared<decltype(stagingBuf->map())>(stagingBuf->map());
+                m_staging.registerBatchCallback([offset, sharedMapping, sharedFn](bool call) {
+                    if (call) {
+                        (*sharedFn)(offset, sharedMapping->span());
+                    }
+                });
+
+                // The staging buffer may not necessarily be the full size
+                // requested. Loop until the entire range is uploaded.
+                offset += stagingBuf->size();
+                size -= stagingBuf->size();
+            } else {
+                if constexpr (StagingAllocator::TryCanFail) {
+                    submit();
+                    continue;
+                }
+            }
+        }
+    }
+
     // Manual submission interface.
-    void submit()
-    {
+    SemaphoreValue submit() {
+        // Opportunistically invoke ready callbacks from previous submissions
+        m_staging.invokeReadyCallbacks();
+        
+        SemaphoreValue semaphoreValue = m_queue.get().nextSubmitSemaphore();
         if (m_currentCmd) {
             CommandBuffer cmd(m_currentCmd->end());
             m_currentCmd.reset();
-            auto semaphoreValue = m_queue.get().nextSubmitSemaphore();
             m_queue.get().submit(m_staging.device(), {}, cmd,
-                                 VK_PIPELINE_STAGE_TRANSFER_BIT /* TODO: is this right? */);
+                                    VK_PIPELINE_STAGE_TRANSFER_BIT /* TODO: is this right? */);
             m_inFlightCmds.push_back({std::move(cmd), std::move(semaphoreValue)});
             m_staging.endBatch(semaphoreValue);
         }
+        return semaphoreValue;
     }
 
 private:
@@ -731,30 +863,36 @@ private:
     };
 
     VkCommandBuffer commandBuffer() {
+        // Opportunistically invoke ready callbacks from previous submissions
+        m_staging.invokeReadyCallbacks();
+        
         if (!m_currentCmd) {
             m_currentCmd.emplace(m_staging.device(), reuseOrMakeCommandBuffer(),
-                                 VkCommandBufferBeginInfo{
-                                     .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                     .pNext = nullptr,
-                                     .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-                                     .pInheritanceInfo = nullptr,
-                                 });
+                                    VkCommandBufferBeginInfo{
+                                        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                        .pNext = nullptr,
+                                        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                                        .pInheritanceInfo = nullptr,
+                                    });
         }
         return *m_currentCmd;
     }
 
     CommandBuffer reuseOrMakeCommandBuffer() {
         // Try to reuse a command buffer from the in-flight queue
-        if (!m_inFlightCmds.empty() && m_inFlightCmds.front().readySemaphore.wait(m_queue.get(), 0)) {
+        if (!m_inFlightCmds.empty() &&
+            m_inFlightCmds.front().readySemaphore.isSignaled(m_staging.device())) {
             auto result = std::move(m_inFlightCmds.front().commandBuffer);
             m_inFlightCmds.pop_front();
 
             // If there's a relatively long queue of ready command buffers, free
             // some up. Leave at least one of the ready ones to avoid frequent
             // allocations/deallocations.
-            if (m_inFlightCmds.size() >= 2 && m_inFlightCmds.front().readySemaphore.wait(m_queue.get(), 0)) {
-                while (m_inFlightCmds.size() >= 2 &&
-                    std::next(m_inFlightCmds.begin())->readySemaphore.wait(m_queue.get(), 0)) {
+            if (m_inFlightCmds.size() >= 2 &&
+                m_inFlightCmds.front().readySemaphore.isSignaled(m_staging.device())) {
+                while (
+                    m_inFlightCmds.size() >= 2 &&
+                    std::next(m_inFlightCmds.begin())->readySemaphore.isSignaled(m_staging.device())) {
                     m_inFlightCmds.pop_front();
                 }
             }
@@ -765,15 +903,14 @@ private:
 
         // Else, create a new command buffer
         return CommandBuffer(m_staging.device(), nullptr, m_commandPool,
-                             VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+                                VK_COMMAND_BUFFER_LEVEL_PRIMARY);
     }
 
-    std::reference_wrapper<const TimelineQueue>   m_queue;
+    std::reference_wrapper<TimelineQueue>         m_queue;
     StagingAllocator                              m_staging;
     CommandPool                                   m_commandPool;
     std::deque<InFlightCmd>                       m_inFlightCmds;
     std::optional<simple::RecordingCommandBuffer> m_currentCmd;
-    VkDeviceSize                                  m_submitThresholdBytes = 0;
 };
 
 template <class T, class Fn, staging_allocator StagingAllocator, device_and_commands DeviceAndCommands,
@@ -797,7 +934,7 @@ void uploadMapped(
                 .size      = subspanSize * sizeof(T),
             };
             device.vkCmdCopyBuffer(cmd, buffer, dstBuffer, 1, &bufferCopy);
-        }, [](bool) {})) {
+        })) {
         throw std::runtime_error("Failed to allocate staging buffer");
     }
 }
@@ -822,7 +959,7 @@ void uploadTo(
                                      .size      = std::ranges::size(data) * sizeof(T),
                                  };
                                  device.vkCmdCopyBuffer(cmd, buffer, dstBuffer, 1, &bufferCopy);
-                             }, [](bool) {})) {
+                             })) {
         throw std::runtime_error("Failed to allocate staging buffer");
     }
 }
@@ -845,7 +982,7 @@ uploadToBytes(StagingAllocator& staging, const DeviceAndCommands& device, VkComm
                 .size      = std::ranges::size(data),
             };
             device.vkCmdCopyBuffer(cmd, buffer, dstBuffer, 1, &bufferCopy);
-        }, [](bool) {})) {
+        })) {
         throw std::runtime_error("Failed to allocate staging buffer");
     }
 }
@@ -908,7 +1045,7 @@ void uploadMappedBytes(
                 .size      = size,
             };
             device.vkCmdCopyBuffer(cmd, buffer, dstBuffer, 1, &bufferCopy);
-        }, [](bool) {})) {
+        })) {
         throw std::runtime_error("Failed to allocate staging buffer");
     }
 }
@@ -928,7 +1065,7 @@ download(StagingAllocator& staging, const DeviceAndCommands& device, VkCommandBu
     if (srcOffsetElements >= srcBuffer.size())
         throw std::out_of_range("source offset is beyond buffer size");
     VkDeviceSize copySize = srcSize.value_or(srcBuffer.size() - srcOffsetElements);
-    auto* buffer = staging.template tryMake<T>(copySize, [](bool) {});
+    auto* buffer = staging.template tryMake<T>(copySize);
     if (!buffer)
         throw std::runtime_error("Failed to allocate staging buffer");
     VkBufferCopy bufferCopy{
@@ -949,7 +1086,7 @@ template <staging_allocator StagingAllocator, device_and_commands DeviceAndComma
 BufferMapping<std::byte, Allocator>
 downloadBytes(StagingAllocator& staging, const DeviceAndCommands& device, VkCommandBuffer cmd,
               VkBuffer srcBuffer, VkDeviceSize offset, size_t size) {
-    auto* buffer = staging.template tryMake<std::byte>(size, [](bool) {});
+    auto* buffer = staging.template tryMake<std::byte>(size);
     if (!buffer)
         throw std::runtime_error("Failed to allocate staging buffer");
     VkBufferCopy bufferCopy{.srcOffset = offset, .dstOffset = 0, .size = size};
@@ -1034,12 +1171,12 @@ BufferMapping<std::byte, typename StagingAllocator::Allocator>
 downloadBytes(StagingAllocator& staging, const DeviceAndCommands& device, VkCommandBuffer cmd,
               VkDeviceAddress address, VkDeviceSize size) {
     // Temporary host visible staging buffer
-    auto* dstBuffer = staging.template tryMake<std::byte>(size, [](bool) {});
+    auto* dstBuffer = staging.template tryMake<std::byte>(size);
     if (!dstBuffer)
         throw std::runtime_error("Failed to allocate staging buffer");
 
     // Temporary buffer to hold the VkCopyMemoryIndirectCommandNV
-    auto* cmdBuffer = staging.template tryMake<VkCopyMemoryIndirectCommandNV>(1, [](bool) {});
+    auto* cmdBuffer = staging.template tryMake<VkCopyMemoryIndirectCommandNV>(1);
     if (!cmdBuffer)
         throw std::runtime_error("Failed to allocate staging buffer");
     VkDeviceAddress dstAddress = device.vkGetBufferDeviceAddress(
