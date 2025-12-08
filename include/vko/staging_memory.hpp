@@ -17,19 +17,46 @@ namespace vko {
 template <class T>
 concept staging_allocator =
     allocator<typename T::Allocator> && device_and_commands<typename T::DeviceAndCommands> &&
-    requires(T t, size_t size,
-             std::function<void(const BoundBuffer<int, typename T::Allocator>&)> func) {
-        { t.template with<int>(size, func) } -> std::same_as<void>;
-        { t.template make<int>(size) } -> std::same_as<BoundBuffer<int, typename T::Allocator>*>;
+    std::same_as<decltype(T::TryCanFail), const bool> &&
+    requires(T t, size_t size, const SemaphoreValue& releaseSemaphore,
+             // Callback for using the temporary staging buffer
+             std::function<void(const BoundBuffer<int, typename T::Allocator>&)> populate,
+             // Callback just before the buffer is destroyed. Passed true if the
+             // buffer's semaphore is signalled. False if the staging allocator
+             // is destroyed before endBatch() is called.
+             std::function<void(bool)> destruct) {
+        // Try to allocate a staging buffer up to the given size. A partial
+        // allocation is allowed and multiple staging buffers may be needed to
+        // complete the staging operation. If this returns false, the staging
+        // allocator is full and the caller should call endBatch() to allow
+        // cycling old buffers. This call may block until a buffer is ready,
+        // depending on the implementation strategy. Note that the backing
+        // allocator can always throw too.
+        { t.template tryWith<int>(size, populate, destruct) } -> std::same_as<bool>;
+        // Same as tryWith(), but returns a pointer to the allocated buffer.
+        // Returns nullptr if allocation fails.
+        {
+            t.template tryMake<int>(size, destruct)
+        } -> std::same_as<BoundBuffer<int, typename T::Allocator>*>;
+        // Provide a ready-semaphore for all buffers allocated since the last
+        // call to endBatch(). Buffers cannot be destroyed until the
+        // semaphore is signalled.
+        { t.endBatch(releaseSemaphore) } -> std::same_as<void>;
+        // Total bytes currently in use by staging buffers (current + unreleased batches)
+        { t.size() } -> std::same_as<VkDeviceSize>;
+        // Total allocated staging memory (including recyclable/idle memory)
+        { t.capacity() } -> std::same_as<VkDeviceSize>;
         { t.device() } -> std::same_as<const typename T::DeviceAndCommands&>;
     };
 
 // Upload generated data. The user provides a function that writes to the mapped
 // staging buffer.
 template <staging_allocator Staging, class Fn, buffer DstBuffer>
+    requires (!Staging::TryCanFail)
 void upload(Staging& staging, VkCommandBuffer cmd, const DstBuffer& dstBuffer, VkDeviceSize offset,
             VkDeviceSize size, Fn&& fn) {
-    auto* stagingBuf = staging.template make<typename DstBuffer::ValueType>(size);
+    auto* stagingBuf = staging.template tryMake<typename DstBuffer::ValueType>(size, [](bool) {});
+    assert(stagingBuf);
     fn(stagingBuf->map().span());
     copyBuffer<typename Staging::DeviceAndCommands, decltype(*stagingBuf), DstBuffer>(
         staging.device(), cmd, *stagingBuf, offset, dstBuffer, offset, size);
@@ -37,11 +64,13 @@ void upload(Staging& staging, VkCommandBuffer cmd, const DstBuffer& dstBuffer, V
 
 // Upload a range of existing data directly
 template <staging_allocator Staging, std::ranges::contiguous_range SrcRange, buffer DstBuffer>
-    requires std::is_trivially_assignable_v<typename DstBuffer::ValueType,
-                                            typename std::ranges::range_value_t<SrcRange>>
+    requires(!Staging::TryCanFail) &&
+            std::is_trivially_assignable_v<typename DstBuffer::ValueType,
+                                           typename std::ranges::range_value_t<SrcRange>>
 void upload(Staging& staging, VkCommandBuffer cmd, SrcRange&& data, const DstBuffer& dstBuffer) {
     using T          = std::remove_cv_t<std::ranges::range_value_t<SrcRange>>;
-    auto* stagingBuf = staging.template make<T>(std::ranges::size(data));
+    auto* stagingBuf = staging.template tryMake<T>(std::ranges::size(data), [](bool) {});
+    assert(stagingBuf);
     std::ranges::copy(data, stagingBuf->map().begin());
     copyBuffer<typename Staging::DeviceAndCommands, decltype(*stagingBuf), DstBuffer>(
         staging.device(), cmd, *stagingBuf, 0, dstBuffer, 0, std::ranges::size(data));
@@ -50,10 +79,12 @@ void upload(Staging& staging, VkCommandBuffer cmd, SrcRange&& data, const DstBuf
 // Download data to a staging buffer. The caller is responsible for get()ing the
 // result before the staging buffer gets released.
 template <staging_allocator Staging, buffer SrcBuffer, class SV, class Fn>
+    requires (!Staging::TryCanFail)
 LazyTimelineFuture<std::invoke_result_t<Fn, std::span<const typename SrcBuffer::ValueType>>>
 download(Staging& staging, VkCommandBuffer cmd, SV&& submitPromise, const SrcBuffer& srcBuffer,
          VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
-    auto* stagingBuf = staging.template make<typename SrcBuffer::ValueType>(size);
+    auto* stagingBuf = staging.template tryMake<typename SrcBuffer::ValueType>(size, [](bool) {});
+    assert(stagingBuf);
     copyBuffer<typename Staging::DeviceAndCommands, SrcBuffer, decltype(*stagingBuf)>(
         staging.device(), cmd, srcBuffer, offset, *stagingBuf, 0, size);
     return LazyTimelineFuture<std::invoke_result_t<Fn, std::span<const typename SrcBuffer::ValueType>>>(
@@ -71,8 +102,9 @@ template <device_and_commands DeviceAndCommandsType = Device,
           allocator           AllocatorType         = vko::vma::Allocator>
 struct DedicatedStaging {
 public:
-    using DeviceAndCommands = DeviceAndCommandsType;
-    using Allocator         = AllocatorType;
+    using DeviceAndCommands          = DeviceAndCommandsType;
+    using Allocator                  = AllocatorType;
+    static constexpr bool TryCanFail = false;
     DedicatedStaging(const DeviceAndCommands& device, Allocator& allocator,
                      VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                                 VK_BUFFER_USAGE_TRANSFER_DST_BIT)
@@ -80,149 +112,294 @@ public:
         , m_allocator(allocator)
         , m_bufferUsageFlags(usage) {}
 
+    ~DedicatedStaging() {
+        // Call unreleased destruct callbacks with false
+        for (auto& callback : m_current.destroyCallbacks) {
+            callback(false);
+        }
+        // Call released but uncompleted destruct callbacks with false
+        m_released.visitAll([](Batch& batch) {
+            for (auto& callback : batch.destroyCallbacks) {
+                callback(false);
+            }
+        });
+    }
+
     template <class T>
-    void with(size_t size, std::function<void(const vko::BoundBuffer<T, Allocator>&)> func) {
+    bool tryWith(size_t size, std::function<void(const vko::BoundBuffer<T, Allocator>&)> populate,
+                 std::function<void(bool)> destruct) {
         auto [any, ptr] = makeUniqueAny<vko::BoundBuffer<T, Allocator>>(
             m_device.get(), size, m_bufferUsageFlags,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             m_allocator.get());
-        m_size += ptr->sizeBytes();
-        func(*ptr);
-        m_buffers.emplace_back(std::move(any));
+        m_current.size += ptr->sizeBytes();
+        m_totalSize += ptr->sizeBytes();
+        populate(*ptr);
+        m_current.buffers.emplace_back(std::move(any));
+        m_current.destroyCallbacks.emplace_back(std::move(destruct));
+        return true; // Always succeeds with full allocation
     }
 
     // Returns a non-owning pointer to a temporary buffer to use for staging
     // memory
     template <class T>
-    vko::BoundBuffer<T, Allocator>* make(size_t size) {
+    vko::BoundBuffer<T, Allocator>* tryMake(size_t size,
+                                             std::function<void(bool)> destruct) {
         auto [any, ptr] = makeUniqueAny<vko::BoundBuffer<T, Allocator>>(
             m_device.get(), size, m_bufferUsageFlags,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             m_allocator.get());
-        m_size += ptr->sizeBytes();
-        m_buffers.emplace_back(std::move(any));
-        return ptr;
+        m_current.size += ptr->sizeBytes();
+        m_totalSize += ptr->sizeBytes();
+        m_current.buffers.emplace_back(std::move(any));
+        m_current.destroyCallbacks.emplace_back(std::move(destruct));
+        return ptr; // Always succeeds with full allocation
     }
 
-    VkDeviceSize size() const { return m_size; }
+    void endBatch(SemaphoreValue releaseSemaphore) {
+        // Move current batch to completion queue
+        m_released.push_back(std::move(m_current), releaseSemaphore);
+        m_current = {};
+
+        // Greedily check for completed semaphores and call callbacks
+        checkAndInvokeCompletedCallbacks();
+    }
+
+    void wait() {
+        // Wait for all and invoke callbacks
+        m_released.waitAndConsume(m_device.get(), [this](Batch& batch) {
+            for (auto& callback : batch.destroyCallbacks) {
+                callback(true);
+            }
+            m_totalSize -= batch.size;
+        });
+    }
+
+    VkDeviceSize size() const { return m_totalSize; }
+    VkDeviceSize capacity() const { return size(); } // Same as size for DedicatedStaging
     const DeviceAndCommands& device() const { return m_device.get(); }
 
 private:
-    std::vector<UniqueAny>                          m_buffers;
+    void checkAndInvokeCompletedCallbacks() {
+        // Greedily invoke and cleanup completed batches
+        m_released.consumeReady(m_device.get(), [this](Batch& batch) {
+            for (auto& callback : batch.destroyCallbacks) {
+                callback(true);
+            }
+            m_totalSize -= batch.size;
+        });
+    }
+
+    struct Batch {
+        std::vector<UniqueAny>                  buffers;
+        std::vector<std::function<void(bool)>> destroyCallbacks;
+        VkDeviceSize                            size = 0;
+    };
+
+    Batch                                           m_current;
+    CompletionQueue<Batch>                          m_released;
     std::reference_wrapper<const DeviceAndCommands> m_device;
     std::reference_wrapper<Allocator>               m_allocator;
-    VkDeviceSize                                    m_size             = 0;
+    VkDeviceSize                                    m_totalSize        = 0;
     VkBufferUsageFlags                              m_bufferUsageFlags = 0;
 };
 static_assert(staging_allocator<DedicatedStaging<Device, vko::vma::Allocator>>);
 
 namespace vma {
 
+// Align a value up to the nearest multiple of alignment
+constexpr VkDeviceSize align_up(VkDeviceSize value, VkDeviceSize alignment) {
+    return (value + alignment - 1) & ~(alignment - 1);
+}
+
 // Staging buffer allocator that provides temporary buffers from cyclical memory
-// pools. The caller must call releaseBuffers() with a SemaphoreValue that will
+// pools. The caller must call endBatch() with a SemaphoreValue that will
 // be signaled when the buffers are no longer in use so that their pool can be
 // reused. Use this when you have many small transfers to make on a regular
 // basis to avoid frequent allocations/deallocations.
 template <device_and_commands DeviceAndCommandsType>
 class RecyclingStagingPool {
 public:
-    using DeviceAndCommands = DeviceAndCommandsType;
-    using Allocator         = vma::Allocator;
+    using DeviceAndCommands        = DeviceAndCommandsType;
+    using Allocator                = vma::Allocator;
+    static constexpr bool TryCanFail = true;
 
-    RecyclingStagingPool(const DeviceAndCommands& device, Allocator& allocator,
-                         VkDeviceSize       poolSize,
-                         VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT)
+    RecyclingStagingPool(
+        const DeviceAndCommands& device, Allocator& allocator, size_t minPools = 3,
+        std::optional<size_t> maxPools      = 5 /* explicit std::nullopt for unlimited */,
+        VkDeviceSize          poolSizeBytes = 1 << 24 /* 16MB * 5 = 80MB */,
+        VkBufferUsageFlags    usage         = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT)
         : m_device(device)
         , m_allocator(allocator)
-        , m_poolSize(poolSize)
-        , m_bufferUsageFlags(usage) {}
+        , m_poolSize(poolSizeBytes)
+        , m_bufferUsageFlags(usage)
+        , m_maxPools(maxPools.value_or(0))
+        , m_minPools(minPools) {
+        
+        // Query alignment requirement for this usage
+        VkBufferCreateInfo tempBufferInfo = {
+            .sType                 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .pNext                 = nullptr,
+            .flags                 = 0,
+            .size                  = 1,
+            .usage                 = usage,
+            .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices   = nullptr,
+        };
+        vko::Buffer tempBuffer(device, tempBufferInfo);
+        VkMemoryRequirements req;
+        device.vkGetBufferMemoryRequirements(device, tempBuffer, &req);
+        m_alignment = req.alignment;
 
-    // TODO: uuugh
+        // Pre-allocate minimum pools as already-signaled batches
+        for (size_t i = 0; i < m_minPools; ++i) {
+            PoolBatch batch;
+            batch.pools.push_back(makePool());
+            m_inUse.push_back(std::move(batch), SemaphoreValue::makeSignalled());
+            m_totalPoolBytes += m_poolSize;
+            ++m_totalPoolCount;
+        }
+    }
+
     RecyclingStagingPool(const RecyclingStagingPool& other) = delete;
     RecyclingStagingPool& operator=(const RecyclingStagingPool& other) = delete;
     RecyclingStagingPool& operator=(RecyclingStagingPool&& other) noexcept {
         // Notify all remaining handlers they're never going to get called
-        for(auto& pool : m_inUse) {
-            for(auto& callback : pool.destroyCallbacks) {
+        for(auto& callback : m_current.destroyCallbacks) {
+            callback(false);
+        }
+        m_inUse.visitAll([](PoolBatch& batch) {
+            for(auto& callback : batch.destroyCallbacks) {
                 callback(false);
             }
-        }
+        });
         m_device = other.m_device;
         m_allocator = other.m_allocator;
         m_poolSize = other.m_poolSize;
         m_bufferUsageFlags = other.m_bufferUsageFlags;
+        m_maxPools = other.m_maxPools;
+        m_minPools = other.m_minPools;
         m_inUse = std::move(other.m_inUse);
-        m_currentPools = std::move(other.m_currentPools);
-        m_currentBuffers = std::move(other.m_currentBuffers);
-        m_currentDestroyCallbacks = std::move(other.m_currentDestroyCallbacks);
+        m_current = std::move(other.m_current);
+        m_totalPoolBytes = other.m_totalPoolBytes;
+        m_totalPoolCount = other.m_totalPoolCount;
+        m_totalBufferBytes = other.m_totalBufferBytes;
+        m_alignment = other.m_alignment;
+        m_currentPoolUsedBytes = other.m_currentPoolUsedBytes;
         return *this;
     }
     RecyclingStagingPool(RecyclingStagingPool&& other) noexcept
         : m_device(other.m_device)
         , m_allocator(other.m_allocator)
         , m_poolSize(other.m_poolSize)
-        , m_bufferUsageFlags(other.m_bufferUsageFlags)
+        , m_totalPoolBytes(other.m_totalPoolBytes)
+        , m_totalPoolCount(other.m_totalPoolCount)
+        , m_totalBufferBytes(other.m_totalBufferBytes)
+        , m_current(std::move(other.m_current))
         , m_inUse(std::move(other.m_inUse))
-        , m_currentPools(std::move(other.m_currentPools))
-        , m_currentBuffers(std::move(other.m_currentBuffers))
-        , m_currentDestroyCallbacks(std::move(other.m_currentDestroyCallbacks)) {}
+        , m_bufferUsageFlags(other.m_bufferUsageFlags)
+        , m_maxPools(other.m_maxPools)
+        , m_minPools(other.m_minPools)
+        , m_alignment(other.m_alignment)
+        , m_currentPoolUsedBytes(other.m_currentPoolUsedBytes) {}
     ~RecyclingStagingPool() {
         // Notify all remaining handlers they're never going to get called
-        for(auto& pool : m_inUse) {
-            for(auto& callback : pool.destroyCallbacks) {
+        for(auto& callback : m_current.destroyCallbacks) {
+            callback(false);
+        }
+        m_inUse.visitAll([](PoolBatch& batch) {
+            for(auto& callback : batch.destroyCallbacks) {
                 callback(false);
             }
+        });
+    }
+
+    template <class T>
+    vko::BoundBuffer<T, Allocator>* tryMake(size_t size,
+                                             std::function<void(bool)> destruct) {
+        auto result = makeTmpBuffer<T>(size);
+        if (result) {
+            m_current.destroyCallbacks.push_back(std::move(destruct));
         }
+        return result;
     }
 
     template <class T>
-    vko::BoundBuffer<T, Allocator>* make(size_t size) {
-        return makeTmpBuffer<T>(size);
-    }
-
-    template <class T>
-    void with(size_t size, std::function<void(const BoundBuffer<T, Allocator>&)> func) {
-        func(*makeTmpBuffer<T>(size));
-    }
-
-    void addDestroyCallback(std::function<void(bool)> callback) {
-        m_currentDestroyCallbacks.push_back(callback);
+    bool tryWith(size_t size, std::function<void(const BoundBuffer<T, Allocator>&)> populate,
+                 std::function<void(bool)> destruct) {
+        auto result = makeTmpBuffer<T>(size);
+        if (result) {
+            populate(*result);
+            m_current.destroyCallbacks.push_back(std::move(destruct));
+            return true;
+        }
+        return false;
     }
 
     // Mark all buffers in the 'current' pools as free to be recycled once the
     // reuseSemaphore is signaled
-    void releaseBuffers(SemaphoreValue reuseSemaphore) {
-        // Peek at the next few pools in the in the queue. While there are at least
-        // two ready, assume we have more than we need and free the front one.
-        // TODO: profile - maybe we can reduce this to one? any hiccups in frame
-        // time might cause frequent allocations/deallocations though.
-        if (m_inUse.size() >= 2 && m_inUse.front().reuseSemaphore.wait(m_device, 0)) {
-            while (m_inUse.size() >= 2 &&
-                   std::next(m_inUse.begin())->reuseSemaphore.wait(m_device, 0)) {
-                for(auto& pool : m_inUse.front().pools) {
-                    m_totalPoolBytes -= pool.size();
-                }
-                m_inUse.pop_front();
-            }
-        }
+    void endBatch(SemaphoreValue reuseSemaphore) {
+        // Greedily invoke ready callbacks of previous batches that have been
+        // signalled.
+        invokeReadyCallbacks();
 
-        // Move current pools and buffers into the in-use queue
-        m_inUse.push_back({std::move(m_currentPools), std::move(m_currentBuffers), std::move(m_currentDestroyCallbacks), reuseSemaphore, m_currentBufferBytes});
-        m_currentPools.clear();
-        m_currentBuffers.clear();
-        m_currentDestroyCallbacks.clear();
-        m_currentBufferBytes = 0;
+        // Only move batch to m_inUse if it has pools (RAII: no empty batches)
+        if (!m_current.pools.empty()) {
+            m_inUse.push_back(std::move(m_current), reuseSemaphore);
+        }
+        assert(m_current.buffers.empty());
+        assert(m_current.destroyCallbacks.empty());
+        m_current = {};
+    }
+
+    // Wait for all batches to finish
+    void wait() {
+        // Wait for all batches
+        m_inUse.wait(m_device.get());
+        
+        // Process ALL ready batches (visitAll since they're all ready after wait())
+        // Clean up buffers and invoke callbacks, then remove empty batches
+        m_inUse.visitAll([this](PoolBatch& batch) {
+            // Invoke callbacks and clear buffers
+            for (auto& callback : batch.destroyCallbacks) {
+                callback(true);
+            }
+            batch.destroyCallbacks.clear();
+            batch.buffers.clear();
+            m_totalBufferBytes -= batch.bufferBytes;
+            batch.bufferBytes = 0;
+        });
+        
+        freeExcessPools();
     }
 
     VkDeviceSize capacity() const { return m_totalPoolBytes; }
     VkDeviceSize size() const { return m_totalBufferBytes; }
     const DeviceAndCommands& device() const { return m_device.get(); }
 
-    // Size of a single pool. Best to submit and releaseBuffers() before size()
+    // Size of a single pool. Best to submit and endBatch() before size()
     // reaches this value.
     VkDeviceSize poolSize() const { return m_poolSize; }
 
 private:
+
+    struct PoolBatch {
+        std::vector<vma::Pool>                  pools;
+        std::vector<UniqueAny>                  buffers;
+        std::vector<std::function<void(bool)>> destroyCallbacks;
+        VkDeviceSize                            bufferBytes = 0;
+    };
+
+    bool hasCurrentPool() const {
+        return !m_current.pools.empty();
+    }
+
+    vma::Pool& currentPool() {
+        return m_current.pools.back();
+    }
+
     vma::Pool makePool() {
         VkBufferCreateInfo sampleBufferCreateInfo = {
             .sType                 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -254,8 +431,8 @@ private:
             .memoryTypeIndex        = memTypeIndex,
             .flags                  = 0,
             .blockSize              = m_poolSize,
-            .minBlockCount          = 0,
-            .maxBlockCount          = 0,
+            .minBlockCount          = 1,
+            .maxBlockCount          = 1,
             .priority               = 0.0f,
             .minAllocationAlignment = 0,
             .pMemoryAllocateNext    = nullptr,
@@ -264,92 +441,195 @@ private:
     }
 
     template <class T>
-    BoundBuffer<T, Allocator>* makeTmpBuffer(size_t size) {
-        // If there is no current pool, see if there is one we can reuse yet
-        if (m_currentPools.empty()) {
-            if (!m_inUse.empty() && m_inUse.front().reuseSemaphore.wait(m_device.get())) {
-                m_totalBufferBytes -= m_inUse.front().bufferBytes;
-                m_inUse.front().buffers.clear();
-                for(auto& callback : m_inUse.front().destroyCallbacks) {
-                    callback(true);
-                }
-                m_inUse.front().destroyCallbacks.clear();
-                m_inUse.front().bufferBytes = 0;
-                if (m_inUse.front().pools.size() == 1) {
-                    // Take the last pool from the in-use queue and reuse the
-                    // std::vector memory
-                    m_currentPools = std::move(m_inUse.front().pools);
-                    m_currentBuffers = std::move(m_inUse.front().buffers);
-                    m_currentDestroyCallbacks = std::move(m_inUse.front().destroyCallbacks);
-                    m_inUse.pop_front();
-                } else {
-                    // Take just one pool from the in-use queue
-                    m_currentPools.push_back(std::move(m_inUse.front().pools.back()));
-                    m_inUse.front().pools.pop_back();
-                    assert(m_currentBuffers.empty());
-                }
-            } else if (!m_inUse.empty()) {
-                m_inUse
-                    .pop_front(); // Skip pools that aren't ready yet (they'll be cleaned up later)
-            }
+    BoundBuffer<T, Allocator>* makeTmpBuffer(VkDeviceSize size) {
+        // Ensure we have a pool with space for at least one element
+        if (!ensureCurrentPoolHasSpace(sizeof(T))) {
+            return nullptr; // No pools available
         }
 
-        // If there is no available pool, create a new one
-        if (m_currentPools.empty()) {
-            m_currentPools.push_back(makePool());
-            m_totalPoolBytes += m_poolSize;
-        }
+        // Calculate how much we can allocate from current pool
+        VkDeviceSize availableBytes = m_poolSize - m_currentPoolUsedBytes;
+        VkDeviceSize trySize = std::min(size, availableBytes / static_cast<VkDeviceSize>(sizeof(T)));
+        assert(trySize > 0); // ensureCurrentPoolHasSpace should guarantee this
 
-        // Try to make a buffer from the current pools
-        std::optional<BoundBuffer<T, Allocator>> buffer;
-        static_assert(!std::is_default_constructible_v<BoundBuffer<int, vma::Allocator>>,
-                      "This wouldn't be very RAII");
-        try {
-            buffer = BoundBuffer<T, Allocator>(
-                m_device.get(), size, m_bufferUsageFlags,
-                vma::allocationCreateInfo(m_currentPools.back(),
-                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-                m_allocator.get());
-        } catch (const std::exception& e) {
-            // Retry once with a fresh pool
-            m_currentPools.push_back(makePool());
-            m_totalPoolBytes += m_poolSize;
-            buffer = BoundBuffer<T, Allocator>(
-                m_device.get(), size, m_bufferUsageFlags,
-                vma::allocationCreateInfo(m_currentPools.back(),
-                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
-                m_allocator.get());
-        }
-        m_currentBufferBytes += buffer->sizeBytes();
-        m_totalBufferBytes += buffer->sizeBytes();
-
-        auto [any, ptr] = toUniqueAnyWithPtr(std::move(*buffer));
-        m_currentBuffers.emplace_back(std::move(any));
+        // Allocate from current pool - if this fails, it's a real VMA error
+        auto buffer = allocateFromCurrentPool<T>(trySize);
+        
+        auto [any, ptr] = toUniqueAnyWithPtr(std::move(buffer));
+        m_current.buffers.emplace_back(std::move(any));
         return ptr;
     }
 
-private:
-    struct InUseMemoryPools {
-        std::vector<vma::Pool>             pools;
-        std::vector<UniqueAny>             buffers;
-        std::vector<std::function<void(bool)>> destroyCallbacks;
-        SemaphoreValue                     reuseSemaphore;
-        VkDeviceSize                       bufferBytes = 0;
-    };
+    // Ensures we have a pool with space for at least one element of given size
+    bool ensureCurrentPoolHasSpace(size_t elementSize) {
+        // Greedily invoke ready callbacks
+        invokeReadyCallbacks();
+
+        // Check if current pool has space
+        if (hasCurrentPool() && (m_poolSize - m_currentPoolUsedBytes) >= elementSize) {
+            return true;
+        }
+
+        // Need a new pool
+        return addPoolToCurrentBatch();
+    }
+
+    // Adds a pool to current batch (recycled if available, otherwise new)
+    // Returns false if at max capacity and no pools are ready
+    bool addPoolToCurrentBatch() {
+        // Try to recycle from ready batches (non-blocking)
+        while (!m_inUse.empty() && m_inUse.frontSemaphore().isSignaled(m_device.get())) {
+            auto& front = m_inUse.front(m_device.get());
+            
+            // Cleanup: invoke callbacks and clear buffers
+            m_totalBufferBytes -= front.bufferBytes;
+            front.buffers.clear();
+            for (auto& callback : front.destroyCallbacks) {
+                callback(true);
+            }
+            front.destroyCallbacks.clear();
+            front.bufferBytes = 0;
+            
+            // Skip empty batches (should not exist, but defensive)
+            if (front.pools.empty()) {
+                m_inUse.pop_front();
+                continue;
+            }
+            
+            // Recycle one pool
+            recyclePool(front);
+            
+            // Remove batch if it's now empty (no empty batches allowed)
+            if (front.pools.empty()) {
+                m_inUse.pop_front();
+            }
+            
+            return true;
+        }
+        
+        // Allocate new if below max
+        if (m_maxPools == 0 || m_totalPoolCount < m_maxPools) {
+            m_current.pools.push_back(makePool());
+            m_totalPoolBytes += m_poolSize;
+            ++m_totalPoolCount;
+            m_currentPoolUsedBytes = 0;
+            return true;
+        }
+        
+        // At max, block for a pool
+        while (!m_inUse.empty()) {
+            auto& front = m_inUse.front(m_device.get()); // BLOCKS
+            
+            // Cleanup: invoke callbacks and clear buffers
+            m_totalBufferBytes -= front.bufferBytes;
+            front.buffers.clear();
+            for (auto& callback : front.destroyCallbacks) {
+                callback(true);
+            }
+            front.destroyCallbacks.clear();
+            front.bufferBytes = 0;
+            
+            // Skip empty batches (should not exist, but defensive)
+            if (front.pools.empty()) {
+                m_inUse.pop_front();
+                continue;
+            }
+            
+            // Recycle one pool
+            recyclePool(front);
+            
+            // Remove batch if it's now empty (no empty batches allowed)
+            if (front.pools.empty()) {
+                m_inUse.pop_front();
+            }
+            
+            return true;
+        }
+        
+        return false;
+    }
+
+    // Allocates a buffer from the current pool and tracks usage
+    // Assumes hasCurrentPool() is true and size calculation is correct
+    template <class T>
+    BoundBuffer<T, Allocator> allocateFromCurrentPool(VkDeviceSize size) {
+        assert(hasCurrentPool());
+        
+        auto buffer = BoundBuffer<T, Allocator>(
+            m_device.get(), size, m_bufferUsageFlags,
+            vma::allocationCreateInfo(currentPool(),
+                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+            m_allocator.get());
+
+        // Track usage
+        VkDeviceSize allocatedBytes = buffer.sizeBytes();
+        m_current.bufferBytes += allocatedBytes;
+        m_totalBufferBytes += allocatedBytes;
+        m_currentPoolUsedBytes = align_up(m_currentPoolUsedBytes + allocatedBytes, m_alignment);
+
+        return buffer;
+    }
+
+    void invokeReadyCallbacks() {
+        // Greedily check released pools and invoke callbacks if ready
+        m_inUse.visitReady(m_device.get(), [](PoolBatch& batch) {
+            for (auto& callback : batch.destroyCallbacks) {
+                callback(true);
+            }
+            batch.destroyCallbacks.clear();
+            return true;
+        });
+    }
+
+    // Takes a pool from batch, adds to current.
+    // Precondition: batch.pools is not empty
+    // Postcondition: batch.pools may become empty (caller should check and remove)
+    void recyclePool(PoolBatch& batch) {
+        assert(!batch.pools.empty());
+        
+        m_current.pools.push_back(std::move(batch.pools.back()));
+        batch.pools.pop_back();
+        
+        // Reset usage tracker for the new pool
+        m_currentPoolUsedBytes = 0;
+        
+        // Reuse the batch's vector allocations if it's now empty
+        if (batch.pools.empty() && m_current.buffers.empty()) {
+            m_current.buffers.swap(batch.buffers);
+        }
+    }
+
+    void freeExcessPools() {
+        invokeReadyCallbacks();
+        
+        // Free excess pools from ready batches
+        m_inUse.consumeReady(m_device.get(), [this](PoolBatch& batch) {
+            // Free pools from this batch until we're at minPools
+            while (m_totalPoolCount > m_minPools && !batch.pools.empty()) {
+                m_totalPoolBytes -= m_poolSize;
+                batch.pools.pop_back();
+                --m_totalPoolCount;
+            }
+            
+            // Consume empty batches immediately (RAII: no empty batches)
+            return batch.pools.empty();
+        });
+    }
 
     std::reference_wrapper<const DeviceAndCommands> m_device;
     std::reference_wrapper<Allocator>               m_allocator;
     VkDeviceSize                                    m_poolSize = 0;
     VkDeviceSize                                    m_totalPoolBytes = 0;
-    VkDeviceSize                                    m_currentBufferBytes = 0;
+    size_t                                          m_totalPoolCount = 0;
     VkDeviceSize                                    m_totalBufferBytes = 0;
-    std::vector<vma::Pool>                          m_currentPools;
-    std::vector<UniqueAny>                          m_currentBuffers;
-    std::vector<std::function<void(bool)>>          m_currentDestroyCallbacks;
-    std::deque<InUseMemoryPools>                    m_inUse;
+    PoolBatch                                       m_current;
+    CompletionQueue<PoolBatch>                      m_inUse;
     VkBufferUsageFlags                              m_bufferUsageFlags = 0;
+    size_t                                          m_maxPools = 0;
+    size_t                                          m_minPools = 0;
+    VkDeviceSize                                    m_alignment = 0;
+    VkDeviceSize                                    m_currentPoolUsedBytes = 0;
 };
 static_assert(staging_allocator<RecyclingStagingPool<Device>>);
 
@@ -374,18 +654,20 @@ public:
         , m_submitThresholdBytes(submitThresholdBytes) {}
 
     template <class T>
-    void with(size_t size,
+    bool with(size_t size,
               std::function<void(const vko::BoundBuffer<T, typename StagingAllocator::Allocator>&, VkCommandBuffer)>
                   func) {
-        m_staging.template with<T>(
+        return m_staging.template tryWith<T>(
             size, [&](const vko::BoundBuffer<T, typename StagingAllocator::Allocator>& tmpBuffer) {
                 func(tmpBuffer, commandBuffer());
-            });
+            }, [](bool) {});
     }
 
     template <buffer DstBuffer, class Fn>
-    void upload(const DstBuffer& dstBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
-        auto* stagingBuf = m_staging.template make<typename DstBuffer::ValueType>(size);
+    bool upload(const DstBuffer& dstBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
+        auto* stagingBuf = m_staging.template tryMake<typename DstBuffer::ValueType>(size, [](bool) {});
+        if (!stagingBuf)
+            return false;
         fn(stagingBuf->map().span());
         copyBuffer<DeviceAndCommands, decltype(*stagingBuf), DstBuffer>(
             m_staging.device(), commandBuffer(), *stagingBuf, 0, dstBuffer, offset, size);
@@ -395,20 +677,29 @@ public:
         if (m_staging.size() > m_submitThresholdBytes) {
             submit();
         }
+        return true;
     }
 
     // NOTE: callback may be called even if the return value is destroyed
     // TODO: void return specialization?
     template <buffer SrcBuffer, class Fn>
-    SharedLazyTimelineFuture<std::invoke_result_t<Fn, std::span<const typename SrcBuffer::ValueType>>> download(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
-        auto* stagingBuf = m_staging.template make<typename SrcBuffer::ValueType>(size);
+    std::optional<SharedLazyTimelineFuture<std::invoke_result_t<Fn, std::span<const typename SrcBuffer::ValueType>>>> download(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
+        SharedLazyTimelineFuture<std::invoke_result_t<Fn, std::span<const typename SrcBuffer::ValueType>>> result(
+            m_queue.get().nextSubmitSemaphore(),
+            [fn=std::forward<Fn>(fn)]() { return fn(std::span<const typename SrcBuffer::ValueType>{}); });
+        
+        auto* stagingBuf = m_staging.template tryMake<typename SrcBuffer::ValueType>(
+            size, result.evaluator(m_staging.device()));
+        if (!stagingBuf)
+            return std::nullopt;
+            
         copyBuffer<DeviceAndCommands, SrcBuffer, decltype(*stagingBuf)>(
             m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, size);
-        auto result = SharedLazyTimelineFuture<
-            std::invoke_result_t<Fn, std::span<const typename SrcBuffer::ValueType>>>(
+        
+        // Update the result with the actual mapping
+        result = SharedLazyTimelineFuture<std::invoke_result_t<Fn, std::span<const typename SrcBuffer::ValueType>>>(
             m_queue.get().nextSubmitSemaphore(),
             [mapping = stagingBuf->map(), fn=std::forward<Fn>(fn)]() { return fn(mapping.span()); });
-        m_staging.addDestroyCallback(result.evaluator(m_staging.device()));
 
         // TODO: do before allocation? account for alignment? callback if
         // m_staging actually overflows?
@@ -429,7 +720,7 @@ public:
             m_queue.get().submit(m_staging.device(), {}, cmd,
                                  VK_PIPELINE_STAGE_TRANSFER_BIT /* TODO: is this right? */);
             m_inFlightCmds.push_back({std::move(cmd), std::move(semaphoreValue)});
-            m_staging.releaseBuffers(semaphoreValue);
+            m_staging.endBatch(semaphoreValue);
         }
     }
 
@@ -497,7 +788,7 @@ void uploadMapped(
     if (dstOffsetElements == dstBuffer.size() || (size && *size == 0))
         throw std::runtime_error("uploading zero elements");
     VkDeviceSize subspanSize = size.value_or(dstBuffer.size() - dstOffsetElements);
-    staging.template with<T>(
+    if (!staging.template tryWith<T>(
         subspanSize, [&](const vko::BoundBuffer<T, Allocator>& buffer) {
             fn(buffer.map().span());
             VkBufferCopy bufferCopy{
@@ -506,7 +797,9 @@ void uploadMapped(
                 .size      = subspanSize * sizeof(T),
             };
             device.vkCmdCopyBuffer(cmd, buffer, dstBuffer, 1, &bufferCopy);
-        });
+        }, [](bool) {})) {
+        throw std::runtime_error("Failed to allocate staging buffer");
+    }
 }
 
 template <std::ranges::contiguous_range Range, staging_allocator StagingAllocator,
@@ -520,7 +813,7 @@ void uploadTo(
         throw std::runtime_error("uploading empty data");
     if (dstOffsetElements + std::ranges::size(data) > dstBuffer.size())
         throw std::out_of_range("destination buffer is too small");
-    staging.template with<T>(std::ranges::size(data),
+    if (!staging.template tryWith<T>(std::ranges::size(data),
                              [&](const vko::BoundBuffer<T, Allocator>& buffer) {
                                  std::ranges::copy(data, buffer.map().begin());
                                  VkBufferCopy bufferCopy{
@@ -529,7 +822,9 @@ void uploadTo(
                                      .size      = std::ranges::size(data) * sizeof(T),
                                  };
                                  device.vkCmdCopyBuffer(cmd, buffer, dstBuffer, 1, &bufferCopy);
-                             });
+                             }, [](bool) {})) {
+        throw std::runtime_error("Failed to allocate staging buffer");
+    }
 }
 
 // Non type-safe upload. Avoid where possible. The returned BufferMapping must
@@ -541,7 +836,7 @@ uploadToBytes(StagingAllocator& staging, const DeviceAndCommands& device, VkComm
               VkBuffer dstBuffer, VkDeviceSize dstOffset) {
     if (std::ranges::empty(data))
         throw std::runtime_error("uploading empty data");
-    staging.template with<std::byte>(
+    if (!staging.template tryWith<std::byte>(
         std::ranges::size(data), [&](const vko::BoundBuffer<std::byte, typename StagingAllocator::Allocator>& buffer) {
             std::ranges::copy(data, buffer.map().begin());
             VkBufferCopy bufferCopy{
@@ -550,7 +845,9 @@ uploadToBytes(StagingAllocator& staging, const DeviceAndCommands& device, VkComm
                 .size      = std::ranges::size(data),
             };
             device.vkCmdCopyBuffer(cmd, buffer, dstBuffer, 1, &bufferCopy);
-        });
+        }, [](bool) {})) {
+        throw std::runtime_error("Failed to allocate staging buffer");
+    }
 }
 
 template <std::ranges::contiguous_range Range, staging_allocator StagingAllocator,
@@ -602,7 +899,7 @@ void uploadMappedBytes(
     StagingAllocator& staging, const DeviceAndCommands& device, VkCommandBuffer cmd, Fn&& fn,
     VkBuffer dstBuffer,
     size_t offset, VkDeviceSize size) {
-    staging.template with<std::byte>(
+    if (!staging.template tryWith<std::byte>(
         size, [&](const vko::BoundBuffer<std::byte, Allocator>& buffer) {
             fn(buffer.map().span());
             VkBufferCopy bufferCopy{
@@ -611,7 +908,9 @@ void uploadMappedBytes(
                 .size      = size,
             };
             device.vkCmdCopyBuffer(cmd, buffer, dstBuffer, 1, &bufferCopy);
-        });
+        }, [](bool) {})) {
+        throw std::runtime_error("Failed to allocate staging buffer");
+    }
 }
 
 // TODO: this is totally not safe, but I've already learned this structure and
@@ -629,11 +928,13 @@ download(StagingAllocator& staging, const DeviceAndCommands& device, VkCommandBu
     if (srcOffsetElements >= srcBuffer.size())
         throw std::out_of_range("source offset is beyond buffer size");
     VkDeviceSize copySize = srcSize.value_or(srcBuffer.size() - srcOffsetElements);
-    const vko::BoundBuffer<T, Allocator>* buffer = staging.template make<T>(copySize);
-    VkBufferCopy                          bufferCopy{
-                                 .srcOffset = srcOffsetElements * sizeof(T),
-                                 .dstOffset = 0,
-                                 .size      = copySize * sizeof(T),
+    auto* buffer = staging.template tryMake<T>(copySize, [](bool) {});
+    if (!buffer)
+        throw std::runtime_error("Failed to allocate staging buffer");
+    VkBufferCopy bufferCopy{
+        .srcOffset = srcOffsetElements * sizeof(T),
+        .dstOffset = 0,
+        .size      = copySize * sizeof(T),
     };
     device.vkCmdCopyBuffer(cmd, srcBuffer, *buffer, 1, &bufferCopy);
     return buffer->map();
@@ -648,7 +949,9 @@ template <staging_allocator StagingAllocator, device_and_commands DeviceAndComma
 BufferMapping<std::byte, Allocator>
 downloadBytes(StagingAllocator& staging, const DeviceAndCommands& device, VkCommandBuffer cmd,
               VkBuffer srcBuffer, VkDeviceSize offset, size_t size) {
-    auto*        buffer = staging.template make<std::byte>(size);
+    auto* buffer = staging.template tryMake<std::byte>(size, [](bool) {});
+    if (!buffer)
+        throw std::runtime_error("Failed to allocate staging buffer");
     VkBufferCopy bufferCopy{.srcOffset = offset, .dstOffset = 0, .size = size};
     device.vkCmdCopyBuffer(cmd, srcBuffer, *buffer, 1, &bufferCopy);
     return buffer->map();
@@ -731,10 +1034,14 @@ BufferMapping<std::byte, typename StagingAllocator::Allocator>
 downloadBytes(StagingAllocator& staging, const DeviceAndCommands& device, VkCommandBuffer cmd,
               VkDeviceAddress address, VkDeviceSize size) {
     // Temporary host visible staging buffer
-    auto* dstBuffer = staging.template make<std::byte>(size);
+    auto* dstBuffer = staging.template tryMake<std::byte>(size, [](bool) {});
+    if (!dstBuffer)
+        throw std::runtime_error("Failed to allocate staging buffer");
 
     // Temporary buffer to hold the VkCopyMemoryIndirectCommandNV
-    auto*           cmdBuffer  = staging.template make<VkCopyMemoryIndirectCommandNV>(1);
+    auto* cmdBuffer = staging.template tryMake<VkCopyMemoryIndirectCommandNV>(1, [](bool) {});
+    if (!cmdBuffer)
+        throw std::runtime_error("Failed to allocate staging buffer");
     VkDeviceAddress dstAddress = device.vkGetBufferDeviceAddress(
         device, tmpPtr(VkBufferDeviceAddressInfo{
                     .sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,

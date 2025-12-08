@@ -37,20 +37,44 @@ if(NOT EXISTS "${DEBUGBREAK_HEADER}")
 endif()
 
 # Unit tests
-add_executable(unit_tests
-  src/test.cpp
+add_executable(vulkan_objects_tests
+  src/hello_triangle.cpp
+  src/test_timeline_queue.cpp
+  src/test_staging.cpp
   )
-target_link_libraries(unit_tests vulkan_objects glfw gtest_main)
-target_include_directories(unit_tests PRIVATE "${DEBUGBREAK_DIR}")
+target_link_libraries(vulkan_objects_tests vulkan_objects glfw gtest_main)
+target_include_directories(vulkan_objects_tests PRIVATE "${DEBUGBREAK_DIR}" src)
+
+# TODO: vulkan_objects provides these dependencies. could pick them up
+# separately
+# TODO: default to fatal errors for disabled tests!
+if(TARGET slang)
+  target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_SLANG=1)
+else()
+  target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_SLANG=0)
+  message(WARNING "Slang not found, vulkan_objects_tests will not be able to compile slang shaders, disabling most tests!")
+endif()
+if(TARGET vma_static)
+  target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_VMA=1)
+else()
+  target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_VMA=0)
+  message(FATAL_ERROR "Vulkan Memory Allocator not found, vulkan_objects_tests will not be able to compile vma code")
+endif()
+if(TARGET vvl)
+  target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_VVL=1)
+else()
+  target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_VVL=0)
+  message(FATAL_ERROR "Vulkan Validation Layers not found, vulkan_objects_tests will not be able to compile vvl code")
+endif()
 
 if(MSVC)
-  target_compile_options(unit_tests PRIVATE /W4 /WX)
+  target_compile_options(vulkan_objects_tests PRIVATE /W4 /WX)
 else()
-  target_compile_options(unit_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_compile_options(vulkan_objects_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    target_compile_options(unit_tests PUBLIC -Wno-nullability-extension -Wno-nullability-completeness)
+    target_compile_options(vulkan_objects_tests PUBLIC -Wno-nullability-extension -Wno-nullability-completeness)
   endif()
 endif()
 
 include(GoogleTest)
-gtest_discover_tests(unit_tests)
+gtest_discover_tests(vulkan_objects_tests)
