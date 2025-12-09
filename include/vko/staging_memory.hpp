@@ -3,6 +3,9 @@
 
 #include <functional>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
+#include <vko/adapters.hpp>
 #include <vko/allocator.hpp>
 #include <vko/bound_buffer.hpp>
 #include <vko/command_recording.hpp>
@@ -47,6 +50,8 @@ concept staging_allocator =
         // call to endBatch(). Buffers cannot be destroyed until the
         // semaphore is signalled.
         { t.endBatch(releaseSemaphore) } -> std::same_as<void>;
+        // Process any completed GPU work and invoke associated callbacks
+        { t.processCompletedWork() } -> std::same_as<void>;
         // Total bytes currently in use by staging buffers (current + unreleased batches)
         { t.size() } -> std::same_as<VkDeviceSize>;
         // Total allocated staging memory (including recyclable/idle memory)
@@ -697,90 +702,158 @@ static_assert(staging_allocator<RecyclingStagingPool<Device>>);
 // Staging wrapper that also holds a queue and command buffer for
 // staging/streaming memory and automatically submits command buffers as needed
 // to reduce staging memory usage.
-template<class StagingAllocator>
+template <class StagingAllocator>
 class StreamingStaging {
 public:
     using DeviceAndCommands = typename StagingAllocator::DeviceAndCommands;
-    StreamingStaging(const TimelineQueue& queue, StagingAllocator&& staging, VkDeviceSize submitThresholdBytes)
+    using Allocator         = typename StagingAllocator::Allocator;
+    StreamingStaging(TimelineQueue& queue, StagingAllocator&& staging)
         : m_queue(queue)
         , m_staging(std::move(staging))
-        , m_commandPool(m_staging.device(), VkCommandPoolCreateInfo{
-                                    .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-                                    .pNext            = nullptr,
-                                    .flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                                    .queueFamilyIndex = queue.familyIndex(),
-                                })
-        , m_submitThresholdBytes(submitThresholdBytes) {}
-
-    template <class T>
-    bool with(size_t size,
-              std::function<void(const vko::BoundBuffer<T, typename StagingAllocator::Allocator>&, VkCommandBuffer)>
-                  func) {
-        return m_staging.template tryWith<T>(
-            size, [&](const vko::BoundBuffer<T, typename StagingAllocator::Allocator>& tmpBuffer) {
-                func(tmpBuffer, commandBuffer());
-            });
-    }
+        , m_commandPool(m_staging.device(),
+                        VkCommandPoolCreateInfo{
+                            .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                            .pNext            = nullptr,
+                            .flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                            .queueFamilyIndex = queue.familyIndex(),
+                        }) {}
 
     template <buffer DstBuffer, class Fn>
-    bool upload(const DstBuffer& dstBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
-        auto* stagingBuf = m_staging.template tryMake<typename DstBuffer::ValueType>(size);
-        if (!stagingBuf)
-            return false;
-        fn(stagingBuf->map().span());
-        copyBuffer<DeviceAndCommands, decltype(*stagingBuf), DstBuffer>(
-            m_staging.device(), commandBuffer(), *stagingBuf, 0, dstBuffer, offset, size);
+    void upload(const DstBuffer& dstBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
+        using T = typename DstBuffer::ValueType;
+        while (size > 0) {
+            vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template tryMake<T>(size);
+            if (stagingBuf) {
+                fn(offset, stagingBuf->map().span());
+                copyBuffer<DeviceAndCommands, std::remove_reference_t<decltype(*stagingBuf)>,
+                           DstBuffer>(m_staging.device(), commandBuffer(), *stagingBuf, 0,
+                                      dstBuffer, offset, stagingBuf->size());
 
-        // TODO: do before allocation? account for alignment? callback if
-        // m_staging actually overflows?
-        if (m_staging.size() > m_submitThresholdBytes) {
-            submit();
+                // The staging buffer may not necessarily be the full size
+                // requested. Loop until the entire range is uploaded.
+                offset += stagingBuf->size();
+                size -= stagingBuf->size();
+            } else {
+                if constexpr (StagingAllocator::TryCanFail) {
+                    // Staging allocator is full. We must make a submit now, which
+                    // will call m_staging.endBatch() and allow the staging
+                    // allocator to block and wait for some memory to be recycled.
+                    submit();
+                    continue;
+                } else {
+                    //std::unreachable();
+                    throw std::runtime_error("!StagingAllocator::TryCanFail but it failed");
+                }
+            }
         }
-        return true;
     }
 
-    // NOTE: callback may be called even if the return value is destroyed
-    // TODO: void return specialization?
-    template <buffer SrcBuffer, class Fn>
-    std::optional<SharedLazyTimelineFuture<std::invoke_result_t<Fn, std::span<const typename SrcBuffer::ValueType>>>> download(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
-        SharedLazyTimelineFuture<std::invoke_result_t<Fn, std::span<const typename SrcBuffer::ValueType>>> result(
-            m_queue.get().nextSubmitSemaphore(),
-            [fn=std::forward<Fn>(fn)]() { return fn(std::span<const typename SrcBuffer::ValueType>{}); });
-        
-        auto* stagingBuf = m_staging.template tryMake<typename SrcBuffer::ValueType>(
-            size, result.evaluator(m_staging.device()));
-        if (!stagingBuf)
-            return std::nullopt;
-            
-        copyBuffer<DeviceAndCommands, SrcBuffer, decltype(*stagingBuf)>(
-            m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, size);
-        
-        // Update the result with the actual mapping
-        result = SharedLazyTimelineFuture<std::invoke_result_t<Fn, std::span<const typename SrcBuffer::ValueType>>>(
-            m_queue.get().nextSubmitSemaphore(),
-            [mapping = stagingBuf->map(), fn=std::forward<Fn>(fn)]() { return fn(mapping.span()); });
+    template <std::ranges::input_range SrcRange, buffer DstBuffer>
+    void upload(const DstBuffer& dstBuffer, SrcRange&& srcRange, VkDeviceSize offset,
+                VkDeviceSize size) {
+        upload(dstBuffer, offset, size,
+               [begin = std::ranges::begin(srcRange), next = std::ranges::begin(srcRange),
+                end = std::ranges::end(srcRange)](
+                   [[maybe_unused]] VkDeviceSize            offset,
+                   std::span<typename DstBuffer::ValueType> mapped) mutable {
+                   assert(offset == std::distance(begin, next));
+                   next = std::ranges::copy(next, next + mapped.size(), mapped.begin());
+               });
+    }
 
-        // TODO: do before allocation? account for alignment? callback if
-        // m_staging actually overflows?
-        if (m_staging.size() > m_submitThresholdBytes) {
-            submit();
+    // Download to a vector via a transform function that operates in batches
+    // NOTE: callback may be called even if the return value is destroyed
+    template <class DstT, buffer SrcBuffer, class Fn>
+    SharedLazyTimelineFutureVector<Fn, std::span<const typename SrcBuffer::ValueType>, std::span<DstT>>
+    downloadTransform(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
+        using T = typename SrcBuffer::ValueType;
+        SharedLazyTimelineFutureVector<Fn, std::span<const T>,
+                                       std::span<DstT>>
+            result(m_queue.get().nextSubmitSemaphore(), std::forward<Fn>(fn), size);
+
+        while (size > 0) {
+            vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template tryMake<T>(size);
+            if (stagingBuf) {
+                copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(*stagingBuf)>>(
+                    m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, stagingBuf->size());
+
+                m_staging.registerBatchCallback(
+                    result.evaluator(m_staging.device(), offset, stagingBuf->map()));
+
+                // The staging buffer may not necessarily be the full size
+                // requested. Loop until the entire range is uploaded.
+                offset += stagingBuf->size();
+                size -= stagingBuf->size();
+            } else {
+                if constexpr (StagingAllocator::TryCanFail) {
+                    submit();
+                    continue;
+                } else {
+                    //std::unreachable();
+                    throw std::runtime_error("!StagingAllocator::TryCanFail but it failed");
+                }
+            }
         }
-        
+
         return result;
     }
 
+    // Regular download function with an identity transform to a vector
+    template <buffer SrcBuffer>
+    auto download(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size) {
+        return downloadTransform<typename SrcBuffer::ValueType, SrcBuffer>(
+            srcBuffer, offset, size,
+            [](VkDeviceSize /* offset */, std::span<const typename SrcBuffer::ValueType> mapped) {
+                std::ranges::copy(mapped, std::ranges::begin(mapped));
+            });
+    }
+
+    // Call the given function on each batch of the download
+    template <buffer SrcBuffer, class Fn>
+    void downloadVisit(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
+        using T = typename SrcBuffer::ValueType;
+        auto sharedFn = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
+        while (size > 0) {
+            vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template tryMake<T>(size);
+            if (stagingBuf) {
+                copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(*stagingBuf)>>(
+                    m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, stagingBuf->size());
+
+                auto sharedMapping = std::make_shared<decltype(stagingBuf->map())>(stagingBuf->map());
+                m_staging.registerBatchCallback([offset, sharedMapping, sharedFn](bool call) {
+                    if (call) {
+                        (*sharedFn)(offset, sharedMapping->span());
+                    }
+                });
+
+                // The staging buffer may not necessarily be the full size
+                // requested. Loop until the entire range is uploaded.
+                offset += stagingBuf->size();
+                size -= stagingBuf->size();
+            } else {
+                if constexpr (StagingAllocator::TryCanFail) {
+                    submit();
+                    continue;
+                }
+            }
+        }
+    }
+
     // Manual submission interface.
-    void submit()
-    {
+    SemaphoreValue submit() {
+        // Opportunistically invoke ready callbacks from previous submissions
+        m_staging.invokeReadyCallbacks();
+        
+        SemaphoreValue semaphoreValue = m_queue.get().nextSubmitSemaphore();
         if (m_currentCmd) {
             CommandBuffer cmd(m_currentCmd->end());
             m_currentCmd.reset();
-            auto semaphoreValue = m_queue.get().nextSubmitSemaphore();
             m_queue.get().submit(m_staging.device(), {}, cmd,
-                                 VK_PIPELINE_STAGE_TRANSFER_BIT /* TODO: is this right? */);
+                                    VK_PIPELINE_STAGE_TRANSFER_BIT /* TODO: is this right? */);
             m_inFlightCmds.push_back({std::move(cmd), std::move(semaphoreValue)});
             m_staging.endBatch(semaphoreValue);
         }
+        return semaphoreValue;
     }
 
 private:
@@ -790,30 +863,36 @@ private:
     };
 
     VkCommandBuffer commandBuffer() {
+        // Opportunistically invoke ready callbacks from previous submissions
+        m_staging.invokeReadyCallbacks();
+        
         if (!m_currentCmd) {
             m_currentCmd.emplace(m_staging.device(), reuseOrMakeCommandBuffer(),
-                                 VkCommandBufferBeginInfo{
-                                     .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                     .pNext = nullptr,
-                                     .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-                                     .pInheritanceInfo = nullptr,
-                                 });
+                                    VkCommandBufferBeginInfo{
+                                        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                        .pNext = nullptr,
+                                        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                                        .pInheritanceInfo = nullptr,
+                                    });
         }
         return *m_currentCmd;
     }
 
     CommandBuffer reuseOrMakeCommandBuffer() {
         // Try to reuse a command buffer from the in-flight queue
-        if (!m_inFlightCmds.empty() && m_inFlightCmds.front().readySemaphore.wait(m_queue.get(), 0)) {
+        if (!m_inFlightCmds.empty() &&
+            m_inFlightCmds.front().readySemaphore.isSignaled(m_staging.device())) {
             auto result = std::move(m_inFlightCmds.front().commandBuffer);
             m_inFlightCmds.pop_front();
 
             // If there's a relatively long queue of ready command buffers, free
             // some up. Leave at least one of the ready ones to avoid frequent
             // allocations/deallocations.
-            if (m_inFlightCmds.size() >= 2 && m_inFlightCmds.front().readySemaphore.wait(m_queue.get(), 0)) {
-                while (m_inFlightCmds.size() >= 2 &&
-                    std::next(m_inFlightCmds.begin())->readySemaphore.wait(m_queue.get(), 0)) {
+            if (m_inFlightCmds.size() >= 2 &&
+                m_inFlightCmds.front().readySemaphore.isSignaled(m_staging.device())) {
+                while (
+                    m_inFlightCmds.size() >= 2 &&
+                    std::next(m_inFlightCmds.begin())->readySemaphore.isSignaled(m_staging.device())) {
                     m_inFlightCmds.pop_front();
                 }
             }
@@ -824,15 +903,14 @@ private:
 
         // Else, create a new command buffer
         return CommandBuffer(m_staging.device(), nullptr, m_commandPool,
-                             VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+                                VK_COMMAND_BUFFER_LEVEL_PRIMARY);
     }
 
-    std::reference_wrapper<const TimelineQueue>   m_queue;
+    std::reference_wrapper<TimelineQueue>         m_queue;
     StagingAllocator                              m_staging;
     CommandPool                                   m_commandPool;
     std::deque<InFlightCmd>                       m_inFlightCmds;
     std::optional<simple::RecordingCommandBuffer> m_currentCmd;
-    VkDeviceSize                                  m_submitThresholdBytes = 0;
 };
 
 template <class T, class Fn, staging_allocator StagingAllocator, device_and_commands DeviceAndCommands,

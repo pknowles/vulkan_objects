@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <future>
+#include <numeric>
 #include <thread>
 
 TEST_F(UnitTestFixture, RecyclingStagingPool_BasicConstruction) {
@@ -599,6 +600,144 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_PartialAllocationWithRemainder) {
 // - RecyclingStagingPool_ZeroSizeAllocation: Test edge case of size=0
 // - RecyclingStagingPool_ActualDataTransfer: Test actual upload/download with command buffers
 // - RecyclingStagingPool_AllocationFailureRecovery: Test recovery when VMA throws (pool exhaustion)
+
+// Test 1: Upload with chunked iota fill
+TEST_F(UnitTestFixture, StreamingStaging_UploadChunked) {
+    // Setup: Create queue and staging allocator
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator, 
+        /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16); // 64KB pools
+    vko::StreamingStaging streaming(queue, std::move(staging));
+    
+    // Create GPU buffer
+    auto gpuBuffer = vko::BoundBuffer<int>(
+        ctx->device, 10000, 
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    // Upload with chunked fill - callback provides offset for each chunk
+    streaming.upload(gpuBuffer, 0, 10000, 
+        [](VkDeviceSize offset, auto span) {
+            std::iota(span.begin(), span.end(), static_cast<int>(offset));
+        });
+    
+    streaming.submit(); // Ensure upload completes
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // TODO: Verify by downloading once download is implemented
+    // For now, just verify it doesn't crash
+}
+
+// Test 2: Upload with partial allocations (chunking)
+TEST_F(UnitTestFixture, StreamingStaging_UploadLarge) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 14); // Small 16KB pools
+    vko::StreamingStaging streaming(queue, std::move(staging));
+    
+    // Create buffer larger than single pool to force chunking
+    auto gpuBuffer = vko::BoundBuffer<float>(
+        ctx->device, 10000,  // 40KB worth of floats, larger than 16KB pool
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    // Upload should handle multiple chunks automatically
+    streaming.upload(gpuBuffer, 0, 10000,
+        [](VkDeviceSize offset, auto span) {
+            for (size_t i = 0; i < span.size(); ++i) {
+                span[i] = static_cast<float>(offset + i) * 2.0f;
+            }
+        });
+    
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+}
+
+// Test 3: Download with void return (process without storing)
+TEST_F(UnitTestFixture, StreamingStaging_DownloadVoid) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16);
+    vko::StreamingStaging streaming(queue, std::move(staging));
+    
+    // Setup buffer with known data
+    auto gpuBuffer = vko::BoundBuffer<int>(
+        ctx->device, 1000,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    streaming.upload(gpuBuffer, 0, 1000,
+        [](VkDeviceSize offset, auto span) {
+            std::iota(span.begin(), span.end(), static_cast<int>(offset));
+        });
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // Download with void callback - just accumulate stats, no storage
+    int sum = 0;
+    int count = 0;
+    
+    streaming.downloadVisit(gpuBuffer, 0, 1000,
+        [&sum, &count](VkDeviceSize, auto mapped) {
+            // Process chunk without storing
+            for (auto val : mapped) {
+                sum += val;
+                count++;
+            }
+        });
+    
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // Verify we processed everything
+    EXPECT_EQ(count, 1000);
+    EXPECT_EQ(sum, 1000 * 999 / 2);  // Sum of 0..999
+}
+
+// Test 4: Download with return value (transform and store)
+TEST_F(UnitTestFixture, StreamingStaging_DownloadWithTransform) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 14); // Small pools to force chunking
+    vko::StreamingStaging streaming(queue, std::move(staging));
+    
+    // Upload known data
+    auto gpuBuffer = vko::BoundBuffer<float>(
+        ctx->device, 5000,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    streaming.upload(gpuBuffer, 0, 5000,
+        [](VkDeviceSize offset, auto span) {
+            for (size_t i = 0; i < span.size(); ++i) {
+                span[i] = static_cast<float>(offset + i) * 2.0f;
+            }
+        });
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // Download with transform - returns transformed data
+    auto downloadFuture =
+        streaming.downloadTransform<float>(gpuBuffer, 0, 5000, [](VkDeviceSize, auto input, auto output) {
+            std::ranges::copy(input, output.begin()); // Identity transform
+        });
+
+    // Wait and get result
+    auto& result = downloadFuture.get(ctx->device);
+    EXPECT_EQ(result.size(), 5000);
+    for (size_t i = 0; i < result.size(); ++i) {
+        EXPECT_FLOAT_EQ(result[i], static_cast<float>(i) * 2.0f);
+    }
+}
+
 // - StreamingStaging_BasicUsage: Test StreamingStaging wrapper
 // - StreamingStaging_AutoSubmit: Test automatic submission on threshold
 // - StreamingStaging_CommandBufferReuse: Test command buffer recycling

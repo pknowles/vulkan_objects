@@ -147,7 +147,7 @@ private:
 
 // Type-safe and bounds-checked vkCmdCopyBuffer().
 template <device_and_commands DeviceAndCommands, buffer SrcBuffer, buffer DstBuffer>
-    requires std::is_trivially_assignable_v<typename DstBuffer::ValueType,
+    requires std::is_trivially_assignable_v<typename DstBuffer::ValueType&,
                                             typename SrcBuffer::ValueType>
 void copyBuffer(const DeviceAndCommands& device, VkCommandBuffer cmd, const SrcBuffer& src,
                 VkDeviceSize srcOffset, const DstBuffer& dst, VkDeviceSize dstOffset,
@@ -166,7 +166,7 @@ void copyBuffer(const DeviceAndCommands& device, VkCommandBuffer cmd, const SrcB
 }
 
 template <device_and_commands DeviceAndCommands, buffer SrcBuffer, buffer DstBuffer>
-    requires std::is_trivially_assignable_v<typename DstBuffer::ValueType,
+    requires std::is_trivially_assignable_v<typename DstBuffer::ValueType&,
                                             typename SrcBuffer::ValueType>
 void copyBuffer(const DeviceAndCommands& device, VkCommandBuffer cmd, const SrcBuffer& src,
                 const DstBuffer& dst) {
