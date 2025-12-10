@@ -7,6 +7,7 @@
 #include <vko/functions.hpp>
 #include <vko/exceptions.hpp>
 #include <vko/handle.hpp>
+#include <variant>
 
 namespace vko
 {

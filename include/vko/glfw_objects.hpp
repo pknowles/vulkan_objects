@@ -104,8 +104,8 @@ struct check {
 
 class ScopedInit {
 public:
-    ScopedInit()
-        : ScopedInit(GLFW_ANY_PLATFORM) {}
+    ScopedInit() : ScopedInit(GLFW_ANY_PLATFORM) {}
+    
     ScopedInit(int platform) {
         glfwInitHint(GLFW_PLATFORM, platform);
         if (glfwInit() != GLFW_TRUE) {

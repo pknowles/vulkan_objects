@@ -238,9 +238,11 @@ public:
     template <class DstDescriptorInfo, class SrcDescriptorInfo>
     static constexpr DstDescriptorInfo* ptrIfSameOrNull(const SrcDescriptorInfo* infos) {
         if constexpr (std::is_same_v<std::decay_t<DstDescriptorInfo>,
-                                     std::decay_t<SrcDescriptorInfo>>)
+                                     std::decay_t<SrcDescriptorInfo>>) {
             return infos;
-        return nullptr;
+        } else {
+            return nullptr;
+        }
     }
 
     std::span<const VkWriteDescriptorSet> writes() const { return m_writes; }

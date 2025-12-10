@@ -25,7 +25,9 @@ struct Context {
     vko::VulkanLibrary  library;
     vko::GlobalCommands globalCommands;
     vko::Instance       instance;
+#if VULKAN_OBJECTS_HAS_VVL
     vko::DebugMessenger debugMessenger;
+#endif
     VkPhysicalDevice    physicalDevice   = VK_NULL_HANDLE;
     uint32_t            queueFamilyIndex = 0;
     vko::Device         device;
@@ -35,6 +37,7 @@ struct Context {
         : library()
         , globalCommands(library.loader())
         , instance(globalCommands, TestInstanceCreateInfo())
+#if VULKAN_OBJECTS_HAS_VVL
         , debugMessenger(instance,
                          [](VkDebugUtilsMessageSeverityFlagBitsEXT severityBits,
                             VkDebugUtilsMessageTypeFlagsEXT,
@@ -48,6 +51,7 @@ struct Context {
                              }
                              return false;
                          })
+#endif
         , physicalDevice([this]() {
             auto physicalDevices = vko::toVector(instance.vkEnumeratePhysicalDevices, instance);
             auto it = std::ranges::find_if(physicalDevices, [this](VkPhysicalDevice pd) {

@@ -120,7 +120,7 @@ struct ShaderBindingTablesStaging {
                           begin      = next](const auto& source, auto next,
                                         std::optional<StridedOffsetRegion>& storeOffset) {
             auto offset        = std::distance(begin, next);
-            auto offsetAligned = (offset + align - 1) & ~(align - 1);
+            auto offsetAligned = (offset + align - 1) & ~(VkDeviceSize(align) - 1);
             next               = next + (offsetAligned - offset);
             auto before        = next;
             for (std::span<const std::byte> handle : source) {

@@ -1,6 +1,5 @@
 # Copyright (c) 2025 Pyarelal Knowles, MIT License
 
-find_package(pugixml CONFIG QUIET)
 if(NOT TARGET pugixml)
   include(FetchContent)
   FetchContent_Declare(
@@ -12,7 +11,6 @@ if(NOT TARGET pugixml)
   FetchContent_MakeAvailable(pugixml)
 endif()
 
-find_package(inja CONFIG QUIET)
 if(NOT TARGET inja)
   include(FetchContent)
   FetchContent_Declare(

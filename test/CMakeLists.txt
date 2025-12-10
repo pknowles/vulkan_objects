@@ -42,6 +42,13 @@ add_executable(vulkan_objects_tests
   src/test_timeline_queue.cpp
   src/test_staging.cpp
   )
+
+# Enable clang-tidy to catch common bugs like use-after-move
+# Disabled for now due to false positives in template code
+# set_target_properties(vulkan_objects_tests PROPERTIES
+#   CXX_CLANG_TIDY "clang-tidy;--checks=bugprone-use-after-move,bugprone-move-forwarding-reference,performance-move-const-arg,performance-unnecessary-value-param"
+# )
+
 target_link_libraries(vulkan_objects_tests vulkan_objects glfw gtest_main)
 target_include_directories(vulkan_objects_tests PRIVATE "${DEBUGBREAK_DIR}" src)
 
@@ -64,7 +71,11 @@ if(TARGET vvl)
   target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_VVL=1)
 else()
   target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_VVL=0)
-  message(FATAL_ERROR "Vulkan Validation Layers not found, vulkan_objects_tests will not be able to compile vvl code")
+  if(VULKAN_OBJECTS_TESTING_BUILD_ALL)
+    message(FATAL_ERROR "Vulkan Validation Layers not found, vulkan_objects_tests will not be able to compile vvl code")
+  else()
+    message(WARNING "Vulkan Validation Layers not found, tests will run without validation")
+  endif()
 endif()
 
 if(MSVC)
@@ -74,7 +85,13 @@ else()
   if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_compile_options(vulkan_objects_tests PUBLIC -Wno-nullability-extension -Wno-nullability-completeness)
   endif()
+  # Enable AddressSanitizer in debug builds to catch memory issues
+  # Disabled temporarily due to NVIDIA driver incompatibility
+  #if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  #  target_compile_options(vulkan_objects_tests PRIVATE -fsanitize=address -fno-omit-frame-pointer)
+  #  target_link_options(vulkan_objects_tests PRIVATE -fsanitize=address)
+  #endif()
 endif()
 
 include(GoogleTest)
-gtest_discover_tests(vulkan_objects_tests)
+gtest_discover_tests(vulkan_objects_tests DISCOVERY_MODE PRE_TEST)
