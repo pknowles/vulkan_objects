@@ -50,8 +50,6 @@ concept staging_allocator =
         // call to endBatch(). Buffers cannot be destroyed until the
         // semaphore is signalled.
         { t.endBatch(releaseSemaphore) } -> std::same_as<void>;
-        // Process any completed GPU work and invoke associated callbacks
-        { t.processCompletedWork() } -> std::same_as<void>;
         // Total bytes currently in use by staging buffers (current + unreleased batches)
         { t.size() } -> std::same_as<VkDeviceSize>;
         // Total allocated staging memory (including recyclable/idle memory)
@@ -764,12 +762,11 @@ public:
     // Download to a vector via a transform function that operates in batches
     // NOTE: callback may be called even if the return value is destroyed
     template <class DstT, buffer SrcBuffer, class Fn>
-    SharedLazyTimelineFutureVector<Fn, std::span<const typename SrcBuffer::ValueType>, std::span<DstT>>
+    DownloadTransformFuture<Fn, DstT, Allocator>
     downloadTransform(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
         using T = typename SrcBuffer::ValueType;
-        SharedLazyTimelineFutureVector<Fn, std::span<const T>,
-                                       std::span<DstT>>
-            result(m_queue.get().nextSubmitSemaphore(), std::forward<Fn>(fn), size);
+        DownloadTransformFuture<Fn, DstT, Allocator> result(
+            m_queue.get().nextSubmitSemaphore(), std::forward<Fn>(fn), size);
 
         while (size > 0) {
             vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template tryMake<T>(size);
@@ -777,8 +774,11 @@ public:
                 copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(*stagingBuf)>>(
                     m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, stagingBuf->size());
 
-                m_staging.registerBatchCallback(
-                    result.evaluator(m_staging.device(), offset, stagingBuf->map()));
+                // Add chunk to the future
+                result.addChunk(offset, stagingBuf->map());
+                
+                // Register callback for memory reclamation
+                m_staging.registerBatchCallback(result.evaluator());
 
                 // The staging buffer may not necessarily be the full size
                 // requested. Loop until the entire range is uploaded.
@@ -810,21 +810,23 @@ public:
 
     // Call the given function on each batch of the download
     template <buffer SrcBuffer, class Fn>
-    void downloadVisit(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
+    DownloadVisitHandle<Fn, typename SrcBuffer::ValueType, Allocator>
+    downloadVisit(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
         using T = typename SrcBuffer::ValueType;
-        auto sharedFn = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
+        DownloadVisitHandle<Fn, T, Allocator> result(
+            m_queue.get().nextSubmitSemaphore(), std::forward<Fn>(fn));
+
         while (size > 0) {
             vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template tryMake<T>(size);
             if (stagingBuf) {
                 copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(*stagingBuf)>>(
                     m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, stagingBuf->size());
 
-                auto sharedMapping = std::make_shared<decltype(stagingBuf->map())>(stagingBuf->map());
-                m_staging.registerBatchCallback([offset, sharedMapping, sharedFn](bool call) {
-                    if (call) {
-                        (*sharedFn)(offset, sharedMapping->span());
-                    }
-                });
+                // Add chunk to the handle
+                result.addChunk(offset, stagingBuf->map());
+                
+                // Register callback for memory reclamation
+                m_staging.registerBatchCallback(result.evaluator());
 
                 // The staging buffer may not necessarily be the full size
                 // requested. Loop until the entire range is uploaded.
@@ -837,20 +839,19 @@ public:
                 }
             }
         }
+        
+        return result;
     }
 
     // Manual submission interface.
     SemaphoreValue submit() {
-        // Opportunistically invoke ready callbacks from previous submissions
-        m_staging.invokeReadyCallbacks();
-        
         SemaphoreValue semaphoreValue = m_queue.get().nextSubmitSemaphore();
         if (m_currentCmd) {
             CommandBuffer cmd(m_currentCmd->end());
             m_currentCmd.reset();
             m_queue.get().submit(m_staging.device(), {}, cmd,
                                     VK_PIPELINE_STAGE_TRANSFER_BIT /* TODO: is this right? */);
-            m_inFlightCmds.push_back({std::move(cmd), std::move(semaphoreValue)});
+            m_inFlightCmds.push_back({std::move(cmd), semaphoreValue});
             m_staging.endBatch(semaphoreValue);
         }
         return semaphoreValue;
@@ -863,9 +864,6 @@ private:
     };
 
     VkCommandBuffer commandBuffer() {
-        // Opportunistically invoke ready callbacks from previous submissions
-        m_staging.invokeReadyCallbacks();
-        
         if (!m_currentCmd) {
             m_currentCmd.emplace(m_staging.device(), reuseOrMakeCommandBuffer(),
                                     VkCommandBufferBeginInfo{

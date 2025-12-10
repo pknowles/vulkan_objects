@@ -8,6 +8,7 @@
 #include <functional>
 #include <future>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <ranges>
@@ -87,6 +88,7 @@ public:
     SemaphoreValue(const TimelineSemaphore& semaphore, const std::shared_future<uint64_t>& value)
         : semaphore(semaphore)
         , value(value) {}
+
     SemaphoreValue(const TimelineSemaphore& semaphore, std::shared_future<uint64_t>&& value)
         : semaphore(semaphore)
         , value(std::move(value)) {}
@@ -95,28 +97,32 @@ public:
     // for an already-signalled semaphore.
     struct already_signalled_t {};
     SemaphoreValue(already_signalled_t)
-        : ready(true) {}
+        : signalledCache(true) {}
     static SemaphoreValue makeSignalled() { return SemaphoreValue(already_signalled_t{}); }
 
     // Wait for the semaphore to be signaled. Returns false on cancellation.
     template <vko::device_and_commands DeviceAndCommands>
     void wait(DeviceAndCommands& device) const {
-        if(ready)
+        if(signalledCache)
             return;
         assert(semaphore != VK_NULL_HANDLE);
         assert(value.valid());
         waitTimelineSemaphore(device, semaphore, value.get());
+        signalledCache = true;
     }
 
     // Wait for the semaphore to be signaled. Returns false on cancellation. Use
     // isSignaled() to poll instead of waiting.
     template <vko::device_and_commands DeviceAndCommands>
     bool tryWait(DeviceAndCommands& device) const {
+        if(signalledCache)
+            return true;
         try {
             wait(device);
         } catch (TimelineSubmitCancel&) {
             return false;
         }
+        signalledCache = true;
         return true;
     }
 
@@ -124,8 +130,9 @@ public:
     // false on timeout or cancellation.
     template <vko::device_and_commands DeviceAndCommands, class Rep, class Period>
     bool waitFor(DeviceAndCommands& device, std::chrono::duration<Rep, Period> duration) const {
-        if(ready)
+        if(signalledCache)
             return true;
+        assert(semaphore != VK_NULL_HANDLE);
         uint64_t remainingNs = 0;
         if (duration.count() <= 0) {
             if (!hasValue())
@@ -133,7 +140,7 @@ public:
         } else {
             const auto begin = Clock::now();
             try {
-                if ((ready = value.wait_until(begin + duration) == std::future_status::timeout))
+                if (value.wait_until(begin + duration) == std::future_status::timeout)
                     return false;
             } catch (TimelineSubmitCancel&) {
                 return false;
@@ -141,7 +148,7 @@ public:
             auto remaining = std::max(begin + duration - Clock::now(), Clock::duration::zero());
             remainingNs = std::chrono::duration_cast<std::chrono::nanoseconds>(remaining).count();
         }
-        return ready = waitTimelineSemaphore(device, semaphore, value.get(), remainingNs);
+        return signalledCache = waitTimelineSemaphore(device, semaphore, value.get(), remainingNs);
     }
 
     // Wait for the semaphore to be signaled, up to the given time point. Returns
@@ -149,6 +156,9 @@ public:
     template <vko::device_and_commands DeviceAndCommands, class Clock, class Duration>
     bool waitUntil(DeviceAndCommands&                       device,
                    std::chrono::time_point<Clock, Duration> deadline) const {
+        if(signalledCache)
+            return true;
+        assert(semaphore != VK_NULL_HANDLE);
         // First wait for the submission value to become known, up to the deadline.
         try {
             if (value.wait_until(deadline) == std::future_status::timeout)
@@ -160,12 +170,14 @@ public:
         const auto remaining = std::max(deadline - Clock::now(), Clock::duration::zero());
         uint64_t   remainingNs =
             std::chrono::duration_cast<std::chrono::nanoseconds>(remaining).count();
-        return waitTimelineSemaphore(device, semaphore, value.get(), remainingNs);
+        return signalledCache = waitTimelineSemaphore(device, semaphore, value.get(), remainingNs);
     }
 
     // Checks the semaphore value status, but not its signalled status. This is
     // typically used to check if a TimelineQueue submission has been made.
     bool hasValue() const {
+        if (signalledCache)
+            return true;
         try {
             return value.wait_for(std::chrono::seconds(0)) != std::future_status::timeout;
         } catch (TimelineSubmitCancel&) {
@@ -200,7 +212,7 @@ private:
     // to own its own semaphore. E.g. to mark it as already signalled.
     VkSemaphore                  semaphore = VK_NULL_HANDLE;
     std::shared_future<uint64_t> value;
-    mutable bool                 ready = false; // caches semaphore status
+    mutable bool                 signalledCache = false; // caches semaphore status
 };
 
 template <class T>
@@ -389,35 +401,87 @@ private:
     std::shared_ptr<State> m_state;
 };
 
-template <class Fn, std::ranges::input_range RangeIn, std::ranges::range RangeOut>
-class SharedLazyTimelineFutureVector {
+namespace {
+// Internal structures for DownloadFuture
+template <class T, class Allocator>
+struct DownloadFutureChunkInfo {
+    VkDeviceSize offset;
+    BufferMapping<T, Allocator> mapping;
+    bool evaluated = false;
+};
+
+// Base State template (for HasOutput = false, visitor case - no output vector)
+template <class Fn, class T, class Allocator, bool HasOutput>
+struct DownloadFutureState {
+    SemaphoreValue semaphore;
+    Fn producer;
+    std::vector<DownloadFutureChunkInfo<T, Allocator>> chunks;
+    
+    DownloadFutureState(SemaphoreValue sem, Fn&& fn)
+        : semaphore(std::move(sem)), producer(std::forward<Fn>(fn)) {}
+};
+
+// Specialization for HasOutput = true (transform case - with output vector)
+template <class Fn, class T, class Allocator>
+struct DownloadFutureState<Fn, T, Allocator, true> {
+    SemaphoreValue semaphore;
+    Fn producer;
+    std::vector<T> output;
+    std::vector<DownloadFutureChunkInfo<T, Allocator>> chunks;
+    
+    DownloadFutureState(SemaphoreValue sem, Fn&& fn, size_t size)
+        : semaphore(std::move(sem)), producer(std::forward<Fn>(fn)), output(size) {}
+};
+} // anonymous namespace
+
+// Unified download future that handles both transform (with output) and visit (no output) cases
+template <class Fn, class T, class Allocator, bool HasOutput>
+class DownloadFuture {
 public:
-    using T          = std::ranges::range_value_t<RangeIn>;
-    using ResultType = std::ranges::range_value_t<RangeOut>;
+    using ChunkInfo = DownloadFutureChunkInfo<T, Allocator>;
+    using State = DownloadFutureState<Fn, T, Allocator, HasOutput>;
 
-    template <class SV>
-    SharedLazyTimelineFutureVector(SV&& semaphore, Fn&& producer, size_t size)
-        : m_state(std::make_shared<State>(std::forward<SV>(semaphore), std::forward<Fn>(producer),
-                                          std::vector<ResultType>(size))) {}
+    // Constructor for transform case (HasOutput = true)
+    template <class SV, bool H = HasOutput> requires H
+    DownloadFuture(SV&& semaphore, Fn&& producer, size_t size)
+        : m_state(std::make_shared<State>(std::forward<SV>(semaphore), std::forward<Fn>(producer), size)) {}
 
-    template <vko::device_and_commands DeviceAndCommands>
-    std::vector<ResultType>& get(const DeviceAndCommands& device) {
+    // Constructor for visitor case (HasOutput = false)
+    template <class SV, bool H = HasOutput> requires (!H)
+    DownloadFuture(SV&& semaphore, Fn&& producer)
+        : m_state(std::make_shared<State>(std::forward<SV>(semaphore), std::forward<Fn>(producer))) {}
+
+    // Add a chunk to be processed later
+    void addChunk(VkDeviceSize offset, BufferMapping<T, Allocator>&& mapping) {
+        m_state->chunks.push_back(ChunkInfo{
+            offset,
+            std::move(mapping),
+            false
+        });
+    }
+
+    // For transform case: get the output vector, evaluating chunks if needed
+    template <vko::device_and_commands DeviceAndCommands, bool H = HasOutput> requires H
+    std::vector<T>& get(const DeviceAndCommands& device) {
         m_state->semaphore.wait(device);
         if (m_state->output.empty()) {
             throw TimelineSubmitCancel();
         }
-        // TODO: call evaluators that have not yet been called
+        // Evaluate all chunks that haven't been evaluated yet
+        for (auto& chunk : m_state->chunks) {
+            if (!chunk.evaluated) {
+                auto outputSpan = std::span(m_state->output).subspan(
+                    chunk.offset, chunk.mapping.span().size());
+                m_state->producer(chunk.offset, chunk.mapping.span(), outputSpan);
+                chunk.evaluated = true;
+            }
+        }
         return m_state->output;
     }
 
-    template <vko::device_and_commands DeviceAndCommands>
-    const std::vector<ResultType>& get(const DeviceAndCommands& device) const {
-        m_state->semaphore.wait(device);
-        if (m_state->output.empty()) {
-            throw TimelineSubmitCancel();
-        }
-        // TODO: call evaluators that have not yet been called
-        return m_state->output;
+    template <vko::device_and_commands DeviceAndCommands, bool H = HasOutput> requires H
+    const std::vector<T>& get(const DeviceAndCommands& device) const {
+        return const_cast<DownloadFuture*>(this)->get(device);
     }
 
     template <vko::device_and_commands DeviceAndCommands, class Rep, class Period>
@@ -436,50 +500,46 @@ public:
 
     const SemaphoreValue& semaphore() const { return m_state->semaphore; }
 
-    // Returns a type erased function that will produce the value if it's not
-    // already produced.
-    template <device_and_commands DeviceAndCommands, allocator Allocator>
-    std::function<void(bool)> evaluator(const DeviceAndCommands& device, VkDeviceSize writeOffset, BufferMapping<T, Allocator>&& mapping) const {
-        return [state   = m_state, writeOffset, &device,
-                mapping = std::make_shared<BufferMapping<T, Allocator>>(std::move(mapping))](bool call) {
-            if (call) {
-                state->semaphore.wait(device);
-                state->producer(
-                    writeOffset, mapping->span(),
-                    std::span(state->output).subspan(writeOffset, mapping->span().size()));
-            } else {
-                state->output.clear();
+    // For visitor case: wait and call visitor on all chunks
+    template <vko::device_and_commands DeviceAndCommands, bool H = HasOutput> requires (!H)
+    void wait(const DeviceAndCommands& device) {
+        m_state->semaphore.wait(device);
+        // Call visitor on all chunks that haven't been evaluated yet
+        for (auto& chunk : m_state->chunks) {
+            if (!chunk.evaluated) {
+                m_state->producer(chunk.offset, chunk.mapping.span());
+                chunk.evaluated = true;
             }
-        };
+        }
     }
 
-    // Returns a type erased function that will produce the value if it's not
-    // already produced and the shared future still exists.
-    template<device_and_commands DeviceAndCommands, allocator Allocator>
-    std::function<void(bool)> weakEvaluator(const DeviceAndCommands& device, VkDeviceSize writeOffset, BufferMapping<T, Allocator>&& mapping) const {
-        return [weak = std::weak_ptr<State>(m_state), writeOffset, &device, mapping=std::make_shared(std::move(mapping))](bool call) {
-            if (auto state = weak.lock()) {
-                if (call) {
-                    state->semaphore.wait(device);
-                    state->producer(
-                        writeOffset, mapping->span(),
-                        std::span(state->output).subspan(writeOffset, mapping->span().size()));
-                } else {
+    // Returns a simple callback that marks chunks as abandoned if memory needs reclamation
+    std::function<void(bool)> evaluator() {
+        size_t chunkIndex = m_state->chunks.size() - 1; // Index of chunk we just added
+        return [state = m_state, chunkIndex](bool call) {
+            if (!call) {
+                // Memory reclamation: mark output as abandoned
+                if constexpr (HasOutput) {
                     state->output.clear();
+                }
+                // Mark this chunk and all subsequent chunks as evaluated (abandoned)
+                for (size_t i = chunkIndex; i < state->chunks.size(); ++i) {
+                    state->chunks[i].evaluated = true;
                 }
             }
         };
     }
 
 private:
-    struct State {
-        SemaphoreValue semaphore;
-        Fn producer;
-        std::vector<ResultType> output;
-    };
-
     std::shared_ptr<State> m_state;
 };
+
+// Type aliases for convenience
+template <class Fn, class T, class Allocator>
+using DownloadTransformFuture = DownloadFuture<Fn, T, Allocator, true>;
+
+template <class Fn, class T, class Allocator>
+using DownloadVisitHandle = DownloadFuture<Fn, T, Allocator, false>;
 
 // Generic queue that tracks completion with a semaphore for each item. It is
 // assumed that semaphores will complete in the order they were pushed.
@@ -536,7 +596,6 @@ public:
             } else {
                 callback(next->value);
             }
-                break;
             ++next;
         }
         size_t processed = std::distance(m_entries.begin(), next);
