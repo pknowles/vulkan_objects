@@ -136,19 +136,26 @@ automatically added with FetchContent:
 - [Vulkan Headers](https://github.com/KhronosGroup/Vulkan-Headers)
 
 Some other common ones can optionally be added with the below options.
+These are currently added as dependencies of the `vulkan_objects` target for convenience.
+Admittedly this is not accurate, doesn't quite sit right with me and may change.
 
-| CMake Options                   | Description                                                |
-| ------------------------------- | ---------------------------------------------------------- |
-| `VULKAN_OBJECTS_FETCH_VVL`      | `ON` fetches [Vulkan Validation Layers][vvl] source (big!) |
-| `VULKAN_OBJECTS_FETCH_VMA`      | `ON` fetches [Vulkan Memory Allocator][vma] source         |
-| `VULKAN_OBJECTS_FETCH_SLANG`    | `ON` fetches [Slang Compiler][slang] source                |
-| `VULKAN_OBJECTS_SPEC_OVERRIDE`  | `/path/to/vk.xml`                                          |
-| `VULKAN_OBJECTS_SPEC_TAG`       | `<default version>` if not `_OVERRIDE`                     |
-| `VULKAN_OBJECTS_VMA_TAG`        | `<default version>` if `_FETCH_VMA`                        |
+| CMake Options                              | Description                                                |
+| ------------------------------------------ | ---------------------------------------------------------- |
+| `VULKAN_OBJECTS_FETCH_VVL`                 | `ON` fetches [Vulkan Validation Layers][vvl] source (big!) |
+| `VULKAN_OBJECTS_FETCH_VMA`                 | `ON` fetches [Vulkan Memory Allocator][vma] source         |
+| `VULKAN_OBJECTS_FETCH_SLANG`               | `ON` fetches [Slang Compiler][slang] source                |
+| `VULKAN_OBJECTS_FETCH_SHADERC`             | `ON` fetches [Shaderc Compiler][shaderc] source            |
+| `VULKAN_OBJECTS_SHADERC_BUILD_EXECUTABLES` | `ON` builds `glslc` executable (for offline compilation)   |
+| `VULKAN_OBJECTS_SPEC_OVERRIDE`             | `/path/to/vk.xml` (ignores `_SPEC_TAG`)                    |
+| `VULKAN_OBJECTS_SPEC_TAG`                  | `<default version>` if not `_OVERRIDE`                     |
+| `VULKAN_OBJECTS_VMA_TAG`                   | `<default version>` if `_FETCH_VMA`                        |
+| `VULKAN_OBJECTS_SLANG_TAG`                 | `<default version>` if `_FETCH_SLANG`                      |
+| `VULKAN_OBJECTS_SHADERC_TAG`               | `<default version>` if `_FETCH_SHADERC`                    |
 
 [vvl]: https://github.com/KhronosGroup/Vulkan-ValidationLayers
-[slang]: https://github.com/shader-slang/slang
 [vma]: https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+[slang]: https://github.com/shader-slang/slang
+[shaderc]: https://github.com/google/shaderc
 
 ## Issues
 

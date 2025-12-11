@@ -30,9 +30,13 @@ add_dependencies(vulkan_objects vulkan_objects_generated)
 set(VULKAN_OBJECTS_SPEC_OVERRIDE "" CACHE FILEPATH "Override path to own vk.xml. Ignores VULKAN_OBJECTS_SPEC_TAG")
 set(VULKAN_OBJECTS_SPEC_TAG "v1.4.335" CACHE STRING "GIT tag from https://github.com/KhronosGroup/Vulkan-Headers/tags")
 set(VULKAN_OBJECTS_VMA_TAG "v3.3.0" CACHE STRING "GIT tag from https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/tags")
+set(VULKAN_OBJECTS_SLANG_TAG "v2025.6.3" CACHE STRING "GIT tag from https://github.com/shader-slang/slang/tags")
+set(VULKAN_OBJECTS_SHADERC_TAG "v2025.5" CACHE STRING "GIT tag from https://github.com/google/shaderc/tags")
 option(VULKAN_OBJECTS_FETCH_VVL "Include Vulkan Validation Layers with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_VMA "Include Vulkan Memory Allocator with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_SLANG "Include Slang compiler with FetchContent()" OFF)
+option(VULKAN_OBJECTS_FETCH_SHADERC "Include Shaderc compiler with FetchContent()" OFF)
+option(VULKAN_OBJECTS_SHADERC_BUILD_EXECUTABLES "Build glslc command-line compiler (for offline shader compilation)" OFF)
 
 if(VULKAN_OBJECTS_SPEC_OVERRIDE)
   set(VULKAN_SPEC_XML ${VULKAN_OBJECTS_SPEC_OVERRIDE})
@@ -148,7 +152,7 @@ if(VULKAN_OBJECTS_FETCH_SLANG)
   FetchContent_Declare(
     slang
     GIT_REPOSITORY https://github.com/shader-slang/slang.git
-    GIT_TAG v2025.6.3
+    GIT_TAG ${VULKAN_OBJECTS_SLANG_TAG}
     GIT_SHALLOW TRUE
   )
   set(SLANG_USE_SYSTEM_VULKAN_HEADERS ON CACHE BOOL "" FORCE)
@@ -165,6 +169,123 @@ if(VULKAN_OBJECTS_FETCH_SLANG)
   set(SLANG_ENABLE_SPLIT_DEBUG_INFO OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(slang)
   target_link_libraries(vulkan_objects PUBLIC slang)
+endif()
+
+if(VULKAN_OBJECTS_FETCH_SHADERC)
+  # ============================================================================
+  # Shaderc (GLSL/HLSL to SPIR-V compiler)
+  # ============================================================================
+  # Shaderc is a collection of tools and libraries for compiling GLSL/HLSL
+  # shaders to SPIR-V. It wraps glslang (the Khronos reference compiler) and
+  # SPIRV-Tools to provide a more stable API and better build integration.
+  #
+  # DEPENDENCY HANDLING:
+  # Shaderc requires three core dependencies from Khronos:
+  #   - SPIRV-Headers: SPIR-V specification headers
+  #   - SPIRV-Tools:   SPIR-V binary manipulation and validation
+  #   - glslang:       GLSL/HLSL front-end compiler
+  #
+  # Unlike VVL which uses UPDATE_DEPS to auto-fetch dependencies via git-sync,
+  # we manually fetch these dependencies with FetchContent to:
+  #   1. Use specific named release tags (not commit hashes)
+  #   2. Control versions explicitly for reproducible builds
+  #   3. Minimize what gets built (tests, examples, etc.)
+  #   4. Provide a pure CMake/FetchContent experience
+  #
+  # NOTE: If VULKAN_OBJECTS_FETCH_VVL is also enabled, there may be duplicate
+  # SPIRV-Tools/SPIRV-Headers fetches. The "if (NOT TARGET ...)" guards prevent
+  # duplicate builds, with whichever is configured first taking precedence.
+  # This can lead to version mismatches. TODO: Consider consolidating these
+  # dependencies or adding explicit version conflict detection.
+  #
+  # VERSIONS (as of Dec 2025):
+  #   - Shaderc:       v2025.5 (configurable via VULKAN_OBJECTS_SHADERC_TAG)
+  #   - SPIRV-Tools:   v2025.4
+  #   - glslang:       16.1.0
+  #   - SPIRV-Headers: vulkan-sdk-1.4.335.0 (only has SDK-versioned tags)
+  #
+  # LINKING:
+  # We link to shaderc_combined, which is a static library containing shaderc
+  # and all its dependencies (SPIRV-Tools, glslang) in one convenient package.
+  # Note: Shaderc also builds separate shaderc and shaderc_shared libraries,
+  # but we only use shaderc_combined to minimize linking complexity.
+  #
+  # OFFLINE SHADER COMPILATION:
+  # By default, we skip building the glslc executable (command-line compiler).
+  # To enable offline shader compilation, set:
+  #   -DVULKAN_OBJECTS_SHADERC_BUILD_EXECUTABLES=ON
+  # This builds the glslc tool for compiling shaders at build-time instead of
+  # runtime. The executable will be located at:
+  #   ${FETCHCONTENT_BASE_DIR}/shaderc-build/glslc/<config>/glslc[.exe]
+  # Note: On MSVC, glslc may have linking issues with some math functions
+  # (exp2, floor, log2, atof). The library works fine; only the exe is affected.
+  # ============================================================================
+  include(FetchContent)
+  
+  # Fetch and build shaderc's dependencies using MakeAvailable
+  # This creates the targets, so shaderc will detect them and skip adding them again
+  
+  if (NOT TARGET SPIRV-Tools)
+    FetchContent_Declare(
+      SPIRV-Headers
+      GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Headers.git
+      GIT_TAG vulkan-sdk-1.4.335.0
+      GIT_SHALLOW TRUE
+    )
+    FetchContent_Declare(
+      SPIRV-Tools
+      GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Tools.git
+      GIT_TAG v2025.4
+      GIT_SHALLOW TRUE
+    )
+    # Configure SPIRV-Tools options before making it available
+    set(SPIRV_HEADERS_SKIP_EXAMPLES ON CACHE BOOL "" FORCE)
+    set(SPIRV_SKIP_TESTS ON CACHE BOOL "" FORCE)
+    set(SPIRV_SKIP_EXECUTABLES ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(SPIRV-Headers SPIRV-Tools)
+  endif()
+  
+  if (NOT TARGET glslang)
+    FetchContent_Declare(
+      glslang
+      GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
+      GIT_TAG 16.1.0
+      GIT_SHALLOW TRUE
+    )
+    # Configure glslang options before making it available
+    set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "" FORCE)
+    set(BUILD_TESTING OFF)
+    FetchContent_MakeAvailable(glslang)
+  endif()
+  
+  set(SHADERC_SKIP_TESTS ON CACHE BOOL "" FORCE)
+  set(SHADERC_SKIP_EXAMPLES ON CACHE BOOL "" FORCE)
+  set(SHADERC_SKIP_INSTALL ON CACHE BOOL "" FORCE)
+  set(SHADERC_SKIP_COPYRIGHT_CHECK ON CACHE BOOL "" FORCE)
+  set(SHADERC_ENABLE_WERROR_COMPILE OFF CACHE BOOL "" FORCE)
+  
+  # Fix shaderc bug: SHADERC_ENABLE_SHARED_CRT defaults to OFF, causing /MT (static CRT)
+  # This breaks DLL builds when glslang uses /MD: "error LNK2019: unresolved external symbol __imp_exp2"
+  set(SHADERC_ENABLE_SHARED_CRT ON CACHE BOOL "" FORCE)
+  
+  # Control building of glslc executable for offline shader compilation
+  if(NOT VULKAN_OBJECTS_SHADERC_BUILD_EXECUTABLES)
+    set(SHADERC_SKIP_EXECUTABLES ON CACHE BOOL "" FORCE)
+  endif()
+
+  FetchContent_Declare(
+    shaderc
+    GIT_REPOSITORY https://github.com/google/shaderc.git
+    GIT_TAG ${VULKAN_OBJECTS_SHADERC_TAG}
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_MakeAvailable(shaderc)
+  
+  # Workaround for shaderc failing to export its include directories
+  target_include_directories(shaderc_combined INTERFACE "${shaderc_SOURCE_DIR}/libshaderc/include")
+
+  # Use shaderc_combined - it's a static library with all dependencies included
+  target_link_libraries(vulkan_objects PUBLIC shaderc_combined)
 endif()
 
 if(VULKAN_OBJECTS_FETCH_VVL AND VULKAN_OBJECTS_FETCH_VMA)

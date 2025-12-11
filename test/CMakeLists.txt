@@ -90,4 +90,4 @@ else()
 endif()
 
 include(GoogleTest)
-gtest_discover_tests(vulkan_objects_tests)
+gtest_discover_tests(vulkan_objects_tests DISCOVERY_MODE PRE_TEST)
