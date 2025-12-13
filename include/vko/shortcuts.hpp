@@ -72,7 +72,7 @@ struct ImageAccess {
 template <device_and_commands DeviceAndCommands = Device>
 void cmdImageBarrier(const DeviceAndCommands& device, VkCommandBuffer cmd, VkImage image,
                      ImageAccess src, ImageAccess dst,
-                     VkImageAspectFlagBits aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
+                     VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) {
     VkImageMemoryBarrier imageBarrier{.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                                       .pNext               = nullptr,
                                       .srcAccessMask       = src.access,

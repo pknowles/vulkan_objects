@@ -33,7 +33,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_SimpleAllocation) {
         /*minPools=*/2, /*maxPools=*/5, /*poolSize=*/1 << 20); // 1MB pools
     
     bool callbackInvoked = false;
-    auto* buffer = staging.tryMake<uint32_t>(100, [&callbackInvoked](bool signaled) {
+    auto* buffer = staging.allocateUpTo<uint32_t>(100, [&callbackInvoked](bool signaled) {
         callbackInvoked = true;
         EXPECT_TRUE(signaled); // Should be signaled when properly released
     });
@@ -72,7 +72,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_PoolRecycling) {
     VkDeviceSize initialCapacity = staging.capacity();
     
     // Allocate and release first batch
-    auto* buffer1 = staging.tryMake<uint32_t>(1000, [](bool) {});
+    auto* buffer1 = staging.allocateUpTo<uint32_t>(1000, [](bool) {});
     ASSERT_NE(buffer1, nullptr);
     EXPECT_EQ(staging.capacity(), initialCapacity);
     staging.endBatch(vko::SemaphoreValue::makeSignalled());
@@ -81,7 +81,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_PoolRecycling) {
     EXPECT_EQ(staging.capacity(), initialCapacity);
     
     // Allocate second batch - should reuse pool
-    auto* buffer2 = staging.tryMake<uint32_t>(1000, [](bool) {});
+    auto* buffer2 = staging.allocateUpTo<uint32_t>(1000, [](bool) {});
     ASSERT_NE(buffer2, nullptr);
     
     // Capacity should not have increased (recycled pool)
@@ -100,7 +100,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_PartialAllocation) {
     
     // Request more than pool size - should get partial allocation
     size_t hugeSize = (1 << 20) / sizeof(uint32_t); // 1MB worth of uint32_t
-    auto* buffer = staging.tryMake<uint32_t>(hugeSize, [](bool) {});
+    auto* buffer = staging.allocateUpTo<uint32_t>(hugeSize, [](bool) {});
     
     ASSERT_NE(buffer, nullptr);
     EXPECT_LT(buffer->size(), hugeSize); // Should be less than requested
@@ -121,7 +121,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_MultiplePoolsInBatch) {
     std::vector<vko::BoundBuffer<uint32_t, vko::vma::Allocator>*> buffers;
     
     for (int i = 0; i < 10; ++i) {
-        auto* buffer = staging.tryMake<uint32_t>(1000, [](bool) {}); // ~4KB each
+        auto* buffer = staging.allocateUpTo<uint32_t>(1000, [](bool) {}); // ~4KB each
         if (buffer) {
             buffers.push_back(buffer);
         }
@@ -135,7 +135,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_MultiplePoolsInBatch) {
 }
 
 // Use-case: Memory budget enforcement - prevent runaway allocation
-// When maxPools is reached and all pools are in use, tryMake() should return nullptr
+// When maxPools is reached and all pools are in use, allocateUpTo() should return nullptr
 // rather than allocating more memory, allowing the application to handle backpressure.
 TEST_F(UnitTestFixture, RecyclingStagingPool_MaxPoolsReached) {
     vko::vma::RecyclingStagingPool<vko::Device> staging(ctx->device, ctx->allocator,
@@ -144,7 +144,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_MaxPoolsReached) {
     // Fill up both pools completely
     std::vector<vko::BoundBuffer<uint32_t, vko::vma::Allocator>*> buffers;
     for (int i = 0; i < 100; ++i) {
-        auto* buffer = staging.tryMake<uint32_t>(900, [](bool) {}); // ~3.6KB each
+        auto* buffer = staging.allocateUpTo<uint32_t>(900, [](bool) {}); // ~3.6KB each
         if (buffer) {
             buffers.push_back(buffer);
         } else {
@@ -156,7 +156,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_MaxPoolsReached) {
     EXPECT_GT(buffers.size(), 0u);
     
     // Next allocation should fail (at max pools, all in use)
-    auto* failedBuffer = staging.tryMake<uint32_t>(100, [](bool) {});
+    auto* failedBuffer = staging.allocateUpTo<uint32_t>(100, [](bool) {});
     EXPECT_EQ(failedBuffer, nullptr);
     
     // Clean up
@@ -209,14 +209,14 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_CallbackOnDestruct) {
             /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 16);
         
         // Allocate but don't end batch - should get false on destruct
-        auto* buffer1 = staging.tryMake<uint32_t>(100, [&](bool signaled) {
+        auto* buffer1 = staging.allocateUpTo<uint32_t>(100, [&](bool signaled) {
             callback1Called = true;
             callback1Signaled = signaled;
         });
         ASSERT_NE(buffer1, nullptr);
         
         // Allocate and end batch with unsignaled semaphore - should also get false
-        auto* buffer2 = staging.tryMake<uint32_t>(100, [&](bool signaled) {
+        auto* buffer2 = staging.allocateUpTo<uint32_t>(100, [&](bool signaled) {
             callback2Called = true;
             callback2Signaled = signaled;
         });
@@ -249,20 +249,20 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_MultipleBatchesInFlight) {
     int batch3Callbacks = 0;
     
     // Batch 1
-    staging.tryMake<uint32_t>(100, [&](bool s) { if(s) batch1Callbacks++; });
-    staging.tryMake<uint32_t>(100, [&](bool s) { if(s) batch1Callbacks++; });
+    staging.allocateUpTo<uint32_t>(100, [&](bool s) { if(s) batch1Callbacks++; });
+    staging.allocateUpTo<uint32_t>(100, [&](bool s) { if(s) batch1Callbacks++; });
     auto sem1 = vko::SemaphoreValue::makeSignalled();
     staging.endBatch(sem1);
     
     // Batch 2
-    staging.tryMake<uint32_t>(100, [&](bool s) { if(s) batch2Callbacks++; });
-    staging.tryMake<uint32_t>(100, [&](bool s) { if(s) batch2Callbacks++; });
-    staging.tryMake<uint32_t>(100, [&](bool s) { if(s) batch2Callbacks++; });
+    staging.allocateUpTo<uint32_t>(100, [&](bool s) { if(s) batch2Callbacks++; });
+    staging.allocateUpTo<uint32_t>(100, [&](bool s) { if(s) batch2Callbacks++; });
+    staging.allocateUpTo<uint32_t>(100, [&](bool s) { if(s) batch2Callbacks++; });
     auto sem2 = vko::SemaphoreValue::makeSignalled();
     staging.endBatch(sem2);
     
     // Batch 3
-    staging.tryMake<uint32_t>(100, [&](bool s) { if(s) batch3Callbacks++; });
+    staging.allocateUpTo<uint32_t>(100, [&](bool s) { if(s) batch3Callbacks++; });
     auto sem3 = vko::SemaphoreValue::makeSignalled();
     staging.endBatch(sem3);
     
@@ -285,7 +285,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_SemaphoreNotSignaled) {
     // Create timeline semaphore
     vko::TimelineSemaphore sem(ctx->device, 0);
     
-    auto* buffer = staging.tryMake<uint32_t>(100, [&](bool signaled) {
+    auto* buffer = staging.allocateUpTo<uint32_t>(100, [&](bool signaled) {
         callbackInvoked = true;
         EXPECT_TRUE(signaled);
     });
@@ -304,7 +304,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_SemaphoreNotSignaled) {
     EXPECT_FALSE(callbackInvoked);
     
     // Try to allocate more - should still work as we have pools available
-    auto* buffer2 = staging.tryMake<uint32_t>(100, [](bool) {});
+    auto* buffer2 = staging.allocateUpTo<uint32_t>(100, [](bool) {});
     EXPECT_NE(buffer2, nullptr);
     staging.endBatch(vko::SemaphoreValue::makeSignalled());
     
@@ -338,7 +338,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_CallbackOnRecycle) {
     int callbackCount = 0;
     
     // Allocate a buffer with callback from first pool
-    staging.tryMake<uint32_t>(100, [&](bool s) { 
+    staging.allocateUpTo<uint32_t>(100, [&](bool s) { 
         if(s) callbackCount++; 
     });
     staging.endBatch(vko::SemaphoreValue::makeSignalled());
@@ -347,20 +347,20 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_CallbackOnRecycle) {
     EXPECT_EQ(callbackCount, 0) << "endBatch() should not invoke callbacks";
     
     // Allocate from second pool - first pool is still not recycled
-    staging.tryMake<uint32_t>(100, [](bool) {});
+    staging.allocateUpTo<uint32_t>(100, [](bool) {});
     EXPECT_EQ(callbackCount, 0) << "Callback not yet invoked (using different pool)";
     staging.endBatch(vko::SemaphoreValue::makeSignalled());
     EXPECT_EQ(callbackCount, 0) << "endBatch() should not invoke callbacks";
     
     // Allocate from third pool - first pool still not recycled
-    staging.tryMake<uint32_t>(100, [](bool) {});
+    staging.allocateUpTo<uint32_t>(100, [](bool) {});
     EXPECT_EQ(callbackCount, 0) << "Callback not yet invoked (using third pool)";
     staging.endBatch(vko::SemaphoreValue::makeSignalled());
     EXPECT_EQ(callbackCount, 0) << "endBatch() should not invoke callbacks";
     
     // Now all 3 pools are in use. Next allocation MUST recycle first batch's pool.
     // This is when the callback gets invoked - at the last possible moment.
-    staging.tryMake<uint32_t>(100, [](bool) {});
+    staging.allocateUpTo<uint32_t>(100, [](bool) {});
     EXPECT_EQ(callbackCount, 1) << "Callback should be invoked when recycling pool";
     
     staging.endBatch(vko::SemaphoreValue::makeSignalled());
@@ -378,7 +378,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_MemoryAlignment) {
     std::vector<vko::BoundBuffer<uint32_t, vko::vma::Allocator>*> buffers;
     
     for (int i = 0; i < 10; ++i) {
-        auto* buffer = staging.tryMake<uint32_t>(100, [](bool) {});
+        auto* buffer = staging.allocateUpTo<uint32_t>(100, [](bool) {});
         if (buffer) {
             buffers.push_back(buffer);
             
@@ -413,7 +413,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_WaitFreesBuffersNotPools) {
     
     // Allocate buffers using multiple pools
     for (int i = 0; i < 20; ++i) {
-        auto* buffer = staging.tryMake<uint32_t>(1000, [](bool) {});
+        auto* buffer = staging.allocateUpTo<uint32_t>(1000, [](bool) {});
         if (!buffer) break;
     }
     
@@ -441,7 +441,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_MoveSemantics) {
     vko::vma::RecyclingStagingPool<vko::Device> staging1(ctx->device, ctx->allocator,
         /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 16);
     
-    staging1.tryMake<uint32_t>(100, [&](bool s) { callback1Called = s; });
+    staging1.allocateUpTo<uint32_t>(100, [&](bool s) { callback1Called = s; });
     VkDeviceSize size1 = staging1.size();
     EXPECT_GT(size1, 0u);
     
@@ -449,7 +449,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_MoveSemantics) {
     vko::vma::RecyclingStagingPool<vko::Device> staging2(std::move(staging1));
     EXPECT_EQ(staging2.size(), size1);
     
-    staging2.tryMake<uint32_t>(100, [&](bool s) { callback2Called = s; });
+    staging2.allocateUpTo<uint32_t>(100, [&](bool s) { callback2Called = s; });
     
     // Move assign
     vko::vma::RecyclingStagingPool<vko::Device> staging3(ctx->device, ctx->allocator,
@@ -483,17 +483,17 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_EmptyBatch) {
     EXPECT_EQ(staging.capacity(), initialCapacity);
     
     // Should still be able to allocate normally
-    auto* buffer = staging.tryMake<uint32_t>(100, [](bool) {});
+    auto* buffer = staging.allocateUpTo<uint32_t>(100, [](bool) {});
     EXPECT_NE(buffer, nullptr);
     
     staging.endBatch(vko::SemaphoreValue::makeSignalled());
     staging.wait();
 }
 
-// DISABLED: This test involves complex threading and Vulkan timeline semaphore
-// synchronization that can hang. The blocking behavior is tested indirectly by
-// other tests, and this explicit threading test is too fragile for CI.
-TEST_F(UnitTestFixture, DISABLED_RecyclingStagingPool_BlockingBehavior) {
+// Use-case: Blocking behavior when pools exhausted
+// Tests that allocateUpTo() blocks waiting for a semaphore when all pools are in use,
+// and unblocks once the semaphore is signaled, allowing pool recycling.
+TEST_F(UnitTestFixture, RecyclingStagingPool_BlockingBehavior) {
     vko::vma::RecyclingStagingPool<vko::Device> staging(ctx->device, ctx->allocator,
         /*minPools=*/1, /*maxPools=*/2, /*poolSize=*/1 << 12); // 4KB pools
     
@@ -503,7 +503,7 @@ TEST_F(UnitTestFixture, DISABLED_RecyclingStagingPool_BlockingBehavior) {
     // Fill both pools completely
     std::vector<vko::BoundBuffer<uint32_t, vko::vma::Allocator>*> buffers;
     for (int i = 0; i < 100; ++i) {
-        auto* buffer = staging.tryMake<uint32_t>(900, [](bool) {}); // ~3.6KB each
+        auto* buffer = staging.allocateUpTo<uint32_t>(900, [](bool) {}); // ~3.6KB each
         if (!buffer) break;
         buffers.push_back(buffer);
     }
@@ -514,18 +514,17 @@ TEST_F(UnitTestFixture, DISABLED_RecyclingStagingPool_BlockingBehavior) {
     promise1.set_value(1);
     staging.endBatch(vko::SemaphoreValue(sem, promise1.get_future().share()));
     
-    // Next allocation should fail (pools in use, not signaled)
-    auto* failedBuffer = staging.tryMake<uint32_t>(100, [](bool) {});
-    EXPECT_EQ(failedBuffer, nullptr);
+    // Note: allocateUpTo() will BLOCK (not return nullptr) when all pools are in use.
+    // We test this blocking behavior using a thread.
     
-    // Now test blocking behavior: allocate in a thread, signal from main thread
+    // Test blocking behavior: allocate in a thread, signal from main thread
     std::atomic<bool> allocationStarted{false};
     std::atomic<bool> allocationCompleted{false};
     vko::BoundBuffer<uint32_t, vko::vma::Allocator>* threadBuffer = nullptr;
     
     std::thread allocThread([&]() {
         allocationStarted = true;
-        threadBuffer = staging.tryMake<uint32_t>(100, [](bool) {});
+        threadBuffer = staging.allocateUpTo<uint32_t>(100, [](bool) {});
         allocationCompleted = true;
     });
     
@@ -613,12 +612,12 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_PartialAllocationWithRemainder) {
     VkDeviceSize almostFullSize = (poolSize - bytesToLeave) / sizeof(uint32_t);
     
     // Step 1: Allocate almost the entire pool
-    auto* buffer1 = staging.tryMake<uint32_t>(almostFullSize, [](bool) {});
+    auto* buffer1 = staging.allocateUpTo<uint32_t>(almostFullSize, [](bool) {});
     ASSERT_NE(buffer1, nullptr);
     EXPECT_EQ(buffer1->size(), almostFullSize);
     
     // Step 2: Allocate 1 element - should fit in remaining space
-    auto* buffer2 = staging.tryMake<uint32_t>(1, [](bool) {});
+    auto* buffer2 = staging.allocateUpTo<uint32_t>(1, [](bool) {});
     ASSERT_NE(buffer2, nullptr);
     EXPECT_EQ(buffer2->size(), 1u);
     
@@ -629,7 +628,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_PartialAllocationWithRemainder) {
     // Step 3: Request a full pool's worth - current pool is exhausted after alignment
     // Attempt 0: Current pool has insufficient space after alignment, skips
     // Attempt 1: Gets new pool and allocates from it
-    auto* buffer3 = staging.tryMake<uint32_t>(elementsInPool, [](bool) {});
+    auto* buffer3 = staging.allocateUpTo<uint32_t>(elementsInPool, [](bool) {});
     ASSERT_NE(buffer3, nullptr);
     
     // Should get exactly what we requested from the fresh pool
@@ -795,6 +794,44 @@ TEST_F(UnitTestFixture, StreamingStaging_DownloadWithTransform) {
     EXPECT_EQ(result.size(), 5000);
     for (size_t i = 0; i < result.size(); ++i) {
         EXPECT_FLOAT_EQ(result[i], static_cast<float>(i) * 2.0f);
+    }
+}
+
+// Use-case: Simple GPU readback without transformation (most common case)
+// Tests download() convenience wrapper which provides identity transform automatically.
+// This is the simplest API for reading back GPU data unchanged to CPU.
+TEST_F(UnitTestFixture, StreamingStaging_DownloadSimple) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16);
+    vko::StreamingStaging streaming(queue, std::move(staging));
+    
+    // Upload known data
+    auto gpuBuffer = vko::BoundBuffer<int>(
+        ctx->device, 2000,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    streaming.upload(gpuBuffer, 0, 2000,
+        [](VkDeviceSize offset, auto span) {
+            for (size_t i = 0; i < span.size(); ++i) {
+                span[i] = static_cast<int>(offset + i) * 10;
+            }
+        });
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // Use simple download() - no transform lambda needed
+    auto downloadFuture = streaming.download(gpuBuffer, 0, 2000);
+    streaming.submit();
+    
+    // Wait and get result
+    auto& result = downloadFuture.get(ctx->device);
+    EXPECT_EQ(result.size(), 2000);
+    for (size_t i = 0; i < result.size(); ++i) {
+        EXPECT_EQ(result[i], static_cast<int>(i) * 10);
     }
 }
 

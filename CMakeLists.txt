@@ -254,8 +254,10 @@ if(VULKAN_OBJECTS_FETCH_SHADERC)
     )
     # Configure glslang options before making it available
     set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "" FORCE)
+    set(_vulkan_objects_build_testing_save ${BUILD_TESTING})
     set(BUILD_TESTING OFF)
     FetchContent_MakeAvailable(glslang)
+    set(BUILD_TESTING ${_vulkan_objects_build_testing_save})
   endif()
   
   set(SHADERC_SKIP_TESTS ON CACHE BOOL "" FORCE)
@@ -288,7 +290,10 @@ if(VULKAN_OBJECTS_FETCH_SHADERC)
   target_link_libraries(vulkan_objects PUBLIC shaderc_combined)
 endif()
 
-if(VULKAN_OBJECTS_FETCH_VVL AND VULKAN_OBJECTS_FETCH_VMA)
+option(VULKAN_OBJECTS_TESTING_BUILD_ALL "Require all test dependencies (VVL, VMA, etc) to build tests" ON)
+
+if((NOT VULKAN_OBJECTS_TESTING_BUILD_ALL AND VULKAN_OBJECTS_FETCH_VMA) OR 
+   (VULKAN_OBJECTS_FETCH_VVL AND VULKAN_OBJECTS_FETCH_VMA))
   if(BUILD_TESTING)
     option(BUILD_VULKAN_OBJECTS_TESTING "Enable vulkan_objects testing" ON)
     if(BUILD_VULKAN_OBJECTS_TESTING)
