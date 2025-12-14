@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
+#include <cstdio>
 #include <span>
 #include <type_traits>
 #include <vko/allocator.hpp>

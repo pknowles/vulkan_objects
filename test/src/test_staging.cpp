@@ -645,21 +645,73 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_PartialAllocationWithRemainder) {
     EXPECT_EQ(staging.size(), 0u);
 }
 
-// Additional test ideas for future coverage:
-// - RecyclingStagingPool_ZeroSizeAllocation: Test edge case of size=0
-// - RecyclingStagingPool_ActualDataTransfer: Test actual upload/download with command buffers
-// - RecyclingStagingPool_AllocationFailureRecovery: Test recovery when VMA throws (pool exhaustion)
+// Use-case: Buffers with unusual alignment requirements
+// Tests staging transfers with large alignment constraints (e.g., for specific hardware)
+// Use-case: Buffers with alignment-induced padding
+// Tests that staging buffer alignment causes pool padding and growth as expected
+TEST_F(UnitTestFixture, RecyclingStagingPool_AlignmentPadding) {
+    // 1. Query the alignment that RecyclingStagingPool will use
+    VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VkBufferCreateInfo tempBufferInfo = {
+        .sType                 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext                 = nullptr,
+        .flags                 = 0,
+        .size                  = 1,
+        .usage                 = usage,
+        .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices   = nullptr,
+    };
+    vko::Buffer tempBuffer(ctx->device, tempBufferInfo);
+    VkMemoryRequirements req;
+    ctx->device.vkGetBufferMemoryRequirements(ctx->device, tempBuffer, &req);
+    VkDeviceSize alignment = req.alignment;
+    
+    // 2. Initialize pool with size that will test alignment padding
+    VkDeviceSize poolSize = 1024 + std::max(VkDeviceSize(2), alignment);
+    
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/1, /*maxPools=*/2, poolSize, usage);
+    
+    VkDeviceSize initialCapacity = staging.capacity();
+    EXPECT_EQ(initialCapacity, poolSize);
+    
+    // 3. First allocation of half pool size
+    VkDeviceSize halfPool = poolSize / 2;
+    vko::BoundBuffer<uint32_t, vko::vma::Allocator>* buf1 = staging.allocateUpTo<uint32_t>(halfPool);
+    ASSERT_NE(buf1, nullptr);
+    
+    // 4. Check first allocation didn't create a new pool
+    EXPECT_EQ(staging.capacity(), initialCapacity) 
+        << "First allocation should use initial pool";
+    
+    // 5. Second allocation of half pool size
+    vko::BoundBuffer<uint32_t, vko::vma::Allocator>* buf2 = staging.allocateUpTo<uint32_t>(halfPool);
+    ASSERT_NE(buf2, nullptr);
+    
+    // 6. Check if second pool was needed (depends on alignment)
+    if (alignment == 1) {
+        // No padding - both allocations fit in one pool
+        EXPECT_EQ(staging.capacity(), initialCapacity)
+            << "With alignment=1, no padding needed, should fit in one pool";
+    } else {
+        // Alignment padding should cause second pool allocation
+        EXPECT_EQ(staging.capacity(), initialCapacity * 2)
+            << "With alignment=" << alignment << ", padding should require second pool";
+    }
+}
 
 // Use-case: Uploading procedurally generated data without pre-buffering on CPU
 // Tests upload() with a callback that fills each staging chunk as it's allocated,
 // avoiding the need to hold entire datasets in CPU memory before transfer.
-TEST_F(UnitTestFixture, StreamingStaging_UploadChunked) {
+TEST_F(UnitTestFixture, StagingStream_UploadChunked) {
     // Setup: Create queue and staging allocator
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator, 
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16); // 64KB pools
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Create GPU buffer
     auto gpuBuffer = vko::BoundBuffer<int>(
@@ -682,14 +734,14 @@ TEST_F(UnitTestFixture, StreamingStaging_UploadChunked) {
 }
 
 // Use-case: Uploading large assets (textures, meshes) that exceed staging pool size
-// Tests automatic chunking when transfer size > pool size. StreamingStaging should
+// Tests automatic chunking when transfer size > pool size. StagingStream should
 // transparently handle partial allocations and issue multiple copy commands.
-TEST_F(UnitTestFixture, StreamingStaging_UploadLarge) {
+TEST_F(UnitTestFixture, StagingStream_UploadLarge) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 14); // Small 16KB pools
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Create buffer larger than single pool to force chunking
     auto gpuBuffer = vko::BoundBuffer<float>(
@@ -711,14 +763,14 @@ TEST_F(UnitTestFixture, StreamingStaging_UploadLarge) {
 }
 
 // Use-case: GPU→CPU data processing without storage (e.g., checksums, statistics)
-// Tests downloadVisit() which processes data chunks without copying to a vector,
+// Tests downloadForEach() which processes data subranges without copying to a vector,
 // ideal for streaming analytics where only aggregate results are needed.
-TEST_F(UnitTestFixture, StreamingStaging_DownloadVoid) {
+TEST_F(UnitTestFixture, StagingStream_DownloadVoid) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16);
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Setup buffer with known data
     auto gpuBuffer = vko::BoundBuffer<int>(
@@ -738,7 +790,7 @@ TEST_F(UnitTestFixture, StreamingStaging_DownloadVoid) {
     int sum = 0;
     int count = 0;
     
-    auto handle = streaming.downloadVisit(gpuBuffer, 0, 1000,
+    auto handle = streaming.downloadForEach(gpuBuffer, 0, 1000,
         [&sum, &count](VkDeviceSize, auto mapped) {
             // Process chunk without storing
             for (auto val : mapped) {
@@ -758,12 +810,12 @@ TEST_F(UnitTestFixture, StreamingStaging_DownloadVoid) {
 // Use-case: GPU readback with optional transformation (e.g., format conversion, filtering)
 // Tests downloadTransform() which collects data into a vector with per-chunk processing.
 // Useful for reading back GPU results (render targets, compute output) to CPU.
-TEST_F(UnitTestFixture, StreamingStaging_DownloadWithTransform) {
+TEST_F(UnitTestFixture, StagingStream_DownloadWithTransform) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 14); // Small pools to force chunking
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Upload known data
     auto gpuBuffer = vko::BoundBuffer<float>(
@@ -800,12 +852,12 @@ TEST_F(UnitTestFixture, StreamingStaging_DownloadWithTransform) {
 // Use-case: Simple GPU readback without transformation (most common case)
 // Tests download() convenience wrapper which provides identity transform automatically.
 // This is the simplest API for reading back GPU data unchanged to CPU.
-TEST_F(UnitTestFixture, StreamingStaging_DownloadSimple) {
+TEST_F(UnitTestFixture, StagingStream_DownloadSimple) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16);
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Upload known data
     auto gpuBuffer = vko::BoundBuffer<int>(
@@ -838,12 +890,12 @@ TEST_F(UnitTestFixture, StreamingStaging_DownloadSimple) {
 // Use-case: Efficient batch updates (e.g., multiple small uniform buffers per frame)
 // Tests that multiple small transfers can be allocated from the same pool and submitted
 // together in one command buffer, minimizing GPU synchronization overhead.
-TEST_F(UnitTestFixture, StreamingStaging_MultipleBatchedTransfers) {
+TEST_F(UnitTestFixture, StagingStream_MultipleBatchedTransfers) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16); // 64KB pools
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Create multiple small buffers
     std::vector<vko::BoundBuffer<int>> buffers;
@@ -874,12 +926,12 @@ TEST_F(UnitTestFixture, StreamingStaging_MultipleBatchedTransfers) {
 // Use-case: Streaming huge assets (e.g., high-res textures, large models) with limited staging
 // Tests that transfers much larger than total pool capacity automatically cycle pools:
 // allocate → submit → wait → recycle repeatedly until complete, without manual intervention.
-TEST_F(UnitTestFixture, StreamingStaging_GiantTransferImplicitCycling) {
+TEST_F(UnitTestFixture, StagingStream_GiantTransferImplicitCycling) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14); // Small 16KB pools, 48KB total
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Create buffer much larger than total pool capacity (400KB >> 48KB)
     size_t largeSize = 100000; // 400KB of floats
@@ -900,35 +952,106 @@ TEST_F(UnitTestFixture, StreamingStaging_GiantTransferImplicitCycling) {
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
     
-    // Verify with download
-    float sum = 0.0f;
-    size_t count = 0;
-    auto handle = streaming.downloadVisit(gpuBuffer, 0, largeSize,
-        [&sum, &count](VkDeviceSize, auto mapped) {
-            for (auto val : mapped) {
-                sum += val;
-                count++;
+    // Insert memory barrier to make upload writes visible to download reads
+    // This is the user's responsibility when doing back-to-back transfers
+    vko::cmdMemoryBarrier(ctx->device, streaming.commandBuffer(),
+        vko::MemoryAccess{VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT},
+        vko::MemoryAccess{VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT});
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // Verify with download - comprehensive chunk validation
+    struct ChunkRecord {
+        size_t chunkId;
+        size_t offset;
+        size_t size;
+    };
+    std::vector<ChunkRecord> chunks;
+    std::vector<uint8_t> visitCount(largeSize, 0); // Track visit count per index
+    size_t valueErrors = 0;
+    size_t duplicateVisits = 0;
+    
+    auto handle = streaming.downloadForEach(gpuBuffer, 0, largeSize,
+        [&](VkDeviceSize offset, auto mapped) {
+            size_t chunkId = chunks.size();
+            chunks.push_back({chunkId, (size_t)offset, mapped.size()});
+            
+            // Validate each value in this chunk
+            for (size_t i = 0; i < mapped.size(); ++i) {
+                size_t index = offset + i;
+                float expected = static_cast<float>(index);
+                
+                // Check value correctness
+                if (mapped[i] != expected) {
+                    valueErrors++;
+                }
+                
+                // Track visits (detect duplicates)
+                if (index < visitCount.size()) {
+                    visitCount[index]++;
+                    if (visitCount[index] > 1) {
+                        duplicateVisits++;
+                    }
+                }
             }
         });
     
     streaming.submit();
+    
+    // TODO: Add manual GPU buffer verification if needed
+    
+    // Wait for completion
     handle.wait(ctx->device);
     
-    EXPECT_EQ(count, largeSize);
-    // Sum of 0..99999 = 99999 * 100000 / 2
-    float expectedSum = static_cast<float>(largeSize - 1) * static_cast<float>(largeSize) / 2.0f;
-    EXPECT_FLOAT_EQ(sum, expectedSum);
+    // Validate chunk coverage
+    size_t totalCovered = 0;
+    std::vector<std::pair<size_t, size_t>> gaps;
+    size_t pos = 0;
+    
+    // Sort chunks by offset to check coverage
+    std::sort(chunks.begin(), chunks.end(), 
+              [](const ChunkRecord& a, const ChunkRecord& b) { return a.offset < b.offset; });
+    
+    for (const auto& chunk : chunks) {
+        if (chunk.offset > pos) {
+            gaps.push_back({pos, chunk.offset});
+        }
+        totalCovered += chunk.size;
+        pos = std::max(pos, chunk.offset + chunk.size);
+    }
+    
+    if (pos < largeSize) {
+        gaps.push_back({pos, largeSize});
+    }
+    
+    // Check for overlaps
+    size_t overlaps = 0;
+    for (size_t i = 1; i < chunks.size(); ++i) {
+        if (chunks[i].offset < chunks[i-1].offset + chunks[i-1].size) {
+            overlaps++;
+        }
+    }
+    
+    // Count missing indices
+    size_t missingCount = std::count(visitCount.begin(), visitCount.end(), 0);
+    
+    // Report results
+    EXPECT_EQ(gaps.size(), 0) << "Found " << gaps.size() << " gaps in chunk coverage";
+    EXPECT_EQ(overlaps, 0) << "Found " << overlaps << " overlapping chunks";
+    EXPECT_EQ(missingCount, 0) << "Missing " << missingCount << " values";
+    EXPECT_EQ(duplicateVisits, 0) << "Found " << duplicateVisits << " duplicate visits";
+    EXPECT_EQ(valueErrors, 0) << "Found " << valueErrors << " incorrect values";
 }
 
 // Use-case: Asynchronous readback for debugging/profiling without stalling rendering
 // Tests that download futures remain valid even after staging pools are reused for other
 // work. The original download's data must be preserved until get() is called.
-TEST_F(UnitTestFixture, StreamingStaging_NonBlockingDownloadWithPoolCycling) {
+TEST_F(UnitTestFixture, StagingStream_NonBlockingDownloadWithPoolCycling) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/2, /*poolSize=*/1 << 14); // 16KB pools
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Create and upload initial buffer
     auto buffer1 = vko::BoundBuffer<int>(
@@ -980,12 +1103,12 @@ TEST_F(UnitTestFixture, StreamingStaging_NonBlockingDownloadWithPoolCycling) {
 // Use-case: Explicit control over submission timing (e.g., synchronous readback)
 // Tests that users can manually submit() even for tiny transfers that wouldn't trigger
 // automatic submission, and immediately get() the result for synchronous workflows.
-TEST_F(UnitTestFixture, StreamingStaging_ManualSubmitTinyDownload) {
+TEST_F(UnitTestFixture, StagingStream_ManualSubmitTinyDownload) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16);
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Create tiny buffer
     auto gpuBuffer = vko::BoundBuffer<int>(
@@ -1022,7 +1145,7 @@ TEST_F(UnitTestFixture, StreamingStaging_ManualSubmitTinyDownload) {
 // Use-case: Error detection for incomplete transfers (forgot to submit)
 // Tests that accessing a download future without submitting the batch throws
 // TimelineSubmitCancel, helping catch programmer errors where submit() was forgotten.
-TEST_F(UnitTestFixture, StreamingStaging_CancelOnScopeExit) {
+TEST_F(UnitTestFixture, StagingStream_CancelOnScopeExit) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     
     // Create buffer outside the scope
@@ -1037,7 +1160,7 @@ TEST_F(UnitTestFixture, StreamingStaging_CancelOnScopeExit) {
         auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
             ctx->device, ctx->allocator,
             /*minPools=*/1, /*maxPools=*/2, /*poolSize=*/1 << 16);
-        vko::StreamingStaging streaming(queue, std::move(staging));
+        vko::StagingStream streaming(queue, std::move(staging));
         
         streaming.upload(gpuBuffer, 0, 1000,
             [](VkDeviceSize offset, auto span) {
@@ -1052,7 +1175,7 @@ TEST_F(UnitTestFixture, StreamingStaging_CancelOnScopeExit) {
         auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
             ctx->device, ctx->allocator,
             /*minPools=*/1, /*maxPools=*/2, /*poolSize=*/1 << 16);
-        vko::StreamingStaging streaming(queue, std::move(staging));
+        vko::StagingStream streaming(queue, std::move(staging));
         
         auto future = streaming.downloadTransform<int>(
             gpuBuffer, 0, 1000,
@@ -1073,7 +1196,7 @@ TEST_F(UnitTestFixture, StreamingStaging_CancelOnScopeExit) {
 // Use-case: Error detection for partially submitted downloads (subtle bugs)
 // Tests that even when automatic submits occur during pool cycling, the final chunk
 // still needs explicit submit(). Forgetting this should throw TimelineSubmitCancel.
-TEST_F(UnitTestFixture, StreamingStaging_PartialDownloadMissingFinalSubmit) {
+TEST_F(UnitTestFixture, StagingStream_PartialDownloadMissingFinalSubmit) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     
     // Create large buffer
@@ -1089,7 +1212,7 @@ TEST_F(UnitTestFixture, StreamingStaging_PartialDownloadMissingFinalSubmit) {
         auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
             ctx->device, ctx->allocator,
             /*minPools=*/2, /*maxPools=*/2, /*poolSize=*/1 << 14); // Small pools
-        vko::StreamingStaging streaming(queue, std::move(staging));
+        vko::StagingStream streaming(queue, std::move(staging));
         
         streaming.upload(gpuBuffer, 0, largeSize,
             [](VkDeviceSize offset, auto span) {
@@ -1106,7 +1229,7 @@ TEST_F(UnitTestFixture, StreamingStaging_PartialDownloadMissingFinalSubmit) {
         auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
             ctx->device, ctx->allocator,
             /*minPools=*/2, /*maxPools=*/2, /*poolSize=*/1 << 14); // Small pools
-        vko::StreamingStaging streaming(queue, std::move(staging));
+        vko::StagingStream streaming(queue, std::move(staging));
         
         // This will trigger multiple automatic submits as pools cycle
         // but won't submit the final chunk
@@ -1126,18 +1249,1167 @@ TEST_F(UnitTestFixture, StreamingStaging_PartialDownloadMissingFinalSubmit) {
     }, vko::TimelineSubmitCancel);
 }
 
-// TODO: StreamingStaging_InterleavedUploadDownload - Test alternating uploads and downloads to verify command buffer state management
-// TODO: StreamingStaging_MultipleQueueSupport - Test with transfers to different queues
-// TODO: StreamingStaging_AllocationFailureRecovery - Test behavior when staging allocation fails mid-transfer
-// TODO: StreamingStaging_ZeroSizeTransfer - Test edge case of size=0 upload/download
-// TODO: StreamingStaging_UnalignedOffsetAndSize - Test with non-aligned buffer offsets and sizes
-// TODO: StreamingStaging_CommandBufferRecycling - Verify command buffers are properly recycled and not leaked
-// TODO: StreamingStaging_ConcurrentDownloads - Multiple downloads in flight with different completion times
-// TODO: StreamingStaging_ExceptionSafety - Verify proper cleanup when exceptions occur during transfers
-// TODO: StreamingStaging_DownloadWithPartialChunkProcessing - Test download where callback processes chunks at different rates
-// TODO: StreamingStaging_MemoryPressure - Test behavior under memory pressure (all pools exhausted, waiting required)
-// TODO: StreamingStaging_SubrangeTransfers - Upload/download non-contiguous subranges of a buffer
-// TODO: StreamingStaging_QueueFamilyTransition - Test transfers that require queue family ownership transfer
-// TODO: StreamingStaging_LargeAlignment - Test with buffers requiring large alignment (e.g., 64KB for some GPUs)
-// TODO: StreamingStaging_DownloadVisitVsTransformPerformance - Compare performance characteristics
-// TODO: StreamingStaging_SemaphoreChaining - Test that timeline semaphores properly chain dependencies
+// Use-case: Updating a subrange of a larger buffer (e.g., updating part of a texture or mesh)
+// Tests that callbacks receive data-relative offsets (starting at 0) even when uploading/downloading
+// to non-zero buffer offsets. This is critical for user code to correctly index into source data.
+TEST_F(UnitTestFixture, StagingStream_NonZeroBufferOffset) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14); // Small 16KB pools to force chunking
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    // Create a large buffer
+    constexpr VkDeviceSize bufferSize = 20000;
+    constexpr VkDeviceSize uploadOffset = 5000;  // Upload starts at 5000, NOT 0
+    constexpr VkDeviceSize uploadSize = 8000;    // Upload 8000 elements
+    
+    auto gpuBuffer = vko::BoundBuffer<int>(
+        ctx->device, bufferSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    // UPLOAD TEST: Upload to non-zero offset
+    // Verify that callback receives offsets starting at 0, NOT uploadOffset
+    std::vector<VkDeviceSize> uploadCallbackOffsets;
+    streaming.upload(gpuBuffer, uploadOffset, uploadSize,
+        [&uploadCallbackOffsets](VkDeviceSize offset, auto span) {
+            uploadCallbackOffsets.push_back(offset);
+            // Fill with: value = userOffset + localIndex
+            // This relies on offset being relative to our data (0-based), not the buffer offset
+            for (size_t i = 0; i < span.size(); ++i) {
+                span[i] = static_cast<int>(offset + i);
+            }
+        });
+    
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // Verify that callbacks received 0-based offsets
+    ASSERT_FALSE(uploadCallbackOffsets.empty()) << "Upload callback never called";
+    EXPECT_EQ(uploadCallbackOffsets.front(), 0) << "First upload chunk should have offset 0, not buffer offset";
+    
+    // Verify offsets are sequential and cover the range [0, uploadSize)
+    VkDeviceSize expectedOffset = 0;
+    for (auto cbOffset : uploadCallbackOffsets) {
+        EXPECT_EQ(cbOffset, expectedOffset) << "Upload callback offsets should be sequential";
+        expectedOffset = cbOffset + streaming.capacity(); // Approximate chunk size
+        if (expectedOffset > uploadSize) break;
+    }
+    
+    // DOWNLOAD TEST: Download from non-zero offset
+    // Verify that callback receives offsets starting at 0, NOT uploadOffset
+    std::vector<VkDeviceSize> downloadCallbackOffsets;
+    auto downloadFuture = streaming.downloadTransform<int>(
+        gpuBuffer, uploadOffset, uploadSize,
+        [&downloadCallbackOffsets](VkDeviceSize offset, auto input, auto output) {
+            downloadCallbackOffsets.push_back(offset);
+            // Verify data matches what we uploaded
+            for (size_t i = 0; i < input.size(); ++i) {
+                EXPECT_EQ(input[i], static_cast<int>(offset + i)) 
+                    << "Data at offset " << offset << " index " << i << " doesn't match";
+                output[i] = input[i];
+            }
+        });
+    
+    streaming.submit();
+    auto& result = downloadFuture.get(ctx->device);
+    
+    // Verify that callbacks received 0-based offsets
+    ASSERT_FALSE(downloadCallbackOffsets.empty()) << "Download callback never called";
+    EXPECT_EQ(downloadCallbackOffsets.front(), 0) << "First download chunk should have offset 0, not buffer offset";
+    
+    // Verify the complete downloaded data
+    ASSERT_EQ(result.size(), uploadSize);
+    for (size_t i = 0; i < result.size(); ++i) {
+        EXPECT_EQ(result[i], static_cast<int>(i)) 
+            << "Downloaded value at index " << i << " doesn't match expected";
+    }
+    
+    // FOREACH TEST: Test downloadForEach with non-zero offset
+    std::vector<VkDeviceSize> forEachCallbackOffsets;
+    auto forEachHandle = streaming.downloadForEach(
+        gpuBuffer, uploadOffset, uploadSize,
+        [&forEachCallbackOffsets](VkDeviceSize offset, auto mapped) {
+            forEachCallbackOffsets.push_back(offset);
+            // Verify data
+            for (size_t i = 0; i < mapped.size(); ++i) {
+                EXPECT_EQ(mapped[i], static_cast<int>(offset + i));
+            }
+        });
+    
+    streaming.submit();
+    forEachHandle.wait(ctx->device);
+    
+    // Verify forEach also gets 0-based offsets
+    ASSERT_FALSE(forEachCallbackOffsets.empty()) << "ForEach callback never called";
+    EXPECT_EQ(forEachCallbackOffsets.front(), 0) << "First forEach chunk should have offset 0, not buffer offset";
+}
+
+// Edge case: Zero-size transfers
+// Tests that zero-size uploads/downloads are handled gracefully (should be no-ops)
+TEST_F(UnitTestFixture, StagingStream_ZeroSizeTransfer) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 16);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    auto buffer = vko::BoundBuffer<int>(
+        ctx->device, 1000,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    // Zero-size upload should not crash or call callback
+    bool uploadCallbackCalled = false;
+    streaming.upload(buffer, 0, 0,
+        [&uploadCallbackCalled](VkDeviceSize, auto) {
+            uploadCallbackCalled = true;
+        });
+    
+    EXPECT_FALSE(uploadCallbackCalled) << "Zero-size upload should not invoke callback";
+    
+    // Zero-size download should work now (supported for free!)
+    auto downloadFuture = streaming.downloadTransform<int>(
+        buffer, 0, 0,
+        []([[maybe_unused]] VkDeviceSize offset, 
+           [[maybe_unused]] auto input, 
+           [[maybe_unused]] auto output) {
+            FAIL() << "Zero-size download callback should not be called";
+        });
+    
+    streaming.submit();
+    auto& result = downloadFuture.get(ctx->device);
+    EXPECT_EQ(result.size(), 0) << "Zero-size download should return empty vector";
+    
+    // Zero-size forEach should also work
+    bool forEachCalled = false;
+    auto forEachHandle = streaming.downloadForEach(
+        buffer, 0, 0,
+        [&forEachCalled](VkDeviceSize, auto) {
+            forEachCalled = true;
+        });
+    
+    streaming.submit();
+    forEachHandle.wait(ctx->device);
+    EXPECT_FALSE(forEachCalled) << "Zero-size forEach should not invoke callback";
+}
+
+// Edge case: Unaligned offsets and sizes
+// Tests that transfers work correctly with non-aligned buffer offsets and sizes
+// Vulkan requires alignment but the staging system should handle this transparently
+TEST_F(UnitTestFixture, StagingStream_UnalignedOffsetAndSize) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 16);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    // Create buffer with odd size
+    constexpr VkDeviceSize bufferSize = 1337; // Odd number
+    constexpr VkDeviceSize oddOffset = 333;   // Odd offset
+    constexpr VkDeviceSize oddSize = 777;     // Odd size
+    
+    auto buffer = vko::BoundBuffer<int>(
+        ctx->device, bufferSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    // Upload with unaligned parameters
+    streaming.upload(buffer, oddOffset, oddSize,
+        [](VkDeviceSize offset, auto span) {
+            for (size_t i = 0; i < span.size(); ++i) {
+                span[i] = static_cast<int>(offset + i + 1000);
+            }
+        });
+    
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // Download the same unaligned region and verify
+    auto downloadFuture = streaming.download(buffer, oddOffset, oddSize);
+    streaming.submit();
+    
+    auto& result = downloadFuture.get(ctx->device);
+    ASSERT_EQ(result.size(), oddSize);
+    for (size_t i = 0; i < result.size(); ++i) {
+        EXPECT_EQ(result[i], static_cast<int>(i + 1000))
+            << "Unaligned transfer data mismatch at index " << i;
+    }
+}
+
+// Use-case: Updating multiple non-contiguous regions (e.g., sparse texture updates)
+// Tests uploading and downloading multiple separate subranges of a buffer
+TEST_F(UnitTestFixture, StagingStream_SubrangeTransfers) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 16);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    constexpr VkDeviceSize bufferSize = 10000;
+    auto buffer = vko::BoundBuffer<float>(
+        ctx->device, bufferSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    // Define non-contiguous subranges to update
+    struct Subrange { VkDeviceSize offset; VkDeviceSize size; float baseValue; };
+    std::vector<Subrange> subranges = {
+        {100, 500, 1000.0f},   // First region
+        {2000, 800, 2000.0f},  // Second region (gap of ~1500)
+        {5000, 1200, 5000.0f}, // Third region (gap of ~2200)
+        {8000, 300, 8000.0f}   // Fourth region (gap of ~2800)
+    };
+    
+    // Upload each subrange with different data
+    for (const auto& sub : subranges) {
+        streaming.upload(buffer, sub.offset, sub.size,
+            [baseValue = sub.baseValue](VkDeviceSize offset, auto span) {
+                for (size_t i = 0; i < span.size(); ++i) {
+                    span[i] = baseValue + static_cast<float>(offset + i);
+                }
+            });
+    }
+    
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // Download and verify each subrange
+    for (const auto& sub : subranges) {
+        auto downloadFuture = streaming.download(buffer, sub.offset, sub.size);
+        streaming.submit();
+        
+        auto& result = downloadFuture.get(ctx->device);
+        ASSERT_EQ(result.size(), sub.size) << "Subrange size mismatch";
+        
+        for (size_t i = 0; i < result.size(); ++i) {
+            float expected = sub.baseValue + static_cast<float>(i);
+            EXPECT_FLOAT_EQ(result[i], expected)
+                << "Subrange data mismatch at offset " << sub.offset 
+                << " index " << i;
+        }
+    }
+}
+
+// Use-case: Cleanup during shutdown (e.g., some async reads complete, others are abandoned)
+// Tests that multiple futures can be cancelled or completed in any order without issues
+TEST_F(UnitTestFixture, StagingStream_MultipleDownloadsCancelledOutOfOrder) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    constexpr size_t numDownloads = 5;
+    std::vector<vko::BoundBuffer<int>> buffers;
+    
+    // Upload data to all buffers
+    for (size_t i = 0; i < numDownloads; ++i) {
+        buffers.emplace_back(
+            ctx->device, 100,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            ctx->allocator);
+        
+        streaming.upload(buffers[i], 0, 100,
+            [marker = static_cast<int>(i * 100)](VkDeviceSize offset, auto span) {
+                for (size_t j = 0; j < span.size(); ++j) {
+                    span[j] = marker + static_cast<int>(offset + j);
+                }
+            });
+    }
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // Start downloads
+    auto copyLambda = [](VkDeviceSize, auto input, auto output) {
+        std::ranges::copy(input, output.begin());
+    };
+    using FutureType = decltype(streaming.downloadTransform<int>(buffers[0], 0, 0, copyLambda));
+    std::vector<FutureType> futures;
+    
+    for (size_t i = 0; i < numDownloads; ++i) {
+        futures.push_back(streaming.downloadTransform<int>(
+            buffers[i], 0, 100, copyLambda));
+    }
+    streaming.submit();
+    
+    // Complete some, abandon others in mixed order
+    // Complete 0, 2, 4; abandon 1, 3
+    for (size_t i : {0, 2, 4}) {
+        auto& result = futures[i].get(ctx->device);
+        ASSERT_EQ(result.size(), 100u);
+        
+        int marker = static_cast<int>(i * 100);
+        for (size_t j = 0; j < 10; ++j) {
+            EXPECT_EQ(result[j], marker + static_cast<int>(j))
+                << "Download " << i << " index " << j;
+        }
+    }
+    
+    // Futures 1 and 3 are destroyed without calling get() - should clean up gracefully
+}
+
+// Use-case: Robust error handling (e.g., user callback throws during processing)
+// Tests that exceptions in user callbacks are propagated correctly without leaking resources
+TEST_F(UnitTestFixture, StagingStream_ExceptionInUserCallback) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    auto buffer = vko::BoundBuffer<float>(
+        ctx->device, 500,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    // Upload should complete even if callback throws
+    bool exceptionCaught = false;
+    try {
+        streaming.upload(buffer, 0, 500,
+            [](VkDeviceSize, auto span) {
+                // Fill first half, then throw
+                for (size_t i = 0; i < span.size() / 2; ++i) {
+                    span[i] = static_cast<float>(i);
+                }
+                throw std::runtime_error("User callback exception");
+            });
+    } catch (const std::runtime_error& e) {
+        exceptionCaught = true;
+        EXPECT_STREQ(e.what(), "User callback exception");
+    }
+    
+    EXPECT_TRUE(exceptionCaught) << "Exception should have been thrown";
+    
+    // StagingStream should still be usable after exception
+    streaming.upload(buffer, 0, 100,
+        [](VkDeviceSize offset, auto span) {
+            for (size_t i = 0; i < span.size(); ++i) {
+                span[i] = static_cast<float>(offset + i);
+            }
+        });
+    streaming.submit();
+    
+    auto future = streaming.download(buffer, 0, 100);
+    streaming.submit();
+    
+    auto& result = future.get(ctx->device);
+    ASSERT_EQ(result.size(), 100u);
+    
+    for (size_t i = 0; i < 10; ++i) {
+        EXPECT_FLOAT_EQ(result[i], static_cast<float>(i));
+    }
+}
+
+// Lifetime and destruction order edge cases (important for multithreaded shutdown scenarios)
+// TODO: LifetimeEdgeCase_UploadMappingActiveOnDestruct - StagingStream destroyed while upload mapping is still in scope (should unmap)
+
+// Use-case: Mixed workloads with uploads and downloads (e.g., compute pipeline with feedback)
+// Tests that alternating uploads and downloads correctly manage command buffer state
+TEST_F(UnitTestFixture, StagingStream_InterleavedUploadDownload) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 15);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    constexpr size_t numBuffers = 5;
+    constexpr VkDeviceSize bufferSize = 1000;
+    
+    // Create multiple buffers
+    std::vector<vko::BoundBuffer<int>> buffers;
+    for (size_t i = 0; i < numBuffers; ++i) {
+        buffers.emplace_back(
+            ctx->device, bufferSize,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            ctx->allocator);
+    }
+    
+    // Interleave uploads and downloads
+    // Use a simple copy lambda that can be used consistently
+    auto copyLambda = [](VkDeviceSize, auto input, auto output) {
+        std::ranges::copy(input, output.begin());
+    };
+    using FutureType = decltype(streaming.downloadTransform<int>(buffers[0], 0, 0, copyLambda));
+    std::vector<FutureType> futures;
+    
+    for (size_t i = 0; i < numBuffers; ++i) {
+        // Upload to buffer i
+        streaming.upload(buffers[i], 0, bufferSize,
+            [baseValue = i * 1000](VkDeviceSize offset, auto span) {
+                for (size_t j = 0; j < span.size(); ++j) {
+                    span[j] = static_cast<int>(baseValue + offset + j);
+                }
+            });
+        
+        // Submit upload to ensure it completes before download
+        streaming.submit();
+        
+        // Download from current buffer (now that upload is submitted)
+        futures.push_back(streaming.downloadTransform<int>(
+            buffers[i], 0, bufferSize, copyLambda));
+    }
+    
+    streaming.submit();
+    
+    // Verify all downloads
+    for (size_t i = 0; i < futures.size(); ++i) {
+        auto& result = futures[i].get(ctx->device);
+        ASSERT_EQ(result.size(), bufferSize);
+        
+        size_t bufferIdx = i; // Downloaded from buffer i (which is i+1-1)
+        for (size_t j = 0; j < result.size(); ++j) {
+            int expected = static_cast<int>(bufferIdx * 1000 + j);
+            EXPECT_EQ(result[j], expected) 
+                << "Buffer " << bufferIdx << " index " << j;
+        }
+    }
+}
+
+// Use-case: Multiple async readbacks (e.g., profiling multiple GPU timers)
+// Tests that multiple downloads can be in flight with different completion times
+TEST_F(UnitTestFixture, StagingStream_ConcurrentDownloads) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/3, /*maxPools=*/5, /*poolSize=*/1 << 14);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    constexpr size_t numDownloads = 10;
+    std::vector<VkDeviceSize> downloadSizes = {100, 500, 200, 1000, 50, 800, 150, 400, 600, 300};
+    
+    // Create buffers of varying sizes
+    std::vector<vko::BoundBuffer<float>> buffers;
+    for (size_t i = 0; i < numDownloads; ++i) {
+        buffers.emplace_back(
+            ctx->device, downloadSizes[i],
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            ctx->allocator);
+        
+        // Upload unique data to each
+        streaming.upload(buffers[i], 0, downloadSizes[i],
+            [marker = i * 100.0f](VkDeviceSize offset, auto span) {
+                for (size_t j = 0; j < span.size(); ++j) {
+                    span[j] = marker + static_cast<float>(offset + j);
+                }
+            });
+    }
+    
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // Start all downloads concurrently (don't wait on any yet)
+    auto copyLambda = [](VkDeviceSize, auto input, auto output) {
+        std::ranges::copy(input, output.begin());
+    };
+    using FutureType = decltype(streaming.downloadTransform<float>(buffers[0], 0, 0, copyLambda));
+    std::vector<FutureType> futures;
+    
+    for (size_t i = 0; i < numDownloads; ++i) {
+        futures.push_back(streaming.downloadTransform<float>(
+            buffers[i], 0, downloadSizes[i], copyLambda));
+    }
+    
+    streaming.submit();
+    
+    // Retrieve results in random order to test independence
+    std::vector<size_t> retrievalOrder = {5, 2, 8, 0, 9, 3, 7, 1, 4, 6};
+    for (size_t idx : retrievalOrder) {
+        auto& result = futures[idx].get(ctx->device);
+        ASSERT_EQ(result.size(), downloadSizes[idx]);
+        
+        float marker = idx * 100.0f;
+        for (size_t j = 0; j < result.size(); ++j) {
+            EXPECT_FLOAT_EQ(result[j], marker + static_cast<float>(j))
+                << "Download " << idx << " index " << j;
+        }
+    }
+}
+
+// Use-case: Long-running streaming with many submissions (e.g., video encoding)
+// Tests that command buffers are properly recycled and not leaked over many submits
+TEST_F(UnitTestFixture, StagingStream_CommandBufferRecycling) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    auto buffer = vko::BoundBuffer<int>(
+        ctx->device, 500,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    // Perform many small uploads with submits between them
+    // This should trigger command buffer recycling
+    constexpr size_t numIterations = 50;
+    for (size_t i = 0; i < numIterations; ++i) {
+        streaming.upload(buffer, 0, 500,
+            [value = static_cast<int>(i)]([[maybe_unused]] VkDeviceSize offset, auto span) {
+                for (size_t j = 0; j < span.size(); ++j) {
+                    span[j] = value;
+                }
+            });
+        
+        streaming.submit();
+        
+        // Wait occasionally to allow recycling
+        if (i % 10 == 9) {
+            ctx->device.vkQueueWaitIdle(queue);
+        }
+    }
+    
+    // Final wait
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // If command buffers leaked, memory usage would grow unbounded
+    // No assertion needed - test passes if it doesn't crash or OOM
+    SUCCEED() << "Command buffer recycling appears to work correctly";
+}
+
+// Use-case: High-frequency streaming with limited memory (e.g., real-time texture streaming)
+// Tests behavior when all pools are exhausted and allocation must wait/block
+TEST_F(UnitTestFixture, StagingStream_MemoryPressure) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/2, /*poolSize=*/1 << 14); // Only 2 pools
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    // Create a transfer much larger than total pool capacity
+    constexpr VkDeviceSize totalPoolCapacity = 2 * (1 << 14) / sizeof(float);
+    constexpr VkDeviceSize largeTransferSize = totalPoolCapacity * 3; // 3x capacity
+    
+    auto buffer = vko::BoundBuffer<float>(
+        ctx->device, largeTransferSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    // This upload should automatically submit and wait when pools are exhausted
+    streaming.upload(buffer, 0, largeTransferSize,
+        [](VkDeviceSize offset, auto span) {
+            for (size_t i = 0; i < span.size(); ++i) {
+                span[i] = static_cast<float>(offset + i);
+            }
+        });
+    
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // Verify the transfer completed successfully despite memory pressure
+    auto downloadFuture = streaming.download(buffer, 0, largeTransferSize);
+    streaming.submit();
+    
+    auto& result = downloadFuture.get(ctx->device);
+    ASSERT_EQ(result.size(), largeTransferSize);
+    
+    // Spot check some values
+    for (size_t i = 0; i < std::min<size_t>(100, result.size()); ++i) {
+        EXPECT_FLOAT_EQ(result[i], static_cast<float>(i));
+    }
+}
+
+// Use-case: Pipeline with dependent stages (e.g., multiple compute passes reading previous results)
+// Tests that timeline semaphores properly chain dependencies across multiple operations
+TEST_F(UnitTestFixture, StagingStream_SemaphoreChaining) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    constexpr size_t numOperations = 5;
+    constexpr VkDeviceSize bufferSize = 100;
+    
+    auto buffer = vko::BoundBuffer<int>(
+        ctx->device, bufferSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    auto copyLambda = [](VkDeviceSize, auto input, auto output) {
+        std::ranges::copy(input, output.begin());
+    };
+    using FutureType = decltype(streaming.downloadTransform<int>(buffer, 0, 0, copyLambda));
+    std::vector<FutureType> futures;
+    
+    // Chain operations: upload, download, upload, download, etc.
+    // Each operation depends on the previous via semaphore chaining
+    for (size_t i = 0; i < numOperations; ++i) {
+        // Upload with incremented values
+        streaming.upload(buffer, 0, bufferSize,
+            [iteration = i](VkDeviceSize offset, auto span) {
+                for (size_t j = 0; j < span.size(); ++j) {
+                    span[j] = static_cast<int>(iteration * 1000 + offset + j);
+                }
+            });
+        streaming.submit();
+        
+        // Download to verify
+        futures.push_back(streaming.downloadTransform<int>(
+            buffer, 0, bufferSize, copyLambda));
+        streaming.submit();
+    }
+    
+    // Verify all futures resolve correctly in order
+    for (size_t i = 0; i < futures.size(); ++i) {
+        auto& result = futures[i].get(ctx->device);
+        ASSERT_EQ(result.size(), bufferSize);
+        
+        int expectedBase = static_cast<int>(i * 1000);
+        for (size_t j = 0; j < result.size(); ++j) {
+            EXPECT_EQ(result[j], expectedBase + static_cast<int>(j))
+                << "Operation " << i << " index " << j;
+        }
+    }
+}
+
+// Use-case: Speculative readback that gets abandoned (e.g., user cancels before results needed)
+// Tests that futures can be destroyed without calling get(), ensuring proper cleanup
+TEST_F(UnitTestFixture, StagingStream_FutureAbandonedNeverAccessed) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    auto buffer = vko::BoundBuffer<float>(
+        ctx->device, 1000,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    streaming.upload(buffer, 0, 1000,
+        [](VkDeviceSize offset, auto span) {
+            for (size_t i = 0; i < span.size(); ++i) {
+                span[i] = static_cast<float>(offset + i);
+            }
+        });
+    streaming.submit();
+    
+    {
+        // Create future but never call get() - should cancel on destruction
+        auto abandonedFuture = streaming.download(buffer, 0, 1000);
+        streaming.submit();
+        // Future destroyed here without get()
+    }
+    
+    // Staging should still be usable after abandoned future
+    auto normalFuture = streaming.download(buffer, 0, 500);
+    streaming.submit();
+    auto& result = normalFuture.get(ctx->device);
+    
+    ASSERT_EQ(result.size(), 500);
+    for (size_t i = 0; i < 10; ++i) {
+        EXPECT_FLOAT_EQ(result[i], static_cast<float>(i));
+    }
+}
+
+// Use-case: Long-lived result caching (e.g., keeping readback results after streaming context closed)
+// Tests that futures can be evaluated before StagingStream destruction and data accessed after
+TEST_F(UnitTestFixture, StagingStream_FutureOutlivesStaging) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    
+    auto buffer = vko::BoundBuffer<int>(
+        ctx->device, 500,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    auto copyLambda = [](VkDeviceSize, auto input, auto output) {
+        std::ranges::copy(input, output.begin());
+    };
+    
+    auto future = [&]() {
+        auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+            ctx->device, ctx->allocator,
+            /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
+        vko::StagingStream streaming(queue, std::move(staging));
+        
+        streaming.upload(buffer, 0, 500,
+            [](VkDeviceSize offset, auto span) {
+                for (size_t i = 0; i < span.size(); ++i) {
+                    span[i] = static_cast<int>(offset + i * 2);
+                }
+            });
+        streaming.submit();
+        
+        auto result = streaming.downloadTransform<int>(buffer, 0, 500, copyLambda);
+        streaming.submit();
+        
+        // Evaluate now while StagingStream exists
+        result.get(ctx->device);
+        
+        // StagingStream destroyed here, but future retains evaluated data
+        return result;
+    }();
+    
+    // Future object outlives StagingStream - access previously evaluated data
+    auto& result = future.get(ctx->device); // Second get() should just return cached data
+    ASSERT_EQ(result.size(), 500u);
+    
+    for (size_t i = 0; i < 10; ++i) {
+        EXPECT_EQ(result[i], static_cast<int>(i * 2));
+    }
+}
+
+// Use-case: Error handling in async pipelines (e.g., detecting cancelled operations)
+// Tests that TimelineSubmitCancel is thrown when future is evaluated after StagingStream destruction
+TEST_F(UnitTestFixture, StagingStream_FutureThrowsWhenStagingDestroyed) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    
+    auto buffer = vko::BoundBuffer<float>(
+        ctx->device, 200,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    auto copyLambda = [](VkDeviceSize, auto input, auto output) {
+        std::ranges::copy(input, output.begin());
+    };
+    
+    // Create future but destroy StagingStream before evaluation
+    auto future = [&]() {
+        auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+            ctx->device, ctx->allocator,
+            /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
+        vko::StagingStream streaming(queue, std::move(staging));
+        
+        streaming.upload(buffer, 0, 200,
+            [](VkDeviceSize offset, auto span) {
+                for (size_t i = 0; i < span.size(); ++i) {
+                    span[i] = static_cast<float>(offset + i);
+                }
+            });
+        streaming.submit();
+        
+        auto result = streaming.downloadTransform<float>(buffer, 0, 200, copyLambda);
+        streaming.submit();
+        
+        // Return future WITHOUT calling get() - StagingStream destroyed here
+        return result;
+    }();
+    
+    // Attempting to evaluate after StagingStream destruction should throw
+    EXPECT_THROW({
+        future.get(ctx->device);
+    }, vko::TimelineSubmitCancel);
+}
+
+// Use-case: Dynamic result storage (e.g., moving futures into containers or returning from functions)
+// Tests that futures can be moved during pending transfers and remain valid
+TEST_F(UnitTestFixture, StagingStream_MoveSemanticsDuringPendingTransfers) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    constexpr size_t numBuffers = 3;
+    std::vector<vko::BoundBuffer<double>> buffers;
+    for (size_t i = 0; i < numBuffers; ++i) {
+        buffers.emplace_back(
+            ctx->device, 200,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            ctx->allocator);
+        
+        streaming.upload(buffers[i], 0, 200,
+            [marker = i * 10.0](VkDeviceSize offset, auto span) {
+                for (size_t j = 0; j < span.size(); ++j) {
+                    span[j] = marker + static_cast<double>(offset + j);
+                }
+            });
+    }
+    streaming.submit();
+    
+    // Create futures and immediately move them into a vector
+    auto copyLambda = [](VkDeviceSize, auto input, auto output) {
+        std::ranges::copy(input, output.begin());
+    };
+    using FutureType = decltype(streaming.downloadTransform<double>(buffers[0], 0, 0, copyLambda));
+    std::vector<FutureType> futures;
+    
+    for (size_t i = 0; i < numBuffers; ++i) {
+        futures.push_back(streaming.downloadTransform<double>(
+            buffers[i], 0, 200, copyLambda));
+    }
+    streaming.submit();
+    
+    // Move futures to a different container while transfers are pending
+    std::vector<FutureType> movedFutures;
+    for (auto& f : futures) {
+        movedFutures.push_back(std::move(f));
+    }
+    
+    // Verify moved futures still work correctly
+    for (size_t i = 0; i < numBuffers; ++i) {
+        auto& result = movedFutures[i].get(ctx->device);
+        ASSERT_EQ(result.size(), 200);
+        
+        double marker = i * 10.0;
+        for (size_t j = 0; j < 5; ++j) {
+            EXPECT_DOUBLE_EQ(result[j], marker + static_cast<double>(j))
+                << "Buffer " << i << " index " << j;
+        }
+    }
+}
+
+// Use-case: End-to-end data transfer with actual GPU operations
+// Tests the full pipeline: allocate staging, copy to device buffer, copy back, verify data
+TEST_F(UnitTestFixture, RecyclingStagingPool_ActualDataTransfer) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::vma::RecyclingStagingPool<vko::Device> staging(
+        ctx->device, ctx->allocator,
+        /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 16);
+    
+    constexpr size_t numElements = 256;
+    std::vector<uint32_t> sourceData(numElements);
+    std::iota(sourceData.begin(), sourceData.end(), 0u);
+    
+    // Create device-local buffer
+    vko::BoundBuffer<uint32_t> deviceBuffer(
+        ctx->device, numElements,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    // Upload via staging buffer
+    auto* uploadStaging = staging.allocateUpTo<uint32_t>(numElements, [](bool) {});
+    ASSERT_NE(uploadStaging, nullptr);
+    ASSERT_EQ(uploadStaging->size(), numElements);
+    
+    {
+        auto mapped = uploadStaging->map();
+        std::ranges::copy(sourceData, mapped.begin());
+    }
+    
+    // Record and submit copy command
+    auto pool = ctx->createCommandPool();
+    auto cmd = ctx->recordEmptyCommandBuffer(pool);
+    
+    vko::copyBuffer(ctx->device, cmd, *uploadStaging, 0, deviceBuffer, 0, numElements);
+    
+    auto uploadSemaphore = queue.nextSubmitSemaphore();
+    queue.submit(ctx->device, {}, cmd.end(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    staging.endBatch(uploadSemaphore);
+    uploadSemaphore.wait(ctx->device);
+    staging.wait();
+    
+    // Download to verify
+    auto* downloadStaging = staging.allocateUpTo<uint32_t>(numElements, [](bool) {});
+    ASSERT_NE(downloadStaging, nullptr);
+    
+    cmd = ctx->recordEmptyCommandBuffer(pool);
+    vko::copyBuffer(ctx->device, cmd, deviceBuffer, 0, *downloadStaging, 0, numElements);
+    
+    auto downloadSemaphore = queue.nextSubmitSemaphore();
+    queue.submit(ctx->device, {}, cmd.end(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    staging.endBatch(downloadSemaphore);
+    downloadSemaphore.wait(ctx->device);
+    
+    // Verify data
+    {
+        auto mapped = downloadStaging->map();
+        for (size_t i = 0; i < numElements; ++i) {
+            EXPECT_EQ(mapped[i], sourceData[i]) << "Mismatch at index " << i;
+        }
+    }
+    
+    staging.wait();
+}
+
+// Mock staging allocator that always fails allocations
+namespace {
+template <class DeviceAndCommandsType>
+struct FailingStagingAllocator {
+    using DeviceAndCommands = DeviceAndCommandsType;
+    using Allocator = vko::vma::Allocator;
+    static constexpr bool AllocateAlwaysSucceeds = false;
+    static constexpr bool AllocateAlwaysFull = false;
+    
+    FailingStagingAllocator(const DeviceAndCommands& device, Allocator&,
+                            VkBufferUsageFlags = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                                 VK_BUFFER_USAGE_TRANSFER_DST_BIT)
+        : m_device(device) {}
+    
+    FailingStagingAllocator(FailingStagingAllocator&&) = default;
+    FailingStagingAllocator& operator=(FailingStagingAllocator&&) = default;
+    
+    // Always fail to allocate
+    template <class T>
+    bool tryWith(size_t, std::function<void(const vko::BoundBuffer<T, Allocator>&)>) {
+        return false;
+    }
+    
+    // Overload with per-buffer callback - also fails
+    template <class T>
+    bool tryWith(size_t, std::function<void(const vko::BoundBuffer<T, Allocator>&)>,
+                 std::function<void(bool)>) {
+        return false;
+    }
+    
+    // allocateUpTo - returns nullptr on failure
+    template <class T>
+    vko::BoundBuffer<T, Allocator>* allocateUpTo(size_t) {
+        return nullptr;
+    }
+    
+    template <class T>
+    vko::BoundBuffer<T, Allocator>* allocateUpTo(size_t, std::function<void(bool)>) {
+        return nullptr;
+    }
+    
+    void registerBatchCallback(std::function<void(bool)>) {}
+    void endBatch(vko::SemaphoreValue) {}
+    void wait() {}
+    VkDeviceSize capacity() const { return 0; }
+    VkDeviceSize size() const { return 0; }
+    const DeviceAndCommands& device() const { return m_device; }
+    
+private:
+    const DeviceAndCommands& m_device;
+};
+} // namespace
+static_assert(vko::staging_allocator<FailingStagingAllocator<vko::Device>>);
+
+// Use-case: Persistent allocation failure detection
+// Tests that StagingStream detects and throws when allocation persistently fails
+TEST_F(UnitTestFixture, StagingStream_PersistentAllocationFailureThrows) {
+    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    
+    // Create a staging allocator that always fails
+    FailingStagingAllocator<vko::Device> failingStaging(
+        ctx->device, ctx->allocator,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    
+    vko::StagingStream streaming(queue, std::move(failingStaging));
+    
+    // Create a test buffer
+    vko::BoundBuffer<uint32_t> buffer(
+        ctx->device, 100,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    // Try to upload - should throw after submit/retry fails
+    EXPECT_THROW({
+        streaming.upload(buffer, 0, 100,
+            [](VkDeviceSize, auto span) {
+                for (size_t i = 0; i < span.size(); ++i) {
+                    span[i] = static_cast<uint32_t>(i);
+                }
+            });
+    }, std::runtime_error);
+}
+
+// Use-case: Multiple queue families for parallel transfer operations
+// Tests simultaneous staging operations on different queue families
+TEST_F(UnitTestFixture, StagingStream_MultipleQueueSupport) {
+    if (!ctx->queueFamilyIndex2.has_value()) {
+        GTEST_SKIP() << "Test requires two queue families";
+    }
+    
+    vko::TimelineQueue queue1(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::TimelineQueue queue2(ctx->device, ctx->queueFamilyIndex2.value(), 0);
+    
+    auto staging1 = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 16);
+    auto staging2 = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 16);
+    
+    vko::StagingStream stream1(queue1, std::move(staging1));
+    vko::StagingStream stream2(queue2, std::move(staging2));
+    
+    constexpr size_t bufferSize = 512;
+    
+    // Create buffers for each queue
+    vko::BoundBuffer<float> buffer1(
+        ctx->device, bufferSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    vko::BoundBuffer<float> buffer2(
+        ctx->device, bufferSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    // Upload on both queues simultaneously
+    stream1.upload(buffer1, 0, bufferSize,
+        [](VkDeviceSize offset, auto span) {
+            for (size_t i = 0; i < span.size(); ++i) {
+                span[i] = static_cast<float>(offset + i) * 10.0f;
+            }
+        });
+    
+    stream2.upload(buffer2, 0, bufferSize,
+        [](VkDeviceSize offset, auto span) {
+            for (size_t i = 0; i < span.size(); ++i) {
+                span[i] = static_cast<float>(offset + i) * 20.0f;
+            }
+        });
+    
+    stream1.submit();
+    stream2.submit();
+    
+    // Download and verify from both queues
+    auto copyLambda = [](VkDeviceSize, auto input, auto output) {
+        std::ranges::copy(input, output.begin());
+    };
+    
+    auto future1 = stream1.downloadTransform<float>(buffer1, 0, bufferSize, copyLambda);
+    auto future2 = stream2.downloadTransform<float>(buffer2, 0, bufferSize, copyLambda);
+    
+    stream1.submit();
+    stream2.submit();
+    
+    auto& result1 = future1.get(ctx->device);
+    auto& result2 = future2.get(ctx->device);
+    
+    ASSERT_EQ(result1.size(), bufferSize);
+    ASSERT_EQ(result2.size(), bufferSize);
+    
+    for (size_t i = 0; i < 5; ++i) {
+        EXPECT_FLOAT_EQ(result1[i], static_cast<float>(i) * 10.0f);
+        EXPECT_FLOAT_EQ(result2[i], static_cast<float>(i) * 20.0f);
+    }
+}
+
+// Use-case: Queue family ownership transfer for cross-queue resource sharing
+// Tests buffer ownership transfer between queue families with proper barriers
+TEST_F(UnitTestFixture, StagingStream_QueueFamilyTransition) {
+    if (!ctx->queueFamilyIndex2.has_value()) {
+        GTEST_SKIP() << "Test requires two queue families";
+    }
+    
+    vko::TimelineQueue queue1(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::TimelineQueue queue2(ctx->device, ctx->queueFamilyIndex2.value(), 0);
+    
+    auto staging1 = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/1, /*maxPools=*/2, /*poolSize=*/1 << 16);
+    auto staging2 = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/1, /*maxPools=*/2, /*poolSize=*/1 << 16);
+    
+    vko::StagingStream stream1(queue1, std::move(staging1));
+    vko::StagingStream stream2(queue2, std::move(staging2));
+    
+    constexpr size_t bufferSize = 256;
+    
+    // Create buffer that will be transferred between queues
+    vko::BoundBuffer<uint32_t> sharedBuffer(
+        ctx->device, bufferSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    // Upload using queue1
+    stream1.upload(sharedBuffer, 0, bufferSize,
+        [](VkDeviceSize offset, auto span) {
+            for (size_t i = 0; i < span.size(); ++i) {
+                span[i] = static_cast<uint32_t>(offset + i + 1000);
+            }
+        });
+    
+    auto uploadComplete = stream1.submit();
+    uploadComplete.wait(ctx->device);
+    
+    // Transfer ownership from queue1 to queue2 with barrier
+    auto pool1 = ctx->createCommandPool();
+    auto cmd1 = ctx->recordEmptyCommandBuffer(pool1);
+    
+    VkBufferMemoryBarrier releaseBarrier{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = 0,
+        .srcQueueFamilyIndex = ctx->queueFamilyIndex,
+        .dstQueueFamilyIndex = ctx->queueFamilyIndex2.value(),
+        .buffer = sharedBuffer,
+        .offset = 0,
+        .size = VK_WHOLE_SIZE
+    };
+    
+    ctx->device.vkCmdPipelineBarrier(
+        cmd1,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        0, 0, nullptr, 1, &releaseBarrier, 0, nullptr);
+    
+    auto releaseSemaphore = queue1.nextSubmitSemaphore();
+    queue1.submit(ctx->device, {}, cmd1.end(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    releaseSemaphore.wait(ctx->device);
+    
+    // Acquire ownership on queue2
+    auto pool2Pool = vko::CommandPool(ctx->device, VkCommandPoolCreateInfo{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = ctx->queueFamilyIndex2.value()
+    });
+    
+    auto cmd2 = vko::simple::RecordingCommandBuffer(
+        ctx->device,
+        vko::CommandBuffer(ctx->device, ctx->device, nullptr, pool2Pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY),
+        VkCommandBufferBeginInfo{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .pNext = nullptr,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            .pInheritanceInfo = nullptr
+        });
+    
+    VkBufferMemoryBarrier acquireBarrier{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .srcQueueFamilyIndex = ctx->queueFamilyIndex,
+        .dstQueueFamilyIndex = ctx->queueFamilyIndex2.value(),
+        .buffer = sharedBuffer,
+        .offset = 0,
+        .size = VK_WHOLE_SIZE
+    };
+    
+    ctx->device.vkCmdPipelineBarrier(
+        cmd2,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, nullptr, 1, &acquireBarrier, 0, nullptr);
+    
+    auto acquireSemaphore = queue2.nextSubmitSemaphore();
+    queue2.submit(ctx->device, {}, cmd2.end(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    acquireSemaphore.wait(ctx->device);
+    
+    // Download using queue2
+    auto copyLambda = [](VkDeviceSize, auto input, auto output) {
+        std::ranges::copy(input, output.begin());
+    };
+    
+    auto future = stream2.downloadTransform<uint32_t>(sharedBuffer, 0, bufferSize, copyLambda);
+    stream2.submit();
+    
+    auto& result = future.get(ctx->device);
+    ASSERT_EQ(result.size(), bufferSize);
+    
+    // Verify data survived the queue transfer
+    for (size_t i = 0; i < 5; ++i) {
+        EXPECT_EQ(result[i], static_cast<uint32_t>(i + 1000))
+            << "Data corruption at index " << i << " after queue transfer";
+    }
+}

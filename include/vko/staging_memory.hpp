@@ -102,27 +102,30 @@ download(Staging& staging, VkCommandBuffer cmd, SV&& submitPromise, const SrcBuf
 }
 
 // Staging buffer allocator that allocates individual staging buffers and
-// maintains ownership of them. The caller must keep the DedicatedStaging object
+// maintains ownership of them. The caller must keep the DedicatedStagingPool object
 // alive until all buffers are no longer in use, i.e. synchronize with the GPU
 // so any command buffers referencing them have finished execution. Use this
 // when making intermittent and large one-off transfers such as during
 // initialization.
 template <device_and_commands DeviceAndCommandsType = Device,
           allocator           AllocatorType         = vko::vma::Allocator>
-struct DedicatedStaging {
+struct DedicatedStagingPool {
 public:
     using DeviceAndCommands          = DeviceAndCommandsType;
     using Allocator                  = AllocatorType;
     static constexpr bool AllocateAlwaysSucceeds = true;
     static constexpr bool AllocateAlwaysFull = true;
-    DedicatedStaging(const DeviceAndCommands& device, Allocator& allocator,
+    DedicatedStagingPool(const DeviceAndCommands& device, Allocator& allocator,
                      VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                                 VK_BUFFER_USAGE_TRANSFER_DST_BIT)
         : m_device(device)
         , m_allocator(allocator)
         , m_bufferUsageFlags(usage) {}
 
-    ~DedicatedStaging() {
+    DedicatedStagingPool(DedicatedStagingPool&&) = default;
+    DedicatedStagingPool& operator=(DedicatedStagingPool&&) = default;
+
+    ~DedicatedStagingPool() {
         // Call unreleased destruct callbacks with false
         for (auto& callback : m_current.destroyCallbacks) {
             callback(false);
@@ -206,7 +209,7 @@ public:
     }
 
     VkDeviceSize size() const { return m_totalSize; }
-    VkDeviceSize capacity() const { return size(); } // Same as size for DedicatedStaging
+    VkDeviceSize capacity() const { return size(); } // Same as size for DedicatedStagingPool
     const DeviceAndCommands& device() const { return m_device.get(); }
 
 private:
@@ -233,9 +236,9 @@ private:
     VkDeviceSize                                    m_totalSize        = 0;
     VkBufferUsageFlags                              m_bufferUsageFlags = 0;
 };
-static_assert(staging_allocator<DedicatedStaging<Device, vko::vma::Allocator>>);
-static_assert(std::is_move_constructible_v<DedicatedStaging<Device, vko::vma::Allocator>>);
-static_assert(std::is_move_assignable_v<DedicatedStaging<Device, vko::vma::Allocator>>);
+static_assert(staging_allocator<DedicatedStagingPool<Device, vko::vma::Allocator>>);
+static_assert(std::is_move_constructible_v<DedicatedStagingPool<Device, vko::vma::Allocator>>);
+static_assert(std::is_move_assignable_v<DedicatedStagingPool<Device, vko::vma::Allocator>>);
 
 namespace vma {
 
@@ -339,13 +342,9 @@ public:
         , m_currentPoolUsedBytes(other.m_currentPoolUsedBytes) {}
     ~RecyclingStagingPool() {
         // Notify all remaining handlers they're never going to get called
-        for(auto& callback : m_current.destroyCallbacks) {
-            callback(false);
-        }
-        m_inUse.visitAll([](PoolBatch& batch) {
-            for(auto& callback : batch.destroyCallbacks) {
-                callback(false);
-            }
+        destroyBuffers(m_current, false);
+        m_inUse.visitAll([this](PoolBatch& batch) {
+            destroyBuffers(batch, false);
         });
     }
 
@@ -401,10 +400,10 @@ public:
         // Only move batch to m_inUse if it has pools (RAII: no empty batches)
         if (!m_current.pools.empty()) {
             m_inUse.push_back(std::move(m_current), reuseSemaphore);
+            m_current = {};
         }
         assert(m_current.buffers.empty());
         assert(m_current.destroyCallbacks.empty());
-        m_current = {};
     }
 
     // Wait for all batches to finish
@@ -413,16 +412,8 @@ public:
         m_inUse.wait(m_device.get());
         
         // Process ALL ready batches (visitAll since they're all ready after wait())
-        // Clean up buffers and invoke callbacks, then remove empty batches
         m_inUse.visitAll([this](PoolBatch& batch) {
-            // Invoke callbacks and clear buffers
-            for (auto& callback : batch.destroyCallbacks) {
-                callback(true);
-            }
-            batch.destroyCallbacks.clear();
-            batch.buffers.clear();
-            m_totalBufferBytes -= batch.bufferBytes;
-            batch.bufferBytes = 0;
+            destroyBuffers(batch, true);
         });
         
         freeExcessPools();
@@ -444,6 +435,22 @@ private:
         std::vector<std::function<void(bool)>> destroyCallbacks;
         VkDeviceSize                            bufferBytes = 0;
     };
+
+    // Invoke callbacks and free buffers from a batch
+    // Callbacks are tied to buffer lifetime, so these always happen together
+    void destroyBuffers(PoolBatch& batch, bool buffersReady) {
+        // Invoke callbacks BEFORE clearing buffers
+        // This allows download futures to evaluate chunks while buffers are still alive
+        for (auto& callback : batch.destroyCallbacks) {
+            callback(buffersReady);
+        }
+        batch.destroyCallbacks.clear();
+        
+        // Now safe to destroy buffers (mappings have been evaluated/cleared)
+        m_totalBufferBytes -= batch.bufferBytes;
+        batch.buffers.clear();
+        batch.bufferBytes = 0;
+    }
 
     bool hasCurrentPool() const {
         return !m_current.pools.empty();
@@ -543,16 +550,7 @@ private:
         // Try to recycle from ready batches (non-blocking)
         while (!m_inUse.empty() && m_inUse.frontSemaphore().isSignaled(m_device.get())) {
             auto& front = m_inUse.front(m_device.get());
-            
-            // Cleanup: invoke callbacks and clear buffers
-            m_totalBufferBytes -= front.bufferBytes;
-            front.buffers.clear();
-            for (auto& callback : front.destroyCallbacks) {
-                callback(true);
-            }
-            front.destroyCallbacks.clear();
-            front.bufferBytes = 0;
-            
+            destroyBuffers(front, true);
             
             // Recycle one pool
             recyclePool(front);
@@ -577,15 +575,8 @@ private:
         // At max, block for a pool
         while (!m_inUse.empty()) {
             auto& front = m_inUse.front(m_device.get()); // BLOCKS
+            destroyBuffers(front, true);
             
-            // Cleanup: invoke callbacks and clear buffers
-            m_totalBufferBytes -= front.bufferBytes;
-            front.buffers.clear();
-            for (auto& callback : front.destroyCallbacks) {
-                callback(true);
-            }
-            front.destroyCallbacks.clear();
-            front.bufferBytes = 0;
             // Recycle one pool
             recyclePool(front);
             
@@ -624,11 +615,8 @@ private:
 
     void invokeReadyCallbacks() {
         // Greedily check released pools and invoke callbacks if ready
-        m_inUse.visitReady(m_device.get(), [](PoolBatch& batch) {
-            for (auto& callback : batch.destroyCallbacks) {
-                callback(true);
-            }
-            batch.destroyCallbacks.clear();
+        m_inUse.visitReady(m_device.get(), [this](PoolBatch& batch) {
+            destroyBuffers(batch, true);
             return true;
         });
     }
@@ -662,11 +650,7 @@ private:
     void freeExcessPools() {
         // Free excess pools from ready batches
         m_inUse.consumeReady(m_device.get(), [this](PoolBatch& batch) {
-            // Invoke callbacks before freeing pools from this batch
-            for (auto& callback : batch.destroyCallbacks) {
-                callback(true);
-            }
-            batch.destroyCallbacks.clear();
+            destroyBuffers(batch, true);
             
             // Free pools from this batch until we're at minPools
             while (m_totalPoolCount > m_minPools && !batch.pools.empty()) {
@@ -695,18 +679,218 @@ private:
     VkDeviceSize                                    m_currentPoolUsedBytes = 0;
 };
 static_assert(staging_allocator<RecyclingStagingPool<Device>>);
+static_assert(std::is_move_constructible_v<RecyclingStagingPool<Device>>);
+static_assert(std::is_move_assignable_v<RecyclingStagingPool<Device>>);
 
 } // namespace vma
+
+// Structures for DownloadFuture
+template <class T, class Allocator>
+struct FutureSubrange {
+    VkDeviceSize offset;
+    std::optional<BufferMapping<T, Allocator>> mapping; // nullopt = evaluated or cancelled
+    
+    bool isEvaluated() const { return !mapping.has_value(); }
+};
+
+namespace {
+// Internal State structures for DownloadFuture
+// Base State template (for HasOutput = false, foreach case - no output vector)
+template <class Fn, class T, class Allocator, bool HasOutput>
+struct DownloadFutureState {
+    std::vector<FutureSubrange<T, Allocator>> subranges;
+    Fn producer;
+    std::optional<SemaphoreValue> semaphore;  // Set by DownloadFuture constructor
+    
+    DownloadFutureState(Fn&& fn)
+        : producer(std::forward<Fn>(fn)) {}
+    
+    // No cancellation for foreach - it just doesn't call the producer
+    bool isCancelled() const { return false; }
+    void cancel() { /* no-op for foreach */ }
+};
+
+// Specialization for HasOutput = true (transform case - with output vector)
+template <class Fn, class T, class Allocator>
+struct DownloadFutureState<Fn, T, Allocator, true> {
+    std::vector<FutureSubrange<T, Allocator>> subranges;
+    Fn producer;
+    std::vector<T> output;
+    std::optional<SemaphoreValue> semaphore;  // Set by DownloadFuture constructor
+    
+    DownloadFutureState(Fn&& fn, size_t outputSize)
+        : producer(std::forward<Fn>(fn)), output(outputSize) {}
+    
+    // Cancelled = output cleared but subranges existed (not just zero-size)
+    bool isCancelled() const { return output.empty() && !subranges.empty(); }
+    void cancel() { output.clear(); }
+};
+} // anonymous namespace
+
+// Builder for DownloadFuture - used internally by StagingStream during download allocation
+template <class Fn, class T, class Allocator, bool HasOutput>
+class DownloadFutureBuilder {
+public:
+    using Subrange = FutureSubrange<T, Allocator>;
+    using State = DownloadFutureState<Fn, T, Allocator, HasOutput>;
+    
+    // Constructor for transform case (HasOutput = true)
+    DownloadFutureBuilder(Fn&& producer, size_t outputSize) requires HasOutput
+        : m_state(std::make_shared<State>(std::forward<Fn>(producer), outputSize)) {}
+    
+    // Constructor for foreach case (HasOutput = false)
+    DownloadFutureBuilder(Fn&& producer) requires (!HasOutput)
+        : m_state(std::make_shared<State>(std::forward<Fn>(producer))) {}
+    
+    // Add a subrange and return callback for StagingStream to register with staging allocator
+    std::function<void(bool)> addSubrange(VkDeviceSize offset, 
+                                          BufferMapping<T, Allocator>&& mapping) {
+        size_t idx = m_state->subranges.size();
+        m_state->subranges.push_back({offset, std::move(mapping)});
+        
+        // Return callback for StagingStream to register with staging allocator
+        // Captures shared State so it outlives the builder
+        if constexpr (HasOutput) {
+            return [state = m_state, idx](bool ready) {
+                auto& sub = state->subranges[idx];
+                if (sub.isEvaluated()) {
+                    return; // Already evaluated
+                }
+                
+                if (ready && !state->isCancelled()) {
+                    // GPU work complete and not cancelled: evaluate this subrange
+                    auto outputSpan = std::span(state->output).subspan(
+                        sub.offset, sub.mapping->span().size());
+                    state->producer(sub.offset, sub.mapping->span(), outputSpan);
+                } else if (!ready) {
+                    // Cancellation requested: clear output
+                    // Can happen before semaphore is set (e.g., staging pool destruction)
+                    state->cancel();
+                }
+                // Clear mapping (whether evaluated or cancelled)
+                sub.mapping.reset();
+            };
+        } else {
+            return [state = m_state, idx](bool ready) {
+                auto& sub = state->subranges[idx];
+                if (sub.isEvaluated()) {
+                    return; // Already evaluated
+                }
+                
+                if (ready) {
+                    // GPU work complete: evaluate this subrange
+                    state->producer(sub.offset, sub.mapping->span());
+                }
+                // Clear mapping (whether evaluated or cancelled)
+                sub.mapping.reset();
+            };
+        }
+    }
+
+    // Make state accessible to DownloadFuture for construction
+    std::shared_ptr<State> m_state;
+};
+
+// Unified download future that handles both transform (with output) and foreach (no output) cases
+template <class Fn, class T, class Allocator, bool HasOutput>
+class DownloadFuture {
+public:
+    using Subrange = FutureSubrange<T, Allocator>;
+    using State = DownloadFutureState<Fn, T, Allocator, HasOutput>;
+
+    // Constructor for transform case (HasOutput = true)
+    template <bool H = HasOutput> requires H
+    DownloadFuture(DownloadFutureBuilder<Fn, T, Allocator, true>&& builder,
+                   SemaphoreValue finalSemaphore)
+        : m_state(std::move(builder.m_state)) {
+        assert(!m_state->semaphore.has_value() && "Semaphore already set");
+        m_state->semaphore = std::move(finalSemaphore);
+    }
+
+    // Constructor for foreach case (HasOutput = false)
+    template <bool H = HasOutput> requires (!H)
+    DownloadFuture(DownloadFutureBuilder<Fn, T, Allocator, false>&& builder,
+                   SemaphoreValue finalSemaphore)
+        : m_state(std::move(builder.m_state)) {
+        assert(!m_state->semaphore.has_value() && "Semaphore already set");
+        m_state->semaphore = std::move(finalSemaphore);
+    }
+
+    // For transform case: get the output vector, evaluating subranges if needed
+    template <vko::device_and_commands DeviceAndCommands, bool H = HasOutput> requires H
+    std::vector<T>& get(const DeviceAndCommands& device) {
+        // isCancelled() checks: output empty AND subranges exist (not zero-size)
+        if (m_state->isCancelled()) {
+            throw TimelineSubmitCancel();
+        }
+        m_state->semaphore->wait(device);
+        // Evaluate all subranges that haven't been evaluated yet
+        for (auto& subrange : m_state->subranges) {
+            if (!subrange.isEvaluated()) {
+                auto outputSpan = std::span(m_state->output).subspan(
+                    subrange.offset, subrange.mapping->span().size());
+                m_state->producer(subrange.offset, subrange.mapping->span(), outputSpan);
+                subrange.mapping.reset(); // Clear mapping after evaluation (unmaps buffer)
+            }
+        }
+        return m_state->output;
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, bool H = HasOutput> requires H
+    const std::vector<T>& get(const DeviceAndCommands& device) const {
+        return const_cast<DownloadFuture*>(this)->get(device);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Rep, class Period>
+    bool waitFor(const DeviceAndCommands& device, std::chrono::duration<Rep, Period> duration) const {
+        return m_state->semaphore->waitFor(device, duration);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands, class Clock, class Duration>
+    bool waitUntil(const DeviceAndCommands& device,
+                std::chrono::time_point<Clock, Duration> deadline) const {
+        return m_state->semaphore->waitUntil(device, deadline);
+    }
+
+    template <vko::device_and_commands DeviceAndCommands>
+    bool ready(const DeviceAndCommands& device) const { return m_state->semaphore->isSignaled(device); }
+
+    const SemaphoreValue& semaphore() const { return *m_state->semaphore; }
+
+    // For foreach case: wait and call function on all subranges
+    template <vko::device_and_commands DeviceAndCommands, bool H = HasOutput> requires (!H)
+    void wait(const DeviceAndCommands& device) {
+        m_state->semaphore->wait(device);
+        // Call function on all subranges that haven't been evaluated yet
+        for (auto& subrange : m_state->subranges) {
+            if (!subrange.isEvaluated()) {
+                m_state->producer(subrange.offset, subrange.mapping->span());
+                subrange.mapping.reset(); // Clear mapping after evaluation (unmaps buffer)
+            }
+        }
+    }
+
+
+private:
+    std::shared_ptr<State> m_state;
+};
+
+// Type aliases for convenience
+template <class Fn, class T, class Allocator>
+using DownloadTransformFuture = DownloadFuture<Fn, T, Allocator, true>;
+
+template <class Fn, class T, class Allocator>
+using DownloadForEachHandle = DownloadFuture<Fn, T, Allocator, false>;
 
 // Staging wrapper that also holds a queue and command buffer for
 // staging/streaming memory and automatically submits command buffers as needed
 // to reduce staging memory usage.
 template <class StagingAllocator>
-class StreamingStaging {
+class StagingStream {
 public:
     using DeviceAndCommands = typename StagingAllocator::DeviceAndCommands;
     using Allocator         = typename StagingAllocator::Allocator;
-    StreamingStaging(TimelineQueue& queue, StagingAllocator&& staging)
+    StagingStream(TimelineQueue& queue, StagingAllocator&& staging)
         : m_queue(queue)
         , m_staging(std::move(staging))
         , m_commandPool(m_staging.device(),
@@ -718,73 +902,51 @@ public:
                         }) {}
 
     template <buffer DstBuffer, class Fn>
-    void upload(const DstBuffer& dstBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
+    void upload(const DstBuffer& dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
         using T = typename DstBuffer::ValueType;
-        while (size > 0) {
-            vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template allocateUpTo<T>(size);
-            if (stagingBuf) {
-                fn(offset, stagingBuf->map().span());
-                copyBuffer<DeviceAndCommands, std::remove_reference_t<decltype(*stagingBuf)>,
-                           DstBuffer>(m_staging.device(), commandBuffer(), *stagingBuf, 0,
-                                      dstBuffer, offset, stagingBuf->size());
+        VkDeviceSize userOffset = 0;
+        while (dstSize > 0) {
+            auto& stagingBuf = allocateUpTo<T>(dstSize);
+            fn(userOffset, stagingBuf.map().span());
+            copyBuffer<DeviceAndCommands, std::remove_reference_t<decltype(stagingBuf)>,
+                       DstBuffer>(m_staging.device(), commandBuffer(), stagingBuf, 0,
+                                  dstBuffer, dstOffset, stagingBuf.size());
 
-                // The staging buffer may not necessarily be the full size
-                // requested. Loop until the entire range is uploaded.
-                offset += stagingBuf->size();
-                size -= stagingBuf->size();
-            } else {
-                if constexpr (!StagingAllocator::AllocateAlwaysSucceeds) {
-                    // Staging allocator is full. We must make a submit now, which
-                    // will call m_staging.endBatch() and allow the staging
-                    // allocator to block and wait for some memory to be recycled.
-                    submit();
-                    continue;
-                } else {
-                    //std::unreachable();
-                    throw std::runtime_error("StagingAllocator::AllocateAlwaysSucceeds but it failed");
-                }
-            }
+            // The staging buffer may not necessarily be the full size
+            // requested. Loop until the entire range is uploaded.
+            userOffset += stagingBuf.size();
+            dstOffset += stagingBuf.size();
+            dstSize -= stagingBuf.size();
         }
     }
 
     // Overload for raw VkBuffer (byte-oriented upload)
     template <class Fn>
-    void upload(VkBuffer dstBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
-        while (size > 0) {
-            vko::BoundBuffer<std::byte, Allocator>* stagingBuf = m_staging.template allocateUpTo<std::byte>(size);
-            if (stagingBuf) {
-                fn(offset, stagingBuf->map().span());
-                VkBufferCopy copyRegion{
-                    .srcOffset = 0,
-                    .dstOffset = offset,
-                    .size      = stagingBuf->size(),
-                };
-                m_staging.device().vkCmdCopyBuffer(commandBuffer(), *stagingBuf, dstBuffer, 1, &copyRegion);
+    void upload(VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
+        VkDeviceSize userOffset = 0;
+        while (dstSize > 0) {
+            auto& stagingBuf = allocateUpTo<std::byte>(dstSize);
+            fn(userOffset, stagingBuf.map().span());
+            VkBufferCopy copyRegion{
+                .srcOffset = 0,
+                .dstOffset = dstOffset,
+                .size      = stagingBuf.size(),
+            };
+            m_staging.device().vkCmdCopyBuffer(commandBuffer(), stagingBuf, dstBuffer, 1, &copyRegion);
 
-                // The staging buffer may not necessarily be the full size
-                // requested. Loop until the entire range is uploaded.
-                offset += stagingBuf->size();
-                size -= stagingBuf->size();
-            } else {
-                if constexpr (!StagingAllocator::AllocateAlwaysSucceeds) {
-                    // Staging allocator is full. We must make a submit now, which
-                    // will call m_staging.endBatch() and allow the staging
-                    // allocator to block and wait for some memory to be recycled.
-                    submit();
-                    continue;
-                } else {
-                    //std::unreachable();
-                    throw std::runtime_error("StagingAllocator::AllocateAlwaysSucceeds but it failed");
-                }
-            }
+            // The staging buffer may not necessarily be the full size
+            // requested. Loop until the entire range is uploaded.
+            userOffset += stagingBuf.size();
+            dstOffset += stagingBuf.size();
+            dstSize -= stagingBuf.size();
         }
     }
 
     // TODO: should this return a future as well to be safer?
     template <std::ranges::input_range SrcRange, buffer DstBuffer>
-    void upload(const DstBuffer& dstBuffer, SrcRange&& srcRange, VkDeviceSize offset,
+    void upload(const DstBuffer& dstBuffer, SrcRange&& srcRange, VkDeviceSize dstOffset,
                 VkDeviceSize size) {
-        upload(dstBuffer, offset, size,
+        upload(dstBuffer, dstOffset, size,
                [begin = std::ranges::begin(srcRange), next = std::ranges::begin(srcRange),
                 end = std::ranges::end(srcRange)](
                    [[maybe_unused]] VkDeviceSize            offset,
@@ -795,42 +957,48 @@ public:
     }
 
     // Download to a vector via a transform function that operates in batches
+    // 
+    // IMPORTANT: User is responsible for ensuring appropriate memory barriers are in place
+    // between GPU writes to srcBuffer and the download operation. The staging buffers are
+    // mapped HOST_VISIBLE | HOST_COHERENT, so no explicit cache invalidation is needed for
+    // the staging memory itself, but srcBuffer must be properly synchronized.
+    //
     // NOTE: callback may be called even if the return value is destroyed
     template <class DstT, buffer SrcBuffer, class Fn>
     DownloadTransformFuture<Fn, DstT, Allocator>
-    downloadTransform(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
+    downloadTransform(const SrcBuffer& srcBuffer, VkDeviceSize srcOffset, VkDeviceSize srcSize, Fn&& fn) {
         using T = typename SrcBuffer::ValueType;
-        DownloadTransformFuture<Fn, DstT, Allocator> result(
-            m_queue.get().nextSubmitSemaphore(), std::forward<Fn>(fn), size);
+        
+        // Create builder (does NOT have final semaphore yet)
+        DownloadFutureBuilder<Fn, DstT, Allocator, true> builder(std::forward<Fn>(fn), srcSize);
 
-        while (size > 0) {
-            vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template allocateUpTo<T>(size);
-            if (stagingBuf) {
-                copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(*stagingBuf)>>(
-                    m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, stagingBuf->size());
+        VkDeviceSize userOffset = 0;
+        while (srcSize > 0) {
+            auto& stagingBuf = allocateUpTo<T>(srcSize);
+            copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(stagingBuf)>>(
+                m_staging.device(), commandBuffer(), srcBuffer, srcOffset, stagingBuf, 0, stagingBuf.size());
 
-                // Add chunk to the future
-                result.addChunk(offset, stagingBuf->map());
-                
-                // Register callback for memory reclamation
-                m_staging.registerBatchCallback(result.evaluator());
+            // Create mapping now (safe: mapping before GPU copy completion is fine)
+            // It's perfectly fine to create the mapping before the copy is complete or even submitted too :)
+            // The mapping just establishes CPU-side access; actual data read happens
+            // later in the callback after GPU work completes.
+            auto callback = builder.addSubrange(userOffset, stagingBuf.map());
+            m_staging.registerBatchCallback(std::move(callback));
 
-                // The staging buffer may not necessarily be the full size
-                // requested. Loop until the entire range is uploaded.
-                offset += stagingBuf->size();
-                size -= stagingBuf->size();
-            } else {
-                if constexpr (!StagingAllocator::AllocateAlwaysSucceeds) {
-                    submit();
-                    continue;
-                } else {
-                    //std::unreachable();
-                    throw std::runtime_error("StagingAllocator::AllocateAlwaysSucceeds but it failed");
-                }
-            }
+            // The staging buffer may not necessarily be the full size
+            // requested. Loop until the entire range is uploaded.
+            userOffset += stagingBuf.size();
+            srcOffset += stagingBuf.size();
+            srcSize -= stagingBuf.size();
         }
 
-        return result;
+        // NOW we know the final semaphore - construct future from builder
+        // For zero-size transfers (no subranges), use already-signaled semaphore
+        // Otherwise use semaphore that signals when the LAST subrange's GPU copy completes
+        SemaphoreValue finalSemaphore = builder.m_state->subranges.empty() 
+            ? SemaphoreValue::makeSignalled()
+            : m_queue.get().nextSubmitSemaphore();
+        return DownloadTransformFuture<Fn, DstT, Allocator>{std::move(builder), finalSemaphore};
     }
 
     // Regular download function with an identity transform to a vector
@@ -846,37 +1014,40 @@ public:
 
     // Call the given function on each batch of the download
     template <buffer SrcBuffer, class Fn>
-    DownloadVisitHandle<Fn, typename SrcBuffer::ValueType, Allocator>
-    downloadVisit(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size, Fn&& fn) {
+    DownloadForEachHandle<Fn, typename SrcBuffer::ValueType, Allocator>
+    downloadForEach(const SrcBuffer& srcBuffer, VkDeviceSize srcOffset, VkDeviceSize srcSize, Fn&& fn) {
         using T = typename SrcBuffer::ValueType;
-        DownloadVisitHandle<Fn, T, Allocator> result(
-            m_queue.get().nextSubmitSemaphore(), std::forward<Fn>(fn));
+        
+        // Create builder (does NOT have final semaphore yet)
+        DownloadFutureBuilder<Fn, T, Allocator, false> builder(std::forward<Fn>(fn));
 
-        while (size > 0) {
-            vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template allocateUpTo<T>(size);
-            if (stagingBuf) {
-                copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(*stagingBuf)>>(
-                    m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, stagingBuf->size());
+        VkDeviceSize userOffset = 0;
+        while (srcSize > 0) {
+            auto& stagingBuf = allocateUpTo<T>(srcSize);
+            copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(stagingBuf)>>(
+                m_staging.device(), commandBuffer(), srcBuffer, srcOffset, stagingBuf, 0, stagingBuf.size());
 
-                // Add chunk to the handle
-                result.addChunk(offset, stagingBuf->map());
-                
-                // Register callback for memory reclamation
-                m_staging.registerBatchCallback(result.evaluator());
+            // Create mapping now (safe: mapping before GPU copy completion is fine)
+            // It's perfectly fine to create the mapping before the copy is complete or even submitted too :)
+            auto finalMapping = stagingBuf.map();
+            
+            auto callback = builder.addSubrange(userOffset, std::move(finalMapping));
+            m_staging.registerBatchCallback(std::move(callback));
 
-                // The staging buffer may not necessarily be the full size
-                // requested. Loop until the entire range is uploaded.
-                offset += stagingBuf->size();
-                size -= stagingBuf->size();
-            } else {
-                if constexpr (!StagingAllocator::AllocateAlwaysSucceeds) {
-                    submit();
-                    continue;
-                }
-            }
+            // The staging buffer may not necessarily be the full size
+            // requested. Loop until the entire range is uploaded.
+            userOffset += stagingBuf.size();
+            srcOffset += stagingBuf.size();
+            srcSize -= stagingBuf.size();
         }
         
-        return result;
+        // NOW we know the final semaphore - construct future from builder
+        // For zero-size transfers (no subranges), use already-signaled semaphore
+        // Otherwise use semaphore that signals when the LAST subrange's GPU copy completes
+        SemaphoreValue finalSemaphore = builder.m_state->subranges.empty()
+            ? SemaphoreValue::makeSignalled()
+            : m_queue.get().nextSubmitSemaphore();
+        return DownloadForEachHandle<Fn, T, Allocator>{std::move(builder), finalSemaphore};
     }
 
     // Manual submission interface.
@@ -958,11 +1129,42 @@ private:
         return CommandBuffer(m_staging.device(), nullptr, m_commandPool,
                                 VK_COMMAND_BUFFER_LEVEL_PRIMARY);
     }
+    
+    // Accessor for testing
+    StagingAllocator& staging() { return m_staging; }
+    const StagingAllocator& staging() const { return m_staging; }
 
     std::reference_wrapper<TimelineQueue>         m_queue;
     StagingAllocator                              m_staging;
     CommandPool                                   m_commandPool;
     std::deque<InFlightCmd>                       m_inFlightCmds;
+    bool                                          m_justSubmitted = true;
+    
+    // Helper to allocate from staging or submit and retry once Guarantees
+    // return of valid buffer or throws on persistent failure, indicating a bug
+    // with the backing allocator.
+    template <class T>
+    BoundBuffer<T, Allocator>& allocateUpTo(VkDeviceSize size) {
+        while (true) {
+            auto* buf = m_staging.template allocateUpTo<T>(size);
+            if (buf) {
+                m_justSubmitted = false;
+                return *buf;  // Success
+            }
+            
+            if constexpr (StagingAllocator::AllocateAlwaysSucceeds) {
+                throw std::runtime_error("AllocateAlwaysSucceeds but allocation failed");
+            }
+            
+            if (m_justSubmitted) {
+                throw std::runtime_error("Staging allocation failed even after submit");
+            }
+            
+            submit();
+            m_justSubmitted = true;
+            // Retry
+        }
+    }
     std::optional<simple::RecordingCommandBuffer> m_currentCmd;
 };
 

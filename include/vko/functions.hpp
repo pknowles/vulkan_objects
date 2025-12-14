@@ -33,6 +33,7 @@ struct VulkanLibrary
 public:
     VulkanLibrary();
     ~VulkanLibrary();
+    // Rename to vkGetInstanceProcAddr()?
     PFN_vkGetInstanceProcAddr loader() const;
 
 private:
