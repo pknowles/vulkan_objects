@@ -102,27 +102,30 @@ download(Staging& staging, VkCommandBuffer cmd, SV&& submitPromise, const SrcBuf
 }
 
 // Staging buffer allocator that allocates individual staging buffers and
-// maintains ownership of them. The caller must keep the DedicatedStaging object
+// maintains ownership of them. The caller must keep the DedicatedStagingPool object
 // alive until all buffers are no longer in use, i.e. synchronize with the GPU
 // so any command buffers referencing them have finished execution. Use this
 // when making intermittent and large one-off transfers such as during
 // initialization.
 template <device_and_commands DeviceAndCommandsType = Device,
           allocator           AllocatorType         = vko::vma::Allocator>
-struct DedicatedStaging {
+struct DedicatedStagingPool {
 public:
     using DeviceAndCommands          = DeviceAndCommandsType;
     using Allocator                  = AllocatorType;
     static constexpr bool AllocateAlwaysSucceeds = true;
     static constexpr bool AllocateAlwaysFull = true;
-    DedicatedStaging(const DeviceAndCommands& device, Allocator& allocator,
+    DedicatedStagingPool(const DeviceAndCommands& device, Allocator& allocator,
                      VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
                                                 VK_BUFFER_USAGE_TRANSFER_DST_BIT)
         : m_device(device)
         , m_allocator(allocator)
         , m_bufferUsageFlags(usage) {}
 
-    ~DedicatedStaging() {
+    DedicatedStagingPool(DedicatedStagingPool&&) = default;
+    DedicatedStagingPool& operator=(DedicatedStagingPool&&) = default;
+
+    ~DedicatedStagingPool() {
         // Call unreleased destruct callbacks with false
         for (auto& callback : m_current.destroyCallbacks) {
             callback(false);
@@ -206,7 +209,7 @@ public:
     }
 
     VkDeviceSize size() const { return m_totalSize; }
-    VkDeviceSize capacity() const { return size(); } // Same as size for DedicatedStaging
+    VkDeviceSize capacity() const { return size(); } // Same as size for DedicatedStagingPool
     const DeviceAndCommands& device() const { return m_device.get(); }
 
 private:
@@ -233,9 +236,9 @@ private:
     VkDeviceSize                                    m_totalSize        = 0;
     VkBufferUsageFlags                              m_bufferUsageFlags = 0;
 };
-static_assert(staging_allocator<DedicatedStaging<Device, vko::vma::Allocator>>);
-static_assert(std::is_move_constructible_v<DedicatedStaging<Device, vko::vma::Allocator>>);
-static_assert(std::is_move_assignable_v<DedicatedStaging<Device, vko::vma::Allocator>>);
+static_assert(staging_allocator<DedicatedStagingPool<Device, vko::vma::Allocator>>);
+static_assert(std::is_move_constructible_v<DedicatedStagingPool<Device, vko::vma::Allocator>>);
+static_assert(std::is_move_assignable_v<DedicatedStagingPool<Device, vko::vma::Allocator>>);
 
 namespace vma {
 
@@ -339,13 +342,9 @@ public:
         , m_currentPoolUsedBytes(other.m_currentPoolUsedBytes) {}
     ~RecyclingStagingPool() {
         // Notify all remaining handlers they're never going to get called
-        for(auto& callback : m_current.destroyCallbacks) {
-            callback(false);
-        }
-        m_inUse.visitAll([](PoolBatch& batch) {
-            for(auto& callback : batch.destroyCallbacks) {
-                callback(false);
-            }
+        destroyBuffers(m_current, false);
+        m_inUse.visitAll([this](PoolBatch& batch) {
+            destroyBuffers(batch, false);
         });
     }
 
@@ -413,16 +412,8 @@ public:
         m_inUse.wait(m_device.get());
         
         // Process ALL ready batches (visitAll since they're all ready after wait())
-        // Clean up buffers and invoke callbacks, then remove empty batches
         m_inUse.visitAll([this](PoolBatch& batch) {
-            // Invoke callbacks and clear buffers
-            for (auto& callback : batch.destroyCallbacks) {
-                callback(true);
-            }
-            batch.destroyCallbacks.clear();
-            batch.buffers.clear();
-            m_totalBufferBytes -= batch.bufferBytes;
-            batch.bufferBytes = 0;
+            destroyBuffers(batch, true);
         });
         
         freeExcessPools();
@@ -444,6 +435,22 @@ private:
         std::vector<std::function<void(bool)>> destroyCallbacks;
         VkDeviceSize                            bufferBytes = 0;
     };
+
+    // Invoke callbacks and free buffers from a batch
+    // Callbacks are tied to buffer lifetime, so these always happen together
+    void destroyBuffers(PoolBatch& batch, bool buffersReady) {
+        // Invoke callbacks BEFORE clearing buffers
+        // This allows download futures to evaluate chunks while buffers are still alive
+        for (auto& callback : batch.destroyCallbacks) {
+            callback(buffersReady);
+        }
+        batch.destroyCallbacks.clear();
+        
+        // Now safe to destroy buffers (mappings have been evaluated/cleared)
+        m_totalBufferBytes -= batch.bufferBytes;
+        batch.buffers.clear();
+        batch.bufferBytes = 0;
+    }
 
     bool hasCurrentPool() const {
         return !m_current.pools.empty();
@@ -543,16 +550,7 @@ private:
         // Try to recycle from ready batches (non-blocking)
         while (!m_inUse.empty() && m_inUse.frontSemaphore().isSignaled(m_device.get())) {
             auto& front = m_inUse.front(m_device.get());
-            
-            // Cleanup: invoke callbacks and clear buffers
-            m_totalBufferBytes -= front.bufferBytes;
-            front.buffers.clear();
-            for (auto& callback : front.destroyCallbacks) {
-                callback(true);
-            }
-            front.destroyCallbacks.clear();
-            front.bufferBytes = 0;
-            
+            destroyBuffers(front, true);
             
             // Recycle one pool
             recyclePool(front);
@@ -577,15 +575,8 @@ private:
         // At max, block for a pool
         while (!m_inUse.empty()) {
             auto& front = m_inUse.front(m_device.get()); // BLOCKS
+            destroyBuffers(front, true);
             
-            // Cleanup: invoke callbacks and clear buffers
-            m_totalBufferBytes -= front.bufferBytes;
-            front.buffers.clear();
-            for (auto& callback : front.destroyCallbacks) {
-                callback(true);
-            }
-            front.destroyCallbacks.clear();
-            front.bufferBytes = 0;
             // Recycle one pool
             recyclePool(front);
             
@@ -624,11 +615,8 @@ private:
 
     void invokeReadyCallbacks() {
         // Greedily check released pools and invoke callbacks if ready
-        m_inUse.visitReady(m_device.get(), [](PoolBatch& batch) {
-            for (auto& callback : batch.destroyCallbacks) {
-                callback(true);
-            }
-            batch.destroyCallbacks.clear();
+        m_inUse.visitReady(m_device.get(), [this](PoolBatch& batch) {
+            destroyBuffers(batch, true);
             return true;
         });
     }
@@ -662,11 +650,7 @@ private:
     void freeExcessPools() {
         // Free excess pools from ready batches
         m_inUse.consumeReady(m_device.get(), [this](PoolBatch& batch) {
-            // Invoke callbacks before freeing pools from this batch
-            for (auto& callback : batch.destroyCallbacks) {
-                callback(true);
-            }
-            batch.destroyCallbacks.clear();
+            destroyBuffers(batch, true);
             
             // Free pools from this batch until we're at minPools
             while (m_totalPoolCount > m_minPools && !batch.pools.empty()) {
@@ -695,6 +679,8 @@ private:
     VkDeviceSize                                    m_currentPoolUsedBytes = 0;
 };
 static_assert(staging_allocator<RecyclingStagingPool<Device>>);
+static_assert(std::is_move_constructible_v<RecyclingStagingPool<Device>>);
+static_assert(std::is_move_assignable_v<RecyclingStagingPool<Device>>);
 
 } // namespace vma
 
@@ -702,11 +688,11 @@ static_assert(staging_allocator<RecyclingStagingPool<Device>>);
 // staging/streaming memory and automatically submits command buffers as needed
 // to reduce staging memory usage.
 template <class StagingAllocator>
-class StreamingStaging {
+class StagingStream {
 public:
     using DeviceAndCommands = typename StagingAllocator::DeviceAndCommands;
     using Allocator         = typename StagingAllocator::Allocator;
-    StreamingStaging(TimelineQueue& queue, StagingAllocator&& staging)
+    StagingStream(TimelineQueue& queue, StagingAllocator&& staging)
         : m_queue(queue)
         , m_staging(std::move(staging))
         , m_commandPool(m_staging.device(),
@@ -809,11 +795,9 @@ public:
                 copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(*stagingBuf)>>(
                     m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, stagingBuf->size());
 
-                // Add chunk to the future
-                result.addChunk(offset, stagingBuf->map());
-                
-                // Register callback for memory reclamation
-                m_staging.registerBatchCallback(result.evaluator());
+                // Defer evaluation and register cleanup callback
+                m_staging.registerBatchCallback(
+                    result.deferEvaluation(m_staging.device(), offset, stagingBuf->map()));
 
                 // The staging buffer may not necessarily be the full size
                 // requested. Loop until the entire range is uploaded.
@@ -858,11 +842,9 @@ public:
                 copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(*stagingBuf)>>(
                     m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, stagingBuf->size());
 
-                // Add chunk to the handle
-                result.addChunk(offset, stagingBuf->map());
-                
-                // Register callback for memory reclamation
-                m_staging.registerBatchCallback(result.evaluator());
+                // Defer evaluation and register cleanup callback
+                m_staging.registerBatchCallback(
+                    result.deferEvaluation(m_staging.device(), offset, stagingBuf->map()));
 
                 // The staging buffer may not necessarily be the full size
                 // requested. Loop until the entire range is uploaded.

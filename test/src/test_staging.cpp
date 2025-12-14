@@ -653,13 +653,13 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_PartialAllocationWithRemainder) {
 // Use-case: Uploading procedurally generated data without pre-buffering on CPU
 // Tests upload() with a callback that fills each staging chunk as it's allocated,
 // avoiding the need to hold entire datasets in CPU memory before transfer.
-TEST_F(UnitTestFixture, StreamingStaging_UploadChunked) {
+TEST_F(UnitTestFixture, StagingStream_UploadChunked) {
     // Setup: Create queue and staging allocator
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator, 
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16); // 64KB pools
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Create GPU buffer
     auto gpuBuffer = vko::BoundBuffer<int>(
@@ -682,14 +682,14 @@ TEST_F(UnitTestFixture, StreamingStaging_UploadChunked) {
 }
 
 // Use-case: Uploading large assets (textures, meshes) that exceed staging pool size
-// Tests automatic chunking when transfer size > pool size. StreamingStaging should
+// Tests automatic chunking when transfer size > pool size. StagingStream should
 // transparently handle partial allocations and issue multiple copy commands.
-TEST_F(UnitTestFixture, StreamingStaging_UploadLarge) {
+TEST_F(UnitTestFixture, StagingStream_UploadLarge) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 14); // Small 16KB pools
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Create buffer larger than single pool to force chunking
     auto gpuBuffer = vko::BoundBuffer<float>(
@@ -713,12 +713,12 @@ TEST_F(UnitTestFixture, StreamingStaging_UploadLarge) {
 // Use-case: GPU→CPU data processing without storage (e.g., checksums, statistics)
 // Tests downloadVisit() which processes data chunks without copying to a vector,
 // ideal for streaming analytics where only aggregate results are needed.
-TEST_F(UnitTestFixture, StreamingStaging_DownloadVoid) {
+TEST_F(UnitTestFixture, StagingStream_DownloadVoid) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16);
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Setup buffer with known data
     auto gpuBuffer = vko::BoundBuffer<int>(
@@ -758,12 +758,12 @@ TEST_F(UnitTestFixture, StreamingStaging_DownloadVoid) {
 // Use-case: GPU readback with optional transformation (e.g., format conversion, filtering)
 // Tests downloadTransform() which collects data into a vector with per-chunk processing.
 // Useful for reading back GPU results (render targets, compute output) to CPU.
-TEST_F(UnitTestFixture, StreamingStaging_DownloadWithTransform) {
+TEST_F(UnitTestFixture, StagingStream_DownloadWithTransform) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 14); // Small pools to force chunking
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Upload known data
     auto gpuBuffer = vko::BoundBuffer<float>(
@@ -800,12 +800,12 @@ TEST_F(UnitTestFixture, StreamingStaging_DownloadWithTransform) {
 // Use-case: Simple GPU readback without transformation (most common case)
 // Tests download() convenience wrapper which provides identity transform automatically.
 // This is the simplest API for reading back GPU data unchanged to CPU.
-TEST_F(UnitTestFixture, StreamingStaging_DownloadSimple) {
+TEST_F(UnitTestFixture, StagingStream_DownloadSimple) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16);
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Upload known data
     auto gpuBuffer = vko::BoundBuffer<int>(
@@ -838,12 +838,12 @@ TEST_F(UnitTestFixture, StreamingStaging_DownloadSimple) {
 // Use-case: Efficient batch updates (e.g., multiple small uniform buffers per frame)
 // Tests that multiple small transfers can be allocated from the same pool and submitted
 // together in one command buffer, minimizing GPU synchronization overhead.
-TEST_F(UnitTestFixture, StreamingStaging_MultipleBatchedTransfers) {
+TEST_F(UnitTestFixture, StagingStream_MultipleBatchedTransfers) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16); // 64KB pools
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Create multiple small buffers
     std::vector<vko::BoundBuffer<int>> buffers;
@@ -874,12 +874,12 @@ TEST_F(UnitTestFixture, StreamingStaging_MultipleBatchedTransfers) {
 // Use-case: Streaming huge assets (e.g., high-res textures, large models) with limited staging
 // Tests that transfers much larger than total pool capacity automatically cycle pools:
 // allocate → submit → wait → recycle repeatedly until complete, without manual intervention.
-TEST_F(UnitTestFixture, StreamingStaging_GiantTransferImplicitCycling) {
+TEST_F(UnitTestFixture, StagingStream_GiantTransferImplicitCycling) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14); // Small 16KB pools, 48KB total
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Create buffer much larger than total pool capacity (400KB >> 48KB)
     size_t largeSize = 100000; // 400KB of floats
@@ -923,12 +923,12 @@ TEST_F(UnitTestFixture, StreamingStaging_GiantTransferImplicitCycling) {
 // Use-case: Asynchronous readback for debugging/profiling without stalling rendering
 // Tests that download futures remain valid even after staging pools are reused for other
 // work. The original download's data must be preserved until get() is called.
-TEST_F(UnitTestFixture, StreamingStaging_NonBlockingDownloadWithPoolCycling) {
+TEST_F(UnitTestFixture, StagingStream_NonBlockingDownloadWithPoolCycling) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/2, /*poolSize=*/1 << 14); // 16KB pools
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Create and upload initial buffer
     auto buffer1 = vko::BoundBuffer<int>(
@@ -980,12 +980,12 @@ TEST_F(UnitTestFixture, StreamingStaging_NonBlockingDownloadWithPoolCycling) {
 // Use-case: Explicit control over submission timing (e.g., synchronous readback)
 // Tests that users can manually submit() even for tiny transfers that wouldn't trigger
 // automatic submission, and immediately get() the result for synchronous workflows.
-TEST_F(UnitTestFixture, StreamingStaging_ManualSubmitTinyDownload) {
+TEST_F(UnitTestFixture, StagingStream_ManualSubmitTinyDownload) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16);
-    vko::StreamingStaging streaming(queue, std::move(staging));
+    vko::StagingStream streaming(queue, std::move(staging));
     
     // Create tiny buffer
     auto gpuBuffer = vko::BoundBuffer<int>(
@@ -1022,7 +1022,7 @@ TEST_F(UnitTestFixture, StreamingStaging_ManualSubmitTinyDownload) {
 // Use-case: Error detection for incomplete transfers (forgot to submit)
 // Tests that accessing a download future without submitting the batch throws
 // TimelineSubmitCancel, helping catch programmer errors where submit() was forgotten.
-TEST_F(UnitTestFixture, StreamingStaging_CancelOnScopeExit) {
+TEST_F(UnitTestFixture, StagingStream_CancelOnScopeExit) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     
     // Create buffer outside the scope
@@ -1037,7 +1037,7 @@ TEST_F(UnitTestFixture, StreamingStaging_CancelOnScopeExit) {
         auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
             ctx->device, ctx->allocator,
             /*minPools=*/1, /*maxPools=*/2, /*poolSize=*/1 << 16);
-        vko::StreamingStaging streaming(queue, std::move(staging));
+        vko::StagingStream streaming(queue, std::move(staging));
         
         streaming.upload(gpuBuffer, 0, 1000,
             [](VkDeviceSize offset, auto span) {
@@ -1052,7 +1052,7 @@ TEST_F(UnitTestFixture, StreamingStaging_CancelOnScopeExit) {
         auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
             ctx->device, ctx->allocator,
             /*minPools=*/1, /*maxPools=*/2, /*poolSize=*/1 << 16);
-        vko::StreamingStaging streaming(queue, std::move(staging));
+        vko::StagingStream streaming(queue, std::move(staging));
         
         auto future = streaming.downloadTransform<int>(
             gpuBuffer, 0, 1000,
@@ -1073,7 +1073,7 @@ TEST_F(UnitTestFixture, StreamingStaging_CancelOnScopeExit) {
 // Use-case: Error detection for partially submitted downloads (subtle bugs)
 // Tests that even when automatic submits occur during pool cycling, the final chunk
 // still needs explicit submit(). Forgetting this should throw TimelineSubmitCancel.
-TEST_F(UnitTestFixture, StreamingStaging_PartialDownloadMissingFinalSubmit) {
+TEST_F(UnitTestFixture, StagingStream_PartialDownloadMissingFinalSubmit) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     
     // Create large buffer
@@ -1089,7 +1089,7 @@ TEST_F(UnitTestFixture, StreamingStaging_PartialDownloadMissingFinalSubmit) {
         auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
             ctx->device, ctx->allocator,
             /*minPools=*/2, /*maxPools=*/2, /*poolSize=*/1 << 14); // Small pools
-        vko::StreamingStaging streaming(queue, std::move(staging));
+        vko::StagingStream streaming(queue, std::move(staging));
         
         streaming.upload(gpuBuffer, 0, largeSize,
             [](VkDeviceSize offset, auto span) {
@@ -1106,7 +1106,7 @@ TEST_F(UnitTestFixture, StreamingStaging_PartialDownloadMissingFinalSubmit) {
         auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
             ctx->device, ctx->allocator,
             /*minPools=*/2, /*maxPools=*/2, /*poolSize=*/1 << 14); // Small pools
-        vko::StreamingStaging streaming(queue, std::move(staging));
+        vko::StagingStream streaming(queue, std::move(staging));
         
         // This will trigger multiple automatic submits as pools cycle
         // but won't submit the final chunk
@@ -1126,18 +1126,29 @@ TEST_F(UnitTestFixture, StreamingStaging_PartialDownloadMissingFinalSubmit) {
     }, vko::TimelineSubmitCancel);
 }
 
-// TODO: StreamingStaging_InterleavedUploadDownload - Test alternating uploads and downloads to verify command buffer state management
-// TODO: StreamingStaging_MultipleQueueSupport - Test with transfers to different queues
-// TODO: StreamingStaging_AllocationFailureRecovery - Test behavior when staging allocation fails mid-transfer
-// TODO: StreamingStaging_ZeroSizeTransfer - Test edge case of size=0 upload/download
-// TODO: StreamingStaging_UnalignedOffsetAndSize - Test with non-aligned buffer offsets and sizes
-// TODO: StreamingStaging_CommandBufferRecycling - Verify command buffers are properly recycled and not leaked
-// TODO: StreamingStaging_ConcurrentDownloads - Multiple downloads in flight with different completion times
-// TODO: StreamingStaging_ExceptionSafety - Verify proper cleanup when exceptions occur during transfers
-// TODO: StreamingStaging_DownloadWithPartialChunkProcessing - Test download where callback processes chunks at different rates
-// TODO: StreamingStaging_MemoryPressure - Test behavior under memory pressure (all pools exhausted, waiting required)
-// TODO: StreamingStaging_SubrangeTransfers - Upload/download non-contiguous subranges of a buffer
-// TODO: StreamingStaging_QueueFamilyTransition - Test transfers that require queue family ownership transfer
-// TODO: StreamingStaging_LargeAlignment - Test with buffers requiring large alignment (e.g., 64KB for some GPUs)
-// TODO: StreamingStaging_DownloadVisitVsTransformPerformance - Compare performance characteristics
-// TODO: StreamingStaging_SemaphoreChaining - Test that timeline semaphores properly chain dependencies
+// Lifetime and destruction order edge cases (important for multithreaded shutdown scenarios)
+// TODO: LifetimeEdgeCase_DownloadFutureOutlivesStaging - Download future kept alive after StagingStream destroyed (should unmap cleanly)
+// TODO: LifetimeEdgeCase_StagingOutlivesDownloadFuture - Opposite order - download future destroyed first, then staging
+// TODO: LifetimeEdgeCase_MultipleDownloadsCancelledOutOfOrder - Multiple downloads, some cancelled, some completed, in mixed order
+// TODO: LifetimeEdgeCase_UploadMappingActiveOnDestruct - StagingStream destroyed while upload mapping is still in scope (should unmap)
+// TODO: LifetimeEdgeCase_PoolDestroyedDuringCallback - RecyclingStagingPool destroyed while evaluator callbacks are running
+// TODO: LifetimeEdgeCase_DownloadFutureAbandonedNeverAccessed - Future created but get() never called, should clean up properly
+// TODO: LifetimeEdgeCase_SubmitAfterStagingDestroyed - Try to access download future after staging is gone (current behavior)
+// TODO: LifetimeEdgeCase_RecursiveCallbackDestruction - Callback triggers another operation that destroys resources
+// TODO: LifetimeEdgeCase_MoveSemanticsDuringPendingTransfers - Move staging pool while downloads are in flight
+
+// TODO: StagingStream_InterleavedUploadDownload - Test alternating uploads and downloads to verify command buffer state management
+// TODO: StagingStream_MultipleQueueSupport - Test with transfers to different queues
+// TODO: StagingStream_AllocationFailureRecovery - Test behavior when staging allocation fails mid-transfer
+// TODO: StagingStream_ZeroSizeTransfer - Test edge case of size=0 upload/download
+// TODO: StagingStream_UnalignedOffsetAndSize - Test with non-aligned buffer offsets and sizes
+// TODO: StagingStream_CommandBufferRecycling - Verify command buffers are properly recycled and not leaked
+// TODO: StagingStream_ConcurrentDownloads - Multiple downloads in flight with different completion times
+// TODO: StagingStream_ExceptionSafety - Verify proper cleanup when exceptions occur during transfers
+// TODO: StagingStream_DownloadWithPartialChunkProcessing - Test download where callback processes chunks at different rates
+// TODO: StagingStream_MemoryPressure - Test behavior under memory pressure (all pools exhausted, waiting required)
+// TODO: StagingStream_SubrangeTransfers - Upload/download non-contiguous subranges of a buffer
+// TODO: StagingStream_QueueFamilyTransition - Test transfers that require queue family ownership transfer
+// TODO: StagingStream_LargeAlignment - Test with buffers requiring large alignment (e.g., 64KB for some GPUs)
+// TODO: StagingStream_DownloadVisitVsTransformPerformance - Compare performance characteristics
+// TODO: StagingStream_SemaphoreChaining - Test that timeline semaphores properly chain dependencies

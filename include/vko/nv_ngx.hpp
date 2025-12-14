@@ -100,20 +100,21 @@ inline std::vector<const wchar_t*> makeWcharPtrs(const std::vector<std::wstring>
 }
 
 // Helper to set up NGX feature discovery with search paths
-struct FeatureDiscovery
-{
+struct FeatureDiscovery {
 #if defined(NDEBUG)
-  static constexpr NVSDK_NGX_Logging_Level minLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_OFF;
+    static constexpr NVSDK_NGX_Logging_Level minLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_OFF;
 #else
-  static constexpr NVSDK_NGX_Logging_Level minLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_OFF; // NVSDK_NGX_LOGGING_LEVEL_ON / NVSDK_NGX_LOGGING_LEVEL_VERBOSE
+    static constexpr NVSDK_NGX_Logging_Level minLoggingLevel =
+        NVSDK_NGX_LOGGING_LEVEL_VERBOSE; // NVSDK_NGX_LOGGING_LEVEL_ON /
+                                         // NVSDK_NGX_LOGGING_LEVEL_VERBOSE
 #endif
-  std::wstring                   applicationDataPath;
-  std::vector<std::wstring>      ngxSearchPaths;
-  std::vector<const wchar_t*>    ngxSearchPathPtrs;
-  NVSDK_NGX_FeatureCommonInfo    commonInfo;
-  NVSDK_NGX_FeatureDiscoveryInfo discoveryInfo;
-  
-  FeatureDiscovery(unsigned long long applicationId, const std::wstring& appDataPath,
+    std::wstring                   applicationDataPath;
+    std::vector<std::wstring>      ngxSearchPaths;
+    std::vector<const wchar_t*>    ngxSearchPathPtrs;
+    NVSDK_NGX_FeatureCommonInfo    commonInfo;
+    NVSDK_NGX_FeatureDiscoveryInfo discoveryInfo;
+
+    FeatureDiscovery(unsigned long long applicationId, const std::wstring& appDataPath,
                    NVSDK_NGX_Feature feature, std::initializer_list<std::wstring_view> searchPaths)
       : applicationDataPath(appDataPath)
       , ngxSearchPaths(searchPaths.begin(), searchPaths.end())
@@ -125,7 +126,7 @@ struct FeatureDiscovery
         .LoggingInfo = {
                 .LoggingCallback = nullptr,
                 .MinimumLoggingLevel      = minLoggingLevel,
-                .DisableOtherLoggingSinks = {},
+                .DisableOtherLoggingSinks = false,
             },
         }
       , discoveryInfo{
@@ -138,9 +139,9 @@ struct FeatureDiscovery
         }
   {
   }
-  operator const NVSDK_NGX_FeatureDiscoveryInfo&() const { return discoveryInfo; }
-  FeatureDiscovery(const FeatureDiscovery& other)            = delete;
-  FeatureDiscovery& operator=(const FeatureDiscovery& other) = delete;
+    operator const NVSDK_NGX_FeatureDiscoveryInfo&() const { return discoveryInfo; }
+    FeatureDiscovery(const FeatureDiscovery& other)            = delete;
+    FeatureDiscovery& operator=(const FeatureDiscovery& other) = delete;
 };
 
 // template <NVSDK_NGX_Result result>

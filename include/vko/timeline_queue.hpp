@@ -107,7 +107,7 @@ public:
             return;
         assert(semaphore != VK_NULL_HANDLE);
         assert(value.valid());
-        waitTimelineSemaphore(device, semaphore, value.get());
+        waitTimelineSemaphore(device, semaphore, value.get()); // May throw TimelineSubmitCancel
         signalledCache = true;
     }
 
@@ -406,8 +406,7 @@ namespace {
 template <class T, class Allocator>
 struct DownloadFutureChunkInfo {
     VkDeviceSize offset;
-    BufferMapping<T, Allocator> mapping;
-    bool evaluated = false;
+    std::optional<BufferMapping<T, Allocator>> mapping; // nullopt = evaluated or cancelled
 };
 
 // Base State template (for HasOutput = false, visitor case - no output vector)
@@ -451,29 +450,71 @@ public:
     DownloadFuture(SV&& semaphore, Fn&& producer)
         : m_state(std::make_shared<State>(std::forward<SV>(semaphore), std::forward<Fn>(producer))) {}
 
-    // Add a chunk to be processed later
-    void addChunk(VkDeviceSize offset, BufferMapping<T, Allocator>&& mapping) {
+    // Defers evaluation of a downloaded segment until the GPU work completes
+    // Returns a callback to be registered with the staging allocator for cleanup
+    // When call=true: evaluates the segment (calls producer) and clears mapping
+    // When call=false (cancellation): abandons output and clears mapping without evaluation
+    template <vko::device_and_commands DeviceAndCommands>
+    std::function<void(bool)> deferEvaluation(const DeviceAndCommands& device, 
+                                               VkDeviceSize offset, 
+                                               BufferMapping<T, Allocator>&& mapping) {
+        // Add chunk to track this segment
         m_state->chunks.push_back(ChunkInfo{
             offset,
-            std::move(mapping),
-            false
+            std::move(mapping)
         });
+        
+        // Capture index to this chunk (stable even if vector reallocates)
+        size_t chunkIndex = m_state->chunks.size() - 1;
+        return [state = m_state, &device, chunkIndex](bool call) {
+            if (chunkIndex >= state->chunks.size()) {
+                return; // Shouldn't happen, but be defensive
+            }
+            
+            auto& chunk = state->chunks[chunkIndex];
+            if (!chunk.mapping.has_value()) {
+                return; // Already evaluated or cancelled
+            }
+            
+            if (call) {
+                // Assert GPU work is done before evaluating
+                assert(state->semaphore.isSignaled(device) && 
+                       "Callback invoked before GPU work completed");
+                
+                // Success: evaluate this segment
+                if constexpr (HasOutput) {
+                    auto outputSpan = std::span(state->output).subspan(
+                        chunk.offset, chunk.mapping->span().size());
+                    state->producer(chunk.offset, chunk.mapping->span(), outputSpan);
+                } else {
+                    state->producer(chunk.offset, chunk.mapping->span());
+                }
+                chunk.mapping.reset(); // Clear mapping after evaluation
+            } else {
+                // Cancellation: abandon output and clear mapping
+                if constexpr (HasOutput) {
+                    state->output.clear();
+                }
+                chunk.mapping.reset();
+            }
+        };
     }
 
     // For transform case: get the output vector, evaluating chunks if needed
     template <vko::device_and_commands DeviceAndCommands, bool H = HasOutput> requires H
     std::vector<T>& get(const DeviceAndCommands& device) {
-        m_state->semaphore.wait(device);
+        // Check if output was cleared by callbacks (cancelled) BEFORE waiting
         if (m_state->output.empty()) {
             throw TimelineSubmitCancel();
         }
+        m_state->semaphore.wait(device);
         // Evaluate all chunks that haven't been evaluated yet
         for (auto& chunk : m_state->chunks) {
-            if (!chunk.evaluated) {
+            if (chunk.mapping.has_value()) {
                 auto outputSpan = std::span(m_state->output).subspan(
-                    chunk.offset, chunk.mapping.span().size());
-                m_state->producer(chunk.offset, chunk.mapping.span(), outputSpan);
-                chunk.evaluated = true;
+                    chunk.offset, chunk.mapping->span().size());
+                m_state->producer(chunk.offset, chunk.mapping->span(), outputSpan);
+                chunk.mapping.reset(); // Clear mapping after evaluation (unmaps buffer)
             }
         }
         return m_state->output;
@@ -506,26 +547,44 @@ public:
         m_state->semaphore.wait(device);
         // Call visitor on all chunks that haven't been evaluated yet
         for (auto& chunk : m_state->chunks) {
-            if (!chunk.evaluated) {
-                m_state->producer(chunk.offset, chunk.mapping.span());
-                chunk.evaluated = true;
+            if (chunk.mapping.has_value()) {
+                m_state->producer(chunk.offset, chunk.mapping->span());
+                chunk.mapping.reset(); // Clear mapping after evaluation (unmaps buffer)
             }
         }
     }
 
-    // Returns a simple callback that marks chunks as abandoned if memory needs reclamation
+    // Returns a callback for the chunk we just added
+    // When call=true: evaluate the chunk (call producer) and clear mapping
+    // When call=false (cancellation): abandon output and clear mapping without evaluation
     std::function<void(bool)> evaluator() {
         size_t chunkIndex = m_state->chunks.size() - 1; // Index of chunk we just added
         return [state = m_state, chunkIndex](bool call) {
-            if (!call) {
-                // Memory reclamation: mark output as abandoned
+            if (chunkIndex >= state->chunks.size()) {
+                return; // Chunk was already removed/processed
+            }
+            
+            auto& chunk = state->chunks[chunkIndex];
+            if (!chunk.mapping.has_value()) {
+                return; // Already evaluated
+            }
+            
+            if (call) {
+                // Success: evaluate the chunk
+                if constexpr (HasOutput) {
+                    auto outputSpan = std::span(state->output).subspan(
+                        chunk.offset, chunk.mapping->span().size());
+                    state->producer(chunk.offset, chunk.mapping->span(), outputSpan);
+                } else {
+                    state->producer(chunk.offset, chunk.mapping->span());
+                }
+                chunk.mapping.reset(); // Clear mapping after evaluation
+            } else {
+                // Cancellation: abandon output and clear mapping
                 if constexpr (HasOutput) {
                     state->output.clear();
                 }
-                // Mark this chunk and all subsequent chunks as evaluated (abandoned)
-                for (size_t i = chunkIndex; i < state->chunks.size(); ++i) {
-                    state->chunks[i].evaluated = true;
-                }
+                chunk.mapping.reset();
             }
         };
     }
