@@ -124,7 +124,13 @@ struct FeatureDiscovery {
                          .Length = static_cast<unsigned int>(ngxSearchPathPtrs.size())},
         .InternalData = nullptr,
         .LoggingInfo = {
-                .LoggingCallback = nullptr,
+                .LoggingCallback = [](const char* message, NVSDK_NGX_Logging_Level loggingLevel,
+                       NVSDK_NGX_Feature sourceComponent) {
+                        // Use stdout and flush explicitly for Windows compatibility
+                        fprintf(stdout, "[NGX] %s (level %u, feature %u)\n", message,
+                                (unsigned int)loggingLevel, (unsigned int)sourceComponent);
+                        fflush(stdout);
+                    },
                 .MinimumLoggingLevel      = minLoggingLevel,
                 .DisableOtherLoggingSinks = false,
             },

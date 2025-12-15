@@ -407,6 +407,8 @@ template <class T, class Allocator>
 struct DownloadFutureChunkInfo {
     VkDeviceSize offset;
     std::optional<BufferMapping<T, Allocator>> mapping; // nullopt = evaluated or cancelled
+    
+    bool evaluated() const { return !mapping.has_value(); }
 };
 
 // Base State template (for HasOutput = false, visitor case - no output vector)
@@ -467,12 +469,10 @@ public:
         // Capture index to this chunk (stable even if vector reallocates)
         size_t chunkIndex = m_state->chunks.size() - 1;
         return [state = m_state, &device, chunkIndex](bool call) {
-            if (chunkIndex >= state->chunks.size()) {
-                return; // Shouldn't happen, but be defensive
-            }
+            assert(chunkIndex < state->chunks.size() && "Chunk index out of bounds");
             
             auto& chunk = state->chunks[chunkIndex];
-            if (!chunk.mapping.has_value()) {
+            if (chunk.evaluated()) {
                 return; // Already evaluated or cancelled
             }
             
@@ -480,6 +480,12 @@ public:
                 // Assert GPU work is done before evaluating
                 assert(state->semaphore.isSignaled(device) && 
                        "Callback invoked before GPU work completed");
+                
+                if constexpr (std::is_arithmetic_v<T>) {
+                    printf("DEBUG deferEvaluation callback: chunk %zu, offset=%zu, first elem=%f\n",
+                           chunkIndex, chunk.offset,
+                           chunk.mapping->span().size() > 0 ? static_cast<float>(chunk.mapping->span()[0]) : 0.0f);
+                }
                 
                 // Success: evaluate this segment
                 if constexpr (HasOutput) {
@@ -510,7 +516,7 @@ public:
         m_state->semaphore.wait(device);
         // Evaluate all chunks that haven't been evaluated yet
         for (auto& chunk : m_state->chunks) {
-            if (chunk.mapping.has_value()) {
+            if (!chunk.evaluated()) {
                 auto outputSpan = std::span(m_state->output).subspan(
                     chunk.offset, chunk.mapping->span().size());
                 m_state->producer(chunk.offset, chunk.mapping->span(), outputSpan);
@@ -547,7 +553,7 @@ public:
         m_state->semaphore.wait(device);
         // Call visitor on all chunks that haven't been evaluated yet
         for (auto& chunk : m_state->chunks) {
-            if (chunk.mapping.has_value()) {
+            if (!chunk.evaluated()) {
                 m_state->producer(chunk.offset, chunk.mapping->span());
                 chunk.mapping.reset(); // Clear mapping after evaluation (unmaps buffer)
             }
@@ -565,7 +571,7 @@ public:
             }
             
             auto& chunk = state->chunks[chunkIndex];
-            if (!chunk.mapping.has_value()) {
+            if (chunk.evaluated()) {
                 return; // Already evaluated
             }
             

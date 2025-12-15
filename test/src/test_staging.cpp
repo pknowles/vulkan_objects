@@ -900,24 +900,113 @@ TEST_F(UnitTestFixture, StagingStream_GiantTransferImplicitCycling) {
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
     
-    // Verify with download
-    float sum = 0.0f;
-    size_t count = 0;
+    // Insert memory barrier to make upload writes visible to download reads
+    // This is the user's responsibility when doing back-to-back transfers
+    vko::cmdMemoryBarrier(ctx->device, streaming.commandBuffer(),
+        vko::MemoryAccess{VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT},
+        vko::MemoryAccess{VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT});
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // Verify with download - comprehensive chunk validation
+    struct ChunkRecord {
+        size_t chunkId;
+        size_t offset;
+        size_t size;
+    };
+    std::vector<ChunkRecord> chunks;
+    std::vector<uint8_t> visitCount(largeSize, 0); // Track visit count per index
+    size_t valueErrors = 0;
+    size_t duplicateVisits = 0;
+    
     auto handle = streaming.downloadVisit(gpuBuffer, 0, largeSize,
-        [&sum, &count](VkDeviceSize, auto mapped) {
-            for (auto val : mapped) {
-                sum += val;
-                count++;
+        [&](VkDeviceSize offset, auto mapped) {
+            size_t chunkId = chunks.size();
+            chunks.push_back({chunkId, (size_t)offset, mapped.size()});
+            
+            // Validate each value in this chunk
+            for (size_t i = 0; i < mapped.size(); ++i) {
+                size_t index = offset + i;
+                float expected = static_cast<float>(index);
+                
+                // Check value correctness
+                if (mapped[i] != expected) {
+                    if (valueErrors < 5) {  // Print first 5 errors
+                        printf("Chunk %zu [%zu..%zu): Value error at index %zu: expected %f, got %f\n",
+                               chunkId, (size_t)offset, (size_t)offset + mapped.size(),
+                               index, expected, mapped[i]);
+                    }
+                    valueErrors++;
+                }
+                
+                // Track visits (detect duplicates)
+                if (index < visitCount.size()) {
+                    visitCount[index]++;
+                    if (visitCount[index] > 1) {
+                        if (duplicateVisits < 5) {
+                            printf("Chunk %zu: DUPLICATE visit to index %zu (visit count: %u)\n",
+                                   chunkId, index, visitCount[index]);
+                        }
+                        duplicateVisits++;
+                    }
+                }
             }
         });
     
     streaming.submit();
-    handle.wait(ctx->device);
     
-    EXPECT_EQ(count, largeSize);
-    // Sum of 0..99999 = 99999 * 100000 / 2
-    float expectedSum = static_cast<float>(largeSize - 1) * static_cast<float>(largeSize) / 2.0f;
-    EXPECT_FLOAT_EQ(sum, expectedSum);
+    // TODO: Add manual GPU buffer verification if needed
+    
+    // Verify semaphore state before and after wait
+    printf("Before wait: semaphore signaled = %s\n", 
+           handle.semaphore().isSignaled(ctx->device) ? "YES" : "NO");
+    handle.wait(ctx->device);
+    printf("After wait: semaphore signaled = %s\n", 
+           handle.semaphore().isSignaled(ctx->device) ? "YES" : "NO");
+    
+    // Validate chunk coverage
+    size_t totalCovered = 0;
+    std::vector<std::pair<size_t, size_t>> gaps;
+    size_t pos = 0;
+    
+    // Sort chunks by offset to check coverage
+    std::sort(chunks.begin(), chunks.end(), 
+              [](const ChunkRecord& a, const ChunkRecord& b) { return a.offset < b.offset; });
+    
+    for (const auto& chunk : chunks) {
+        if (chunk.offset > pos) {
+            gaps.push_back({pos, chunk.offset});
+        }
+        totalCovered += chunk.size;
+        pos = std::max(pos, chunk.offset + chunk.size);
+    }
+    
+    if (pos < largeSize) {
+        gaps.push_back({pos, largeSize});
+    }
+    
+    // Check for overlaps
+    size_t overlaps = 0;
+    for (size_t i = 1; i < chunks.size(); ++i) {
+        if (chunks[i].offset < chunks[i-1].offset + chunks[i-1].size) {
+            if (overlaps < 5) {
+                printf("OVERLAP: Chunk %zu [%zu..%zu) overlaps with chunk %zu [%zu..%zu)\n",
+                       chunks[i-1].chunkId, chunks[i-1].offset, chunks[i-1].offset + chunks[i-1].size,
+                       chunks[i].chunkId, chunks[i].offset, chunks[i].offset + chunks[i].size);
+            }
+            overlaps++;
+        }
+    }
+    
+    // Count missing indices
+    size_t missingCount = std::count(visitCount.begin(), visitCount.end(), 0);
+    
+    // Report results
+    EXPECT_EQ(gaps.size(), 0) << "Found " << gaps.size() << " gaps in chunk coverage";
+    EXPECT_EQ(overlaps, 0) << "Found " << overlaps << " overlapping chunks";
+    EXPECT_EQ(missingCount, 0) << "Missing " << missingCount << " values";
+    EXPECT_EQ(duplicateVisits, 0) << "Found " << duplicateVisits << " duplicate visits";
+    EXPECT_EQ(valueErrors, 0) << "Found " << valueErrors << " incorrect values";
 }
 
 // Use-case: Asynchronous readback for debugging/profiling without stalling rendering

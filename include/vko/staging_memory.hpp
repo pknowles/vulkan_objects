@@ -400,10 +400,10 @@ public:
         // Only move batch to m_inUse if it has pools (RAII: no empty batches)
         if (!m_current.pools.empty()) {
             m_inUse.push_back(std::move(m_current), reuseSemaphore);
+            m_current = {};
         }
         assert(m_current.buffers.empty());
         assert(m_current.destroyCallbacks.empty());
-        m_current = {};
     }
 
     // Wait for all batches to finish
@@ -439,6 +439,8 @@ private:
     // Invoke callbacks and free buffers from a batch
     // Callbacks are tied to buffer lifetime, so these always happen together
     void destroyBuffers(PoolBatch& batch, bool buffersReady) {
+        printf("DEBUG destroyBuffers: Invoking %zu callbacks (buffersReady=%d)\n", 
+               batch.destroyCallbacks.size(), buffersReady);
         // Invoke callbacks BEFORE clearing buffers
         // This allows download futures to evaluate chunks while buffers are still alive
         for (auto& callback : batch.destroyCallbacks) {
@@ -603,6 +605,8 @@ private:
                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
             m_allocator.get());
+        printf("DEBUG: Allocated staging buffer %p, size=%zu bytes\n",
+               static_cast<VkBuffer>(buffer), size * sizeof(T));
 
         // Track usage
         VkDeviceSize allocatedBytes = buffer.sizeBytes();
@@ -626,6 +630,8 @@ private:
     // Postcondition: batch.pools may become empty (caller should check and remove)
     void recyclePool(PoolBatch& batch) {
         assert(!batch.pools.empty());
+        
+        printf("DEBUG recyclePool: Making pool available for reuse\n");
         
         // Reuse the batch's vector allocations when possible
         if(m_current.buffers.empty() && batch.buffers.capacity() > m_current.buffers.capacity()) {
@@ -781,6 +787,12 @@ public:
     }
 
     // Download to a vector via a transform function that operates in batches
+    // 
+    // IMPORTANT: User is responsible for ensuring appropriate memory barriers are in place
+    // between GPU writes to srcBuffer and the download operation. The staging buffers are
+    // mapped HOST_VISIBLE | HOST_COHERENT, so no explicit cache invalidation is needed for
+    // the staging memory itself, but srcBuffer must be properly synchronized.
+    //
     // NOTE: callback may be called even if the return value is destroyed
     template <class DstT, buffer SrcBuffer, class Fn>
     DownloadTransformFuture<Fn, DstT, Allocator>
@@ -795,7 +807,9 @@ public:
                 copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(*stagingBuf)>>(
                     m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, stagingBuf->size());
 
-                // Defer evaluation and register cleanup callback
+                // Create mapping now (safe: mapping before GPU copy completion is fine)
+                // The mapping just establishes CPU-side access; actual data read happens
+                // later in the callback after GPU work completes.
                 m_staging.registerBatchCallback(
                     result.deferEvaluation(m_staging.device(), offset, stagingBuf->map()));
 
@@ -839,12 +853,32 @@ public:
         while (size > 0) {
             vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template allocateUpTo<T>(size);
             if (stagingBuf) {
+                printf("DEBUG downloadVisit: Allocated staging buffer %p for offset %zu\n",
+                       static_cast<VkBuffer>(*stagingBuf), static_cast<size_t>(offset));
+                
+                // DEBUG: Fill staging buffer with sentinel values before download copy
+                if constexpr (std::is_arithmetic_v<T>) {
+                    auto mapping = stagingBuf->map();
+                    printf("DEBUG downloadVisit: Filling buffer %p with sentinel (first elem will be %f)\n",
+                           static_cast<VkBuffer>(*stagingBuf), static_cast<float>(-99999.0f - offset));
+                    for (size_t i = 0; i < mapping.size(); ++i) {
+                        mapping[i] = static_cast<T>(-99999.0f - offset); // Sentinel value
+                    }
+                }
+                
                 copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(*stagingBuf)>>(
                     m_staging.device(), commandBuffer(), srcBuffer, offset, *stagingBuf, 0, stagingBuf->size());
 
-                // Defer evaluation and register cleanup callback
+                // Create mapping now (safe: mapping before GPU copy completion is fine)
+                // It's perfectly fine to create the mapping before the copy is complete or even submitted too :)
+                auto finalMapping = stagingBuf->map();
+                if constexpr (std::is_arithmetic_v<T>) {
+                    printf("DEBUG downloadVisit: Created final mapping for buffer %p, data ptr=%p, first elem=%f\n",
+                           static_cast<VkBuffer>(*stagingBuf), finalMapping.data(),
+                           finalMapping.size() > 0 ? static_cast<float>(finalMapping[0]) : 0.0f);
+                }
                 m_staging.registerBatchCallback(
-                    result.deferEvaluation(m_staging.device(), offset, stagingBuf->map()));
+                    result.deferEvaluation(m_staging.device(), offset, std::move(finalMapping)));
 
                 // The staging buffer may not necessarily be the full size
                 // requested. Loop until the entire range is uploaded.

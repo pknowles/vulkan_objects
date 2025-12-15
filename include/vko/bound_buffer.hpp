@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
+#include <cstdio>
 #include <span>
 #include <type_traits>
 #include <vko/allocator.hpp>
@@ -162,6 +163,10 @@ void copyBuffer(const DeviceAndCommands& device, VkCommandBuffer cmd, const SrcB
     VkBufferCopy region{.srcOffset = srcOffset * sizeof(T),
                         .dstOffset = dstOffset * sizeof(T),
                         .size      = count * sizeof(T)};
+    printf("DEBUG: vkCmdCopyBuffer called - src=%p, srcOffset=%zu, dst=%p, dstOffset=%zu, size=%zu bytes\n",
+           static_cast<VkBuffer>(src), static_cast<size_t>(region.srcOffset),
+           static_cast<VkBuffer>(dst), static_cast<size_t>(region.dstOffset),
+           static_cast<size_t>(region.size));
     device.vkCmdCopyBuffer(cmd, src, dst, 1, &region);
 }
 

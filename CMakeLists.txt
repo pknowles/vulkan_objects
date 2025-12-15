@@ -32,6 +32,9 @@ set(VULKAN_OBJECTS_SPEC_TAG "v1.4.335" CACHE STRING "GIT tag from https://github
 set(VULKAN_OBJECTS_VMA_TAG "v3.3.0" CACHE STRING "GIT tag from https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/tags")
 set(VULKAN_OBJECTS_SLANG_TAG "v2025.6.3" CACHE STRING "GIT tag from https://github.com/shader-slang/slang/tags")
 set(VULKAN_OBJECTS_SHADERC_TAG "v2025.5" CACHE STRING "GIT tag from https://github.com/google/shaderc/tags")
+set(VULKAN_OBJECTS_SPIRV_HEADERS_TAG "vulkan-sdk-1.4.335.0" CACHE STRING "GIT tag from https://github.com/KhronosGroup/SPIRV-Headers/tags")
+set(VULKAN_OBJECTS_SPIRV_TOOLS_TAG "v2025.4" CACHE STRING "GIT tag from https://github.com/KhronosGroup/SPIRV-Tools/tags")
+set(VULKAN_OBJECTS_GLSLANG_TAG "16.1.0" CACHE STRING "GIT tag from https://github.com/KhronosGroup/glslang/tags")
 option(VULKAN_OBJECTS_FETCH_VVL "Include Vulkan Validation Layers with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_VMA "Include Vulkan Memory Allocator with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_SLANG "Include Slang compiler with FetchContent()" OFF)
@@ -105,24 +108,89 @@ endforeach()
 
 # Just for convenience because users would probably want these optional libs
 # anyway. vulkan_objects includes wrappers/helpers for them but they
+
+# ============================================================================
+# SHARED DEPENDENCIES (for VVL and Shaderc)
+# ============================================================================
+# Both Vulkan Validation Layers and Shaderc require these Khronos tools.
+# Fetch them once here to ensure version consistency and avoid duplicates.
+# ============================================================================
+
+if (VULKAN_OBJECTS_FETCH_VVL OR VULKAN_OBJECTS_FETCH_SHADERC)
+  include(FetchContent)
+  
+  if (NOT TARGET SPIRV-Tools)
+    # SPIRV-Headers: SPIR-V specification headers
+    FetchContent_Declare(
+      SPIRV-Headers
+      GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Headers.git
+      GIT_TAG ${VULKAN_OBJECTS_SPIRV_HEADERS_TAG}
+      GIT_SHALLOW TRUE
+    )
+    
+    # SPIRV-Tools: SPIR-V binary manipulation and validation  
+    FetchContent_Declare(
+      SPIRV-Tools
+      GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Tools.git
+      GIT_TAG ${VULKAN_OBJECTS_SPIRV_TOOLS_TAG}
+      GIT_SHALLOW TRUE
+    )
+    
+    set(SPIRV_HEADERS_SKIP_EXAMPLES ON CACHE BOOL "" FORCE)
+    set(SPIRV_SKIP_TESTS ON CACHE BOOL "" FORCE)
+    set(SPIRV_SKIP_EXECUTABLES ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(SPIRV-Headers SPIRV-Tools)
+  endif()
+  
+  if (NOT TARGET glslang)
+    # glslang: GLSL/HLSL front-end compiler
+    FetchContent_Declare(
+      glslang
+      GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
+      GIT_TAG ${VULKAN_OBJECTS_GLSLANG_TAG}
+      GIT_SHALLOW TRUE
+    )
+    set(ENABLE_SPVREMAPPER OFF CACHE BOOL "" FORCE)
+    set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "" FORCE)
+    set(ENABLE_GLSLANG_JS OFF CACHE BOOL "" FORCE)
+    set(ENABLE_CTEST OFF CACHE BOOL "" FORCE)
+    set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(glslang)
+  endif()
+endif()
+
 if(VULKAN_OBJECTS_FETCH_VVL)
-  # I don't even want to know. This brings in so much extra stuff, but vulkan dev
-  # without validation layers is impossible and the philosophy of this project is
-  # it works out of the box with no manual dependencies. Pre-built binaries don't
-  # come with debug info, which can be really handy when hitting obscure
-  # validation layer errors. We gotta have it.
+  # Vulkan Validation Layers with manual dependency management
+  # We provide SPIRV-Tools, SPIRV-Headers, glslang from the shared section above,
+  # and Vulkan-Headers is already fetched at the top of this file.
+  # We only need to fetch Vulkan-Utility-Libraries here.
+  include(FetchContent)
+  
+  # Fetch Vulkan-Utility-Libraries
+  if (NOT TARGET Vulkan-UtilityLibraries)
+    FetchContent_Declare(
+      Vulkan-Utility-Libraries
+      GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Utility-Libraries.git
+      GIT_TAG ${VULKAN_OBJECTS_SPEC_TAG}
+      GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(Vulkan-Utility-Libraries)
+  endif()
+  
+  # Fetch VVL itself
   FetchContent_Declare(
     vvl
     GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-ValidationLayers.git
     GIT_TAG ${VULKAN_OBJECTS_SPEC_TAG}
     GIT_SHALLOW TRUE
   )
-  set(UPDATE_DEPS ON)
+  
+  # Disable UPDATE_DEPS - we provide dependencies manually via FetchContent
+  set(UPDATE_DEPS OFF)
   set(BUILD_TESTS_backup ${BUILD_TESTS})
   set(BUILD_TESTS OFF)
-  # TODO: would be nice if UPDATE_DEPS doesn't duplicate the giant spirv-tools
-  # binaries to the install directory :(
   set(SKIP_SPIRV_TOOLS_INSTALL ON CACHE BOOL "" FORCE)
+  
   FetchContent_MakeAvailable(vvl)
   set(BUILD_TESTS ${BUILD_TESTS_backup})
   add_dependencies(vulkan_objects vvl)
@@ -180,29 +248,15 @@ if(VULKAN_OBJECTS_FETCH_SHADERC)
   # SPIRV-Tools to provide a more stable API and better build integration.
   #
   # DEPENDENCY HANDLING:
-  # Shaderc requires three core dependencies from Khronos:
-  #   - SPIRV-Headers: SPIR-V specification headers
-  #   - SPIRV-Tools:   SPIR-V binary manipulation and validation
-  #   - glslang:       GLSL/HLSL front-end compiler
-  #
-  # Unlike VVL which uses UPDATE_DEPS to auto-fetch dependencies via git-sync,
-  # we manually fetch these dependencies with FetchContent to:
-  #   1. Use specific named release tags (not commit hashes)
-  #   2. Control versions explicitly for reproducible builds
-  #   3. Minimize what gets built (tests, examples, etc.)
-  #   4. Provide a pure CMake/FetchContent experience
-  #
-  # NOTE: If VULKAN_OBJECTS_FETCH_VVL is also enabled, there may be duplicate
-  # SPIRV-Tools/SPIRV-Headers fetches. The "if (NOT TARGET ...)" guards prevent
-  # duplicate builds, with whichever is configured first taking precedence.
-  # This can lead to version mismatches. TODO: Consider consolidating these
-  # dependencies or adding explicit version conflict detection.
+  # Shaderc's core dependencies (SPIRV-Headers, SPIRV-Tools, glslang) are now
+  # fetched in the shared dependencies section at the top of this file to avoid
+  # duplication with VVL and ensure version consistency.
   #
   # VERSIONS (as of Dec 2025):
   #   - Shaderc:       v2025.5 (configurable via VULKAN_OBJECTS_SHADERC_TAG)
-  #   - SPIRV-Tools:   v2025.4
-  #   - glslang:       16.1.0
-  #   - SPIRV-Headers: vulkan-sdk-1.4.335.0 (only has SDK-versioned tags)
+  #   - SPIRV-Tools:   v2025.4 (shared with VVL)
+  #   - glslang:       16.1.0 (shared with VVL)
+  #   - SPIRV-Headers: vulkan-sdk-1.4.335.0 (shared with VVL)
   #
   # LINKING:
   # We link to shaderc_combined, which is a static library containing shaderc
@@ -222,43 +276,8 @@ if(VULKAN_OBJECTS_FETCH_SHADERC)
   # ============================================================================
   include(FetchContent)
   
-  # Fetch and build shaderc's dependencies using MakeAvailable
-  # This creates the targets, so shaderc will detect them and skip adding them again
-  
-  if (NOT TARGET SPIRV-Tools)
-    FetchContent_Declare(
-      SPIRV-Headers
-      GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Headers.git
-      GIT_TAG vulkan-sdk-1.4.335.0
-      GIT_SHALLOW TRUE
-    )
-    FetchContent_Declare(
-      SPIRV-Tools
-      GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Tools.git
-      GIT_TAG v2025.4
-      GIT_SHALLOW TRUE
-    )
-    # Configure SPIRV-Tools options before making it available
-    set(SPIRV_HEADERS_SKIP_EXAMPLES ON CACHE BOOL "" FORCE)
-    set(SPIRV_SKIP_TESTS ON CACHE BOOL "" FORCE)
-    set(SPIRV_SKIP_EXECUTABLES ON CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(SPIRV-Headers SPIRV-Tools)
-  endif()
-  
-  if (NOT TARGET glslang)
-    FetchContent_Declare(
-      glslang
-      GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
-      GIT_TAG 16.1.0
-      GIT_SHALLOW TRUE
-    )
-    # Configure glslang options before making it available
-    set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "" FORCE)
-    set(_vulkan_objects_build_testing_save ${BUILD_TESTING})
-    set(BUILD_TESTING OFF)
-    FetchContent_MakeAvailable(glslang)
-    set(BUILD_TESTING ${_vulkan_objects_build_testing_save})
-  endif()
+  # Dependencies (SPIRV-Tools, SPIRV-Headers, glslang) are provided by the
+  # shared dependencies section. Shaderc will detect them and skip adding them again.
   
   set(SHADERC_SKIP_TESTS ON CACHE BOOL "" FORCE)
   set(SHADERC_SKIP_EXAMPLES ON CACHE BOOL "" FORCE)
