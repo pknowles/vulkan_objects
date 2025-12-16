@@ -711,7 +711,7 @@ TEST_F(UnitTestFixture, StagingStream_UploadLarge) {
 }
 
 // Use-case: GPU→CPU data processing without storage (e.g., checksums, statistics)
-// Tests downloadVisit() which processes data chunks without copying to a vector,
+// Tests downloadForEach() which processes data subranges without copying to a vector,
 // ideal for streaming analytics where only aggregate results are needed.
 TEST_F(UnitTestFixture, StagingStream_DownloadVoid) {
     vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
@@ -738,7 +738,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadVoid) {
     int sum = 0;
     int count = 0;
     
-    auto handle = streaming.downloadVisit(gpuBuffer, 0, 1000,
+    auto handle = streaming.downloadForEach(gpuBuffer, 0, 1000,
         [&sum, &count](VkDeviceSize, auto mapped) {
             // Process chunk without storing
             for (auto val : mapped) {
@@ -919,7 +919,7 @@ TEST_F(UnitTestFixture, StagingStream_GiantTransferImplicitCycling) {
     size_t valueErrors = 0;
     size_t duplicateVisits = 0;
     
-    auto handle = streaming.downloadVisit(gpuBuffer, 0, largeSize,
+    auto handle = streaming.downloadForEach(gpuBuffer, 0, largeSize,
         [&](VkDeviceSize offset, auto mapped) {
             size_t chunkId = chunks.size();
             chunks.push_back({chunkId, (size_t)offset, mapped.size()});
@@ -931,11 +931,6 @@ TEST_F(UnitTestFixture, StagingStream_GiantTransferImplicitCycling) {
                 
                 // Check value correctness
                 if (mapped[i] != expected) {
-                    if (valueErrors < 5) {  // Print first 5 errors
-                        printf("Chunk %zu [%zu..%zu): Value error at index %zu: expected %f, got %f\n",
-                               chunkId, (size_t)offset, (size_t)offset + mapped.size(),
-                               index, expected, mapped[i]);
-                    }
                     valueErrors++;
                 }
                 
@@ -943,10 +938,6 @@ TEST_F(UnitTestFixture, StagingStream_GiantTransferImplicitCycling) {
                 if (index < visitCount.size()) {
                     visitCount[index]++;
                     if (visitCount[index] > 1) {
-                        if (duplicateVisits < 5) {
-                            printf("Chunk %zu: DUPLICATE visit to index %zu (visit count: %u)\n",
-                                   chunkId, index, visitCount[index]);
-                        }
                         duplicateVisits++;
                     }
                 }
@@ -957,12 +948,8 @@ TEST_F(UnitTestFixture, StagingStream_GiantTransferImplicitCycling) {
     
     // TODO: Add manual GPU buffer verification if needed
     
-    // Verify semaphore state before and after wait
-    printf("Before wait: semaphore signaled = %s\n", 
-           handle.semaphore().isSignaled(ctx->device) ? "YES" : "NO");
+    // Wait for completion
     handle.wait(ctx->device);
-    printf("After wait: semaphore signaled = %s\n", 
-           handle.semaphore().isSignaled(ctx->device) ? "YES" : "NO");
     
     // Validate chunk coverage
     size_t totalCovered = 0;
@@ -989,11 +976,6 @@ TEST_F(UnitTestFixture, StagingStream_GiantTransferImplicitCycling) {
     size_t overlaps = 0;
     for (size_t i = 1; i < chunks.size(); ++i) {
         if (chunks[i].offset < chunks[i-1].offset + chunks[i-1].size) {
-            if (overlaps < 5) {
-                printf("OVERLAP: Chunk %zu [%zu..%zu) overlaps with chunk %zu [%zu..%zu)\n",
-                       chunks[i-1].chunkId, chunks[i-1].offset, chunks[i-1].offset + chunks[i-1].size,
-                       chunks[i].chunkId, chunks[i].offset, chunks[i].offset + chunks[i].size);
-            }
             overlaps++;
         }
     }
