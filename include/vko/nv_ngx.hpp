@@ -102,11 +102,10 @@ inline std::vector<const wchar_t*> makeWcharPtrs(const std::vector<std::wstring>
 // Helper to set up NGX feature discovery with search paths
 struct FeatureDiscovery {
 #if defined(NDEBUG)
-    static constexpr NVSDK_NGX_Logging_Level minLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_OFF;
+    static constexpr NVSDK_NGX_Logging_Level defaultLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_OFF;
 #else
-    static constexpr NVSDK_NGX_Logging_Level minLoggingLevel =
-        NVSDK_NGX_LOGGING_LEVEL_VERBOSE; // NVSDK_NGX_LOGGING_LEVEL_ON /
-                                         // NVSDK_NGX_LOGGING_LEVEL_VERBOSE
+    static constexpr NVSDK_NGX_Logging_Level defaultLoggingLevel =
+        NVSDK_NGX_LOGGING_LEVEL_VERBOSE; // NVSDK_NGX_LOGGING_LEVEL_ON
 #endif
     std::wstring                   applicationDataPath;
     std::vector<std::wstring>      ngxSearchPaths;
@@ -115,7 +114,7 @@ struct FeatureDiscovery {
     NVSDK_NGX_FeatureDiscoveryInfo discoveryInfo;
 
     FeatureDiscovery(unsigned long long applicationId, const std::wstring& appDataPath,
-                   NVSDK_NGX_Feature feature, std::initializer_list<std::wstring_view> searchPaths)
+                   NVSDK_NGX_Feature feature, std::initializer_list<std::wstring_view> searchPaths, NVSDK_NGX_Logging_Level loggingLevel = defaultLoggingLevel)
       : applicationDataPath(appDataPath)
       , ngxSearchPaths(searchPaths.begin(), searchPaths.end())
       , ngxSearchPathPtrs(makeWcharPtrs(ngxSearchPaths))
@@ -131,7 +130,7 @@ struct FeatureDiscovery {
                                 (unsigned int)loggingLevel, (unsigned int)sourceComponent);
                         fflush(stdout);
                     },
-                .MinimumLoggingLevel      = minLoggingLevel,
+                .MinimumLoggingLevel      = loggingLevel,
                 .DisableOtherLoggingSinks = false,
             },
         }
