@@ -21,6 +21,21 @@
 bool physicalDeviceSuitable(const vko::Instance& instance, VkPhysicalDevice physicalDevice);
 bool queueSuitable(const VkQueueFamilyProperties& properties);
 
+// Helper to find a queue family with specific flags
+inline std::optional<uint32_t> findQueueFamily(
+    const std::vector<VkQueueFamilyProperties>& props, 
+    VkQueueFlags requiredFlags,
+    std::optional<uint32_t> excludeIndex = std::nullopt) {
+    for (size_t i = 0; i < props.size(); ++i) {
+        if (excludeIndex.has_value() && i == excludeIndex.value())
+            continue;
+        if ((props[i].queueFlags & requiredFlags) == requiredFlags) {
+            return uint32_t(i);
+        }
+    }
+    return std::nullopt;
+}
+
 struct Context {
     vko::VulkanLibrary  library;
     vko::GlobalCommands globalCommands;
@@ -28,10 +43,11 @@ struct Context {
 #if VULKAN_OBJECTS_HAS_VVL
     vko::DebugMessenger debugMessenger;
 #endif
-    VkPhysicalDevice    physicalDevice   = VK_NULL_HANDLE;
-    uint32_t            queueFamilyIndex = 0;
-    vko::Device         device;
-    vko::vma::Allocator allocator;
+    VkPhysicalDevice           physicalDevice    = VK_NULL_HANDLE;
+    uint32_t                   queueFamilyIndex  = 0;
+    std::optional<uint32_t>    queueFamilyIndex2;
+    vko::Device                device;
+    vko::vma::Allocator        allocator;
 
     Context()
         : library()
@@ -62,16 +78,17 @@ struct Context {
             }
             return *it;
         }())
-        , queueFamilyIndex([this]() {
-            auto props =
-                vko::toVector(instance.vkGetPhysicalDeviceQueueFamilyProperties, physicalDevice);
-            auto it = std::ranges::find_if(props, queueSuitable);
-            if (it == props.end()) {
-                throw std::runtime_error("No suitable queue family");
-            }
-            return uint32_t(std::distance(props.begin(), it));
-        }())
-        , device(instance, physicalDevice, TestDeviceCreateInfo(queueFamilyIndex))
+        , queueFamilyIndex(findQueueFamily(
+            vko::toVector(instance.vkGetPhysicalDeviceQueueFamilyProperties, physicalDevice),
+            VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT).value())
+        , queueFamilyIndex2(findQueueFamily(
+            vko::toVector(instance.vkGetPhysicalDeviceQueueFamilyProperties, physicalDevice),
+            VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT,
+            queueFamilyIndex))
+        , device(instance, physicalDevice,
+                 queueFamilyIndex2.has_value()
+                     ? TestDeviceCreateInfo(queueFamilyIndex, queueFamilyIndex2.value())
+                     : TestDeviceCreateInfo(queueFamilyIndex))
         , allocator(globalCommands, instance, physicalDevice, device, VK_API_VERSION_1_4, 0) {}
 
     // Helper to create a command pool for testing

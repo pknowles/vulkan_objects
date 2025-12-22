@@ -83,30 +83,52 @@ struct TestDeviceFeatures {
 struct TestDeviceCreateInfo {
     std::array<const char*, 2> deviceExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
                                                    VK_EXT_SHADER_OBJECT_EXTENSION_NAME};
-    float                      queuePriority    = 1.0f;
-    VkDeviceQueueCreateInfo    queueCreateInfo;
-    TestDeviceFeatures         features;
-    VkDeviceCreateInfo         deviceCreateInfo;
-    TestDeviceCreateInfo(uint32_t queueFamilyIndex)
-        : queueCreateInfo{.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                          .pNext            = nullptr,
-                          .flags            = 0,
-                          .queueFamilyIndex = queueFamilyIndex,
-                          .queueCount       = 1,
-                          .pQueuePriorities = &queuePriority}
+    float                                queuePriority = 1.0f;
+    std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+    TestDeviceFeatures                   features;
+    VkDeviceCreateInfo                   deviceCreateInfo;
+    
+    template <std::ranges::range QueueFamilyIndices>
+    TestDeviceCreateInfo(const QueueFamilyIndices& queueFamilyIndices)
+        : queueCreateInfos(makeQueueCreateInfos(queueFamilyIndices))
         , deviceCreateInfo{.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
                            .pNext                   = features.pNext(),
                            .flags                   = 0,
-                           .queueCreateInfoCount    = 1U,
-                           .pQueueCreateInfos       = &queueCreateInfo,
+                           .queueCreateInfoCount    = uint32_t(queueCreateInfos.size()),
+                           .pQueueCreateInfos       = queueCreateInfos.data(),
                            .enabledLayerCount       = 0,
                            .ppEnabledLayerNames     = nullptr,
                            .enabledExtensionCount   = uint32_t(deviceExtensions.size()),
                            .ppEnabledExtensionNames = deviceExtensions.data(),
                            .pEnabledFeatures        = nullptr} {}
+    
+    TestDeviceCreateInfo(uint32_t queueFamilyIndex)
+        : TestDeviceCreateInfo(std::array{queueFamilyIndex}) {}
+    
+    TestDeviceCreateInfo(uint32_t queueFamilyIndex1, uint32_t queueFamilyIndex2)
+        : TestDeviceCreateInfo(std::array{queueFamilyIndex1, queueFamilyIndex2}) {}
+    
     operator VkDeviceCreateInfo&() { return deviceCreateInfo; }
     TestDeviceCreateInfo(const TestDeviceCreateInfo& other) = delete;
     TestDeviceCreateInfo operator=(const TestDeviceCreateInfo& other) = delete;
+
+private:
+    template <std::ranges::range QueueFamilyIndices>
+    std::vector<VkDeviceQueueCreateInfo> makeQueueCreateInfos(const QueueFamilyIndices& indices) {
+        std::vector<VkDeviceQueueCreateInfo> infos;
+        infos.reserve(std::ranges::size(indices));
+        for (uint32_t familyIndex : indices) {
+            infos.push_back(VkDeviceQueueCreateInfo{
+                .sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                .pNext            = nullptr,
+                .flags            = 0,
+                .queueFamilyIndex = familyIndex,
+                .queueCount       = 1,
+                .pQueuePriorities = &queuePriority
+            });
+        }
+        return infos;
+    }
 };
 
 inline bool queueSuitable(const VkQueueFamilyProperties& properties) {

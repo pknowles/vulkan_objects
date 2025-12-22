@@ -191,6 +191,12 @@ public:
         return waitFor(device, std::chrono::seconds(0));
     }
 
+    // Alias for isSignaled() - checks if semaphore is ready (signaled).
+    template <vko::device_and_commands DeviceAndCommands>
+    bool ready(DeviceAndCommands& device) const {
+        return isSignaled(device);
+    }
+
     // Returns a VkSemaphoreSubmitInfo for waiting on this semaphore. Will until
     // the semaphore value is known.
     // NOTE: may throw TimelineSubmitCancel, e.g. if the app exits while building
@@ -651,6 +657,21 @@ private:
 // A VkQueue with a timeline semaphore that tracks submission. Not thread safe.
 // Use only for tracking submissions to a single device in a device group. It is
 // just a ConcurrentTimelineQueue a single internal SubmitPromise.
+//
+// Usage pattern:
+//   TimelineQueue queue(device, queueFamilyIndex, 0);
+//   
+//   // Get the semaphore BEFORE recording dependencies or submitting
+//   auto semaphore = queue.nextSubmitSemaphore();
+//   
+//   // Pass semaphore to functions that need to wait on this submission
+//   recordWork(cmd, semaphore);
+//   
+//   // Submit the command buffer (advances internal counter)
+//   queue.submit(device, {}, cmd.end(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+//   
+//   // Wait for completion if needed
+//   semaphore.wait(device);
 class TimelineQueue {
 public:
     template <device_and_commands DeviceAndCommands>

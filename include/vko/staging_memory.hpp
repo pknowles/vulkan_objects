@@ -735,13 +735,11 @@ public:
     using State = DownloadFutureState<Fn, T, Allocator, HasOutput>;
     
     // Constructor for transform case (HasOutput = true)
-    template <bool H = HasOutput> requires H
-    DownloadFutureBuilder(Fn&& producer, size_t outputSize)
+    DownloadFutureBuilder(Fn&& producer, size_t outputSize) requires HasOutput
         : m_state(std::make_shared<State>(std::forward<Fn>(producer), outputSize)) {}
     
     // Constructor for foreach case (HasOutput = false)
-    template <bool H = HasOutput> requires (!H)
-    DownloadFutureBuilder(Fn&& producer)
+    DownloadFutureBuilder(Fn&& producer) requires (!HasOutput)
         : m_state(std::make_shared<State>(std::forward<Fn>(producer))) {}
     
     // Add a subrange and return callback for StagingStream to register with staging allocator
@@ -817,7 +815,6 @@ public:
         assert(!m_state->semaphore.has_value() && "Semaphore already set");
         m_state->semaphore = std::move(finalSemaphore);
     }
-
 
     // For transform case: get the output vector, evaluating subranges if needed
     template <vko::device_and_commands DeviceAndCommands, bool H = HasOutput> requires H
@@ -909,30 +906,17 @@ public:
         using T = typename DstBuffer::ValueType;
         VkDeviceSize userOffset = 0;
         while (dstSize > 0) {
-            vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template allocateUpTo<T>(dstSize);
-            if (stagingBuf) {
-                fn(userOffset, stagingBuf->map().span());
-                copyBuffer<DeviceAndCommands, std::remove_reference_t<decltype(*stagingBuf)>,
-                           DstBuffer>(m_staging.device(), commandBuffer(), *stagingBuf, 0,
-                                      dstBuffer, dstOffset, stagingBuf->size());
+            auto& stagingBuf = allocateUpTo<T>(dstSize);
+            fn(userOffset, stagingBuf.map().span());
+            copyBuffer<DeviceAndCommands, std::remove_reference_t<decltype(stagingBuf)>,
+                       DstBuffer>(m_staging.device(), commandBuffer(), stagingBuf, 0,
+                                  dstBuffer, dstOffset, stagingBuf.size());
 
-                // The staging buffer may not necessarily be the full size
-                // requested. Loop until the entire range is uploaded.
-                userOffset += stagingBuf->size();
-                dstOffset += stagingBuf->size();
-                dstSize -= stagingBuf->size();
-            } else {
-                if constexpr (!StagingAllocator::AllocateAlwaysSucceeds) {
-                    // Staging allocator is full. We must make a submit now, which
-                    // will call m_staging.endBatch() and allow the staging
-                    // allocator to block and wait for some memory to be recycled.
-                    submit();
-                    continue;
-                } else {
-                    //std::unreachable();
-                    throw std::runtime_error("StagingAllocator::AllocateAlwaysSucceeds but it failed");
-                }
-            }
+            // The staging buffer may not necessarily be the full size
+            // requested. Loop until the entire range is uploaded.
+            userOffset += stagingBuf.size();
+            dstOffset += stagingBuf.size();
+            dstSize -= stagingBuf.size();
         }
     }
 
@@ -941,33 +925,20 @@ public:
     void upload(VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
         VkDeviceSize userOffset = 0;
         while (dstSize > 0) {
-            vko::BoundBuffer<std::byte, Allocator>* stagingBuf = m_staging.template allocateUpTo<std::byte>(size);
-            if (stagingBuf) {
-                fn(userOffset, stagingBuf->map().span());
-                VkBufferCopy copyRegion{
-                    .srcOffset = 0,
-                    .dstOffset = dstOffset,
-                    .size      = stagingBuf->size(),
-                };
-                m_staging.device().vkCmdCopyBuffer(commandBuffer(), *stagingBuf, dstBuffer, 1, &copyRegion);
+            auto& stagingBuf = allocateUpTo<std::byte>(dstSize);
+            fn(userOffset, stagingBuf.map().span());
+            VkBufferCopy copyRegion{
+                .srcOffset = 0,
+                .dstOffset = dstOffset,
+                .size      = stagingBuf.size(),
+            };
+            m_staging.device().vkCmdCopyBuffer(commandBuffer(), stagingBuf, dstBuffer, 1, &copyRegion);
 
-                // The staging buffer may not necessarily be the full size
-                // requested. Loop until the entire range is uploaded.
-                userOffset += stagingBuf->size();
-                dstOffset += stagingBuf->size();
-                dstSize -= stagingBuf->size();
-            } else {
-                if constexpr (!StagingAllocator::AllocateAlwaysSucceeds) {
-                    // Staging allocator is full. We must make a submit now, which
-                    // will call m_staging.endBatch() and allow the staging
-                    // allocator to block and wait for some memory to be recycled.
-                    submit();
-                    continue;
-                } else {
-                    //std::unreachable();
-                    throw std::runtime_error("StagingAllocator::AllocateAlwaysSucceeds but it failed");
-                }
-            }
+            // The staging buffer may not necessarily be the full size
+            // requested. Loop until the entire range is uploaded.
+            userOffset += stagingBuf.size();
+            dstOffset += stagingBuf.size();
+            dstSize -= stagingBuf.size();
         }
     }
 
@@ -1003,32 +974,22 @@ public:
 
         VkDeviceSize userOffset = 0;
         while (srcSize > 0) {
-            vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template allocateUpTo<T>(srcSize);
-            if (stagingBuf) {
-                copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(*stagingBuf)>>(
-                    m_staging.device(), commandBuffer(), srcBuffer, srcOffset, *stagingBuf, 0, stagingBuf->size());
+            auto& stagingBuf = allocateUpTo<T>(srcSize);
+            copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(stagingBuf)>>(
+                m_staging.device(), commandBuffer(), srcBuffer, srcOffset, stagingBuf, 0, stagingBuf.size());
 
-                // Create mapping now (safe: mapping before GPU copy completion is fine)
-                // It's perfectly fine to create the mapping before the copy is complete or even submitted too :)
-                // The mapping just establishes CPU-side access; actual data read happens
-                // later in the callback after GPU work completes.
-                auto callback = builder.addSubrange(userOffset, stagingBuf->map());
-                m_staging.registerBatchCallback(std::move(callback));
+            // Create mapping now (safe: mapping before GPU copy completion is fine)
+            // It's perfectly fine to create the mapping before the copy is complete or even submitted too :)
+            // The mapping just establishes CPU-side access; actual data read happens
+            // later in the callback after GPU work completes.
+            auto callback = builder.addSubrange(userOffset, stagingBuf.map());
+            m_staging.registerBatchCallback(std::move(callback));
 
-                // The staging buffer may not necessarily be the full size
-                // requested. Loop until the entire range is uploaded.
-                userOffset += stagingBuf->size();
-                srcOffset += stagingBuf->size();
-                srcSize -= stagingBuf->size();
-            } else {
-                if constexpr (!StagingAllocator::AllocateAlwaysSucceeds) {
-                    submit();
-                    continue;
-                } else {
-                    //std::unreachable();
-                    throw std::runtime_error("StagingAllocator::AllocateAlwaysSucceeds but it failed");
-                }
-            }
+            // The staging buffer may not necessarily be the full size
+            // requested. Loop until the entire range is uploaded.
+            userOffset += stagingBuf.size();
+            srcOffset += stagingBuf.size();
+            srcSize -= stagingBuf.size();
         }
 
         // NOW we know the final semaphore - construct future from builder
@@ -1062,29 +1023,22 @@ public:
 
         VkDeviceSize userOffset = 0;
         while (srcSize > 0) {
-            vko::BoundBuffer<T, Allocator>* stagingBuf = m_staging.template allocateUpTo<T>(srcSize);
-            if (stagingBuf) {
-                copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(*stagingBuf)>>(
-                    m_staging.device(), commandBuffer(), srcBuffer, srcOffset, *stagingBuf, 0, stagingBuf->size());
+            auto& stagingBuf = allocateUpTo<T>(srcSize);
+            copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(stagingBuf)>>(
+                m_staging.device(), commandBuffer(), srcBuffer, srcOffset, stagingBuf, 0, stagingBuf.size());
 
-                // Create mapping now (safe: mapping before GPU copy completion is fine)
-                // It's perfectly fine to create the mapping before the copy is complete or even submitted too :)
-                auto finalMapping = stagingBuf->map();
-                
-                auto callback = builder.addSubrange(userOffset, std::move(finalMapping));
-                m_staging.registerBatchCallback(std::move(callback));
+            // Create mapping now (safe: mapping before GPU copy completion is fine)
+            // It's perfectly fine to create the mapping before the copy is complete or even submitted too :)
+            auto finalMapping = stagingBuf.map();
+            
+            auto callback = builder.addSubrange(userOffset, std::move(finalMapping));
+            m_staging.registerBatchCallback(std::move(callback));
 
-                // The staging buffer may not necessarily be the full size
-                // requested. Loop until the entire range is uploaded.
-                userOffset += stagingBuf->size();
-                srcOffset += stagingBuf->size();
-                srcSize -= stagingBuf->size();
-            } else {
-                if constexpr (!StagingAllocator::AllocateAlwaysSucceeds) {
-                    submit();
-                    continue;
-                }
-            }
+            // The staging buffer may not necessarily be the full size
+            // requested. Loop until the entire range is uploaded.
+            userOffset += stagingBuf.size();
+            srcOffset += stagingBuf.size();
+            srcSize -= stagingBuf.size();
         }
         
         // NOW we know the final semaphore - construct future from builder
@@ -1175,11 +1129,42 @@ private:
         return CommandBuffer(m_staging.device(), nullptr, m_commandPool,
                                 VK_COMMAND_BUFFER_LEVEL_PRIMARY);
     }
+    
+    // Accessor for testing
+    StagingAllocator& staging() { return m_staging; }
+    const StagingAllocator& staging() const { return m_staging; }
 
     std::reference_wrapper<TimelineQueue>         m_queue;
     StagingAllocator                              m_staging;
     CommandPool                                   m_commandPool;
     std::deque<InFlightCmd>                       m_inFlightCmds;
+    bool                                          m_justSubmitted = true;
+    
+    // Helper to allocate from staging or submit and retry once Guarantees
+    // return of valid buffer or throws on persistent failure, indicating a bug
+    // with the backing allocator.
+    template <class T>
+    BoundBuffer<T, Allocator>& allocateUpTo(VkDeviceSize size) {
+        while (true) {
+            auto* buf = m_staging.template allocateUpTo<T>(size);
+            if (buf) {
+                m_justSubmitted = false;
+                return *buf;  // Success
+            }
+            
+            if constexpr (StagingAllocator::AllocateAlwaysSucceeds) {
+                throw std::runtime_error("AllocateAlwaysSucceeds but allocation failed");
+            }
+            
+            if (m_justSubmitted) {
+                throw std::runtime_error("Staging allocation failed even after submit");
+            }
+            
+            submit();
+            m_justSubmitted = true;
+            // Retry
+        }
+    }
     std::optional<simple::RecordingCommandBuffer> m_currentCmd;
 };
 
