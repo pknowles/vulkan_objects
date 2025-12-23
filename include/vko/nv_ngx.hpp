@@ -245,6 +245,35 @@ requiredDeviceExtensions(VkInstance instance, VkPhysicalDevice physicalDevice,
     return {extensions, extensionCount};
 }
 
+template <typename Callback>
+bool withRequiredInstanceExtensions(const NVSDK_NGX_FeatureDiscoveryInfo& featureDiscoveryInfo, Callback&& callback) {
+    uint32_t extensionCount = 0;
+    VkExtensionProperties* extensions = nullptr;
+    NVSDK_NGX_Result result = NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements(&featureDiscoveryInfo,
+                                                                                      &extensionCount, &extensions);
+    if (result == NVSDK_NGX_Result_Success) {
+        std::span<const VkExtensionProperties> span{extensions, extensionCount};
+        callback(span);
+        return true;
+    }
+    return false;
+}
+
+template <typename Callback>
+bool withRequiredDeviceExtensions(VkInstance instance, VkPhysicalDevice physicalDevice,
+                                  const NVSDK_NGX_FeatureDiscoveryInfo& featureDiscoveryInfo, Callback&& callback) {
+    uint32_t extensionCount = 0;
+    VkExtensionProperties* extensions = nullptr;
+    NVSDK_NGX_Result result = NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements(
+        instance, physicalDevice, &featureDiscoveryInfo, &extensionCount, &extensions);
+    if (result == NVSDK_NGX_Result_Success) {
+        std::span<const VkExtensionProperties> span{extensions, extensionCount};
+        callback(span);
+        return true;
+    }
+    return false;
+}
+
 struct OptimalSettings {
     OptimalSettings(NVSDK_NGX_Parameter& parameter, unsigned int selectedWidth,
                     unsigned int selectedHeight, NVSDK_NGX_PerfQuality_Value qualityValue) {

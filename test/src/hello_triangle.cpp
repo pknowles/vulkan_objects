@@ -4,7 +4,6 @@
 #include <array>
 #include <test_context_fixtures.hpp>
 #include <debugbreak.h>
-#include <expected>
 #include <gtest/gtest.h>
 #include <iostream>
 #include <type_traits>

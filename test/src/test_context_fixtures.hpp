@@ -102,8 +102,8 @@ struct Context {
         return vko::CommandPool(device, poolInfo);
     }
 
-    // Helper to record an empty command buffer (for testing timeline operations)
-    vko::simple::RecordingCommandBuffer recordEmptyCommandBuffer(VkCommandPool pool) {
+    // Begin recording a command buffer for testing
+    vko::simple::RecordingCommandBuffer beginRecording(VkCommandPool pool) {
         return vko::simple::RecordingCommandBuffer(
             device,
             vko::CommandBuffer(device, device, nullptr, pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY),
