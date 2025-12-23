@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
+#include "timeline_queue.hpp"
 #include <functional>
 #include <stdexcept>
 #include <type_traits>
@@ -707,7 +708,7 @@ struct DownloadFutureState {
     
     // No cancellation for foreach - it just doesn't call the producer
     bool isCancelled() const { return false; }
-    void cancel() { /* no-op for foreach */ }
+    void cancel() { assert(!"Most likely a missing staging.submit()"); /* no-op for foreach */ }
 };
 
 // Specialization for HasOutput = true (transform case - with output vector)
@@ -723,7 +724,10 @@ struct DownloadFutureState<Fn, T, Allocator, true> {
     
     // Cancelled = output cleared but subranges existed (not just zero-size)
     bool isCancelled() const { return output.empty() && !subranges.empty(); }
-    void cancel() { output.clear(); }
+    void cancel() {
+        assert(!"Most likely a missing staging.submit()");
+        output.clear();
+    }
 };
 } // anonymous namespace
 
@@ -780,6 +784,10 @@ public:
                 if (ready) {
                     // GPU work complete: evaluate this subrange
                     state->producer(sub.offset, sub.mapping->span());
+                } else {
+                    // Cancellation requested: clear output
+                    // Can happen before semaphore is set (e.g., staging pool destruction)
+                    state->cancel();
                 }
                 // Clear mapping (whether evaluated or cancelled)
                 sub.mapping.reset();
@@ -882,6 +890,108 @@ using DownloadTransformFuture = DownloadFuture<Fn, T, Allocator, true>;
 template <class Fn, class T, class Allocator>
 using DownloadForEachHandle = DownloadFuture<Fn, T, Allocator, false>;
 
+template <device_and_commands DeviceAndCommands>
+class CyclingCommandBuffer {
+public:
+    CyclingCommandBuffer(const DeviceAndCommands& device, TimelineQueue& queue)
+        : m_device(device)
+        , m_queue(queue)
+        , m_commandPool(device, VkCommandPoolCreateInfo{
+                                    .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                    .pNext            = nullptr,
+                                    .flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+                                    .queueFamilyIndex = queue.familyIndex(),
+                                }) {}
+
+
+    // Manual submission interface.
+    template <device_and_commands DeviceAndCommands>
+    SemaphoreValue submit() {
+        std::array<VkSemaphoreSubmitInfo, 0> noWaits{};
+        std::array<VkSemaphoreSubmitInfo, 0> noSignals{};
+        return submit(noWaits, noSignals);
+    }
+
+    // TODO: to be really generic and match the Vulkan API, I think we want a "Submission" object
+    template <typename WaitRange, typename SignalRange>
+    SemaphoreValue submit(WaitRange&& waitInfos, SignalRange&& signalInfos, VkPipelineStageFlags2 timelineSemaphoreStageMask) {
+        SemaphoreValue semaphoreValue = m_queue.get().nextSubmitSemaphore();
+        if (m_currentCmd) {
+            CommandBuffer cmd(m_currentCmd->end());
+            m_currentCmd.reset();
+            m_queue.get().submit(m_device.get(), std::forward<WaitRange>(waitInfos), cmd,
+                                    timelineSemaphoreStageMask,
+                                    std::forward<SignalRange>(signalInfos));
+            m_inFlightCmds.push_back({std::move(cmd), semaphoreValue});
+        }
+        return semaphoreValue;
+    }
+
+    // TODO: maybe limit access via a callback? LLMs love to store the result
+    // and it's really dangerous due to it cycling.
+    VkCommandBuffer commandBuffer() {
+        if (!m_currentCmd) {
+            m_currentCmd.emplace(m_device.get(), reuseOrMakeCommandBuffer(),
+                                    VkCommandBufferBeginInfo{
+                                        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                        .pNext = nullptr,
+                                        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                                        .pInheritanceInfo = nullptr,
+                                    });
+        }
+        return *m_currentCmd;
+    }
+
+    // Check to see if commandBuffer() was called since the last submit. Handy
+    // to skip operations if no commands were recorded.
+    bool hasCurrent() const { return m_currentCmd.has_value(); }
+
+    // TODO: maybe limit access via a callback? LLMs love to store the result
+    // and it's really dangerous due to it cycling.
+    operator VkCommandBuffer() { return commandBuffer(); }
+
+    SemaphoreValue nextSubmitSemaphore() const { return m_queue.get().nextSubmitSemaphore(); }
+
+private:
+    struct InFlightCmd {
+        CommandBuffer  commandBuffer;
+        SemaphoreValue readySemaphore;
+    };
+
+    CommandBuffer reuseOrMakeCommandBuffer() {
+        // Try to reuse a command buffer from the in-flight queue
+        if (!m_inFlightCmds.empty() &&
+            m_inFlightCmds.front().readySemaphore.isSignaled(m_device.get())) {
+            auto result = std::move(m_inFlightCmds.front().commandBuffer);
+            m_inFlightCmds.pop_front();
+
+            // If there's a relatively long queue of ready command buffers, free
+            // some up. Leave at least one of the ready ones to avoid frequent
+            // allocations/deallocations.
+            if (m_inFlightCmds.size() >= 2 &&
+                m_inFlightCmds.front().readySemaphore.isSignaled(m_device.get())) {
+                while (m_inFlightCmds.size() >= 2 &&
+                       std::next(m_inFlightCmds.begin())
+                           ->readySemaphore.isSignaled(m_device.get())) {
+                    m_inFlightCmds.pop_front();
+                }
+            }
+
+            m_device.get().vkResetCommandBuffer(result, 0);
+            return result;
+        }
+
+        // Else, create a new command buffer
+        return CommandBuffer(m_device.get(), nullptr, m_commandPool,
+                             VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+    }
+    std::reference_wrapper<const DeviceAndCommands> m_device;
+    std::reference_wrapper<TimelineQueue>         m_queue;
+    CommandPool                                   m_commandPool;
+    std::deque<InFlightCmd>                       m_inFlightCmds;
+    std::optional<simple::RecordingCommandBuffer> m_currentCmd;
+};
+
 // Staging wrapper that also holds a queue and command buffer for
 // staging/streaming memory and automatically submits command buffers as needed
 // to reduce staging memory usage.
@@ -891,15 +1001,10 @@ public:
     using DeviceAndCommands = typename StagingAllocator::DeviceAndCommands;
     using Allocator         = typename StagingAllocator::Allocator;
     StagingStream(TimelineQueue& queue, StagingAllocator&& staging)
-        : m_queue(queue)
+        : 
+        m_commandBuffer(staging.device(), queue)
         , m_staging(std::move(staging))
-        , m_commandPool(m_staging.device(),
-                        VkCommandPoolCreateInfo{
-                            .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-                            .pNext            = nullptr,
-                            .flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                            .queueFamilyIndex = queue.familyIndex(),
-                        }) {}
+        {}
 
     template <buffer DstBuffer, class Fn>
     void upload(const DstBuffer& dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
@@ -997,7 +1102,7 @@ public:
         // Otherwise use semaphore that signals when the LAST subrange's GPU copy completes
         SemaphoreValue finalSemaphore = builder.m_state->subranges.empty() 
             ? SemaphoreValue::makeSignalled()
-            : m_queue.get().nextSubmitSemaphore();
+            : m_commandBuffer.nextSubmitSemaphore();
         return DownloadTransformFuture<Fn, DstT, Allocator>{std::move(builder), finalSemaphore};
     }
 
@@ -1046,7 +1151,7 @@ public:
         // Otherwise use semaphore that signals when the LAST subrange's GPU copy completes
         SemaphoreValue finalSemaphore = builder.m_state->subranges.empty()
             ? SemaphoreValue::makeSignalled()
-            : m_queue.get().nextSubmitSemaphore();
+            : m_commandBuffer.nextSubmitSemaphore();
         return DownloadForEachHandle<Fn, T, Allocator>{std::move(builder), finalSemaphore};
     }
 
@@ -1060,15 +1165,13 @@ public:
     // TODO: to be really generic and match the Vulkan API, I think we want a "Submission" object
     template <typename WaitRange, typename SignalRange>
     SemaphoreValue submit(WaitRange&& waitInfos, SignalRange&& signalInfos) {
-        SemaphoreValue semaphoreValue = m_queue.get().nextSubmitSemaphore();
-        if (m_currentCmd) {
-            CommandBuffer cmd(m_currentCmd->end());
-            m_currentCmd.reset();
-            m_queue.get().submit(m_staging.device(), std::forward<WaitRange>(waitInfos), cmd,
-                                    VK_PIPELINE_STAGE_TRANSFER_BIT /* TODO: is this right? */,
-                                    std::forward<SignalRange>(signalInfos));
-            m_inFlightCmds.push_back({std::move(cmd), semaphoreValue});
+        bool           hasCommands    = m_commandBuffer.hasCurrent();
+        SemaphoreValue semaphoreValue = m_commandBuffer.submit(
+            std::forward<WaitRange>(waitInfos), std::forward<SignalRange>(signalInfos),
+            VK_PIPELINE_STAGE_TRANSFER_BIT /* TODO: is this right? */);
+        if (hasCommands) {
             m_staging.endBatch(semaphoreValue);
+            m_justSubmitted = true;
         }
         return semaphoreValue;
     }
@@ -1079,65 +1182,15 @@ public:
     // Get total staging memory capacity in bytes
     VkDeviceSize capacity() const { return m_staging.capacity(); }
 
-    // Allow internal access to the command buffer. This is most useful for
-    // including memory barriers, but could be used for anything. Don't store
-    // it!
-    // TODO: maybe limit access via a callback?
-    VkCommandBuffer commandBuffer() {
-        if (!m_currentCmd) {
-            m_currentCmd.emplace(m_staging.device(), reuseOrMakeCommandBuffer(),
-                                    VkCommandBufferBeginInfo{
-                                        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                        .pNext = nullptr,
-                                        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-                                        .pInheritanceInfo = nullptr,
-                                    });
-        }
-        return *m_currentCmd;
-    }
-
+    CyclingCommandBuffer<DeviceAndCommands>& commandBuffer() { return m_commandBuffer; }
 private:
-    struct InFlightCmd {
-        CommandBuffer  commandBuffer;
-        SemaphoreValue readySemaphore;
-    };
-
-    CommandBuffer reuseOrMakeCommandBuffer() {
-        // Try to reuse a command buffer from the in-flight queue
-        if (!m_inFlightCmds.empty() &&
-            m_inFlightCmds.front().readySemaphore.isSignaled(m_staging.device())) {
-            auto result = std::move(m_inFlightCmds.front().commandBuffer);
-            m_inFlightCmds.pop_front();
-
-            // If there's a relatively long queue of ready command buffers, free
-            // some up. Leave at least one of the ready ones to avoid frequent
-            // allocations/deallocations.
-            if (m_inFlightCmds.size() >= 2 &&
-                m_inFlightCmds.front().readySemaphore.isSignaled(m_staging.device())) {
-                while (
-                    m_inFlightCmds.size() >= 2 &&
-                    std::next(m_inFlightCmds.begin())->readySemaphore.isSignaled(m_staging.device())) {
-                    m_inFlightCmds.pop_front();
-                }
-            }
-
-            m_staging.device().vkResetCommandBuffer(result, 0);
-            return result;
-        }
-
-        // Else, create a new command buffer
-        return CommandBuffer(m_staging.device(), nullptr, m_commandPool,
-                                VK_COMMAND_BUFFER_LEVEL_PRIMARY);
-    }
     
     // Accessor for testing
     StagingAllocator& staging() { return m_staging; }
     const StagingAllocator& staging() const { return m_staging; }
 
-    std::reference_wrapper<TimelineQueue>         m_queue;
+    CyclingCommandBuffer<DeviceAndCommands>       m_commandBuffer;
     StagingAllocator                              m_staging;
-    CommandPool                                   m_commandPool;
-    std::deque<InFlightCmd>                       m_inFlightCmds;
     bool                                          m_justSubmitted = true;
     
     // Helper to allocate from staging or submit and retry once Guarantees
@@ -1153,19 +1206,18 @@ private:
             }
             
             if constexpr (StagingAllocator::AllocateAlwaysSucceeds) {
+                // std::unreachable()
                 throw std::runtime_error("AllocateAlwaysSucceeds but allocation failed");
+            } else {
+                if (m_justSubmitted) {
+                    throw std::runtime_error("Staging allocation failed even after submit");
+                }
+
+                submit();
+                // Retry
             }
-            
-            if (m_justSubmitted) {
-                throw std::runtime_error("Staging allocation failed even after submit");
-            }
-            
-            submit();
-            m_justSubmitted = true;
-            // Retry
         }
     }
-    std::optional<simple::RecordingCommandBuffer> m_currentCmd;
 };
 
 // Helper: Create a device buffer and upload data to it in one call

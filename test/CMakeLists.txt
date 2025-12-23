@@ -41,6 +41,7 @@ add_executable(vulkan_objects_tests
   src/hello_triangle.cpp
   src/test_timeline_queue.cpp
   src/test_staging.cpp
+  src/test_query.cpp
   )
 
 # Enable clang-tidy to catch common bugs like use-after-move
