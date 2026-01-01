@@ -890,6 +890,8 @@ using DownloadTransformFuture = DownloadFuture<Fn, T, Allocator, true>;
 template <class Fn, class T, class Allocator>
 using DownloadForEachHandle = DownloadFuture<Fn, T, Allocator, false>;
 
+// TODO: Add destructor that waits for m_inFlightCmds to prevent destroying in-flight command buffers.
+// This is critical if CyclingCommandBuffer lifetime is shorter than GPU execution.
 template <device_and_commands DeviceAndCommands>
 class CyclingCommandBuffer {
 public:
@@ -897,10 +899,10 @@ public:
         : m_device(device)
         , m_queue(queue)
         , m_commandPool(device, VkCommandPoolCreateInfo{
-                                    .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-                                    .pNext            = nullptr,
-                                    .flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
-                                    .queueFamilyIndex = queue.familyIndex(),
+                                   .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                   .pNext            = nullptr,
+                                   .flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                                   .queueFamilyIndex = queue.familyIndex(),
                                 }) {}
 
 
@@ -946,8 +948,10 @@ public:
     // to skip operations if no commands were recorded.
     bool hasCurrent() const { return m_currentCmd.has_value(); }
 
-    // TODO: maybe limit access via a callback? LLMs love to store the result
-    // and it's really dangerous due to it cycling.
+    // Implicit conversion to VkCommandBuffer for convenience
+    // WARNING: Do NOT store the result as VkCommandBuffer - the handle can change after submit!
+    // Always use the CyclingCommandBuffer reference directly, which will fetch
+    // the current handle on each use via this conversion operator.
     operator VkCommandBuffer() { return commandBuffer(); }
 
     SemaphoreValue nextSubmitSemaphore() const { return m_queue.get().nextSubmitSemaphore(); }
@@ -995,6 +999,13 @@ private:
 // Staging wrapper that also holds a queue and command buffer for
 // staging/streaming memory and automatically submits command buffers as needed
 // to reduce staging memory usage.
+// 
+// TODO: Refactor to separate ownership from usage:
+// 1. Make StagingStream a lightweight view (reference_wrappers to CyclingCommandBuffer & StagingAllocator)
+// 2. This eliminates lifetime issues - destructor becomes trivial, no waiting needed
+// 3. Add OwnedStagingStream for convenience (owns both, constructs StagingStream view)
+// 4. Enables flexible sharing: multiple views can reference same command buffer/allocator
+// 5. Supports dedicated staging (AllocateAlwaysSucceeds) without mid-operation submits
 template <class StagingAllocator>
 class StagingStream {
 public:

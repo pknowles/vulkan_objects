@@ -32,12 +32,12 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_TimestampProfiling) {
     EXPECT_EQ(queries.capacity(), 2u * 256u);
 
     // Simulate a frame: record timestamps for begin/end
-    auto recording = ctx->recordEmptyCommandBuffer(commandPool);
+    auto recording = ctx->beginRecording(commandPool);
     VkCommandBuffer cmd = recording;
 
     // Allocate queries - type-safe Query<uint64_t>
-    auto queryBegin = queries.allocate(cmd);
-    auto queryEnd = queries.allocate(cmd);
+    auto queryBegin = queries.allocate();
+    auto queryEnd = queries.allocate();
 
     // Write timestamps using the helper function
     auto futureBegin = vko::cmdWriteTimestamp(ctx->device, cmd, queryBegin,
@@ -55,8 +55,8 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_TimestampProfiling) {
     queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{},
                  cmdBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
-    // Mark queries as recyclable once GPU is done
-    queries.endBatch(queue.nextSubmitSemaphore());
+    // Mark queries as recyclable once GPU is done (use semaphore from one of the futures)
+    queries.endBatch(futureBegin.semaphore());
 
     // Get results - blocks until GPU completes
     uint64_t timestampBegin = futureBegin.get(ctx->device);
@@ -99,29 +99,26 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_OcclusionQuery) {
     EXPECT_EQ(queries.capacity(), 128u);
 
     // Record command buffer with scoped query
-    auto recording = ctx->recordEmptyCommandBuffer(commandPool);
-    VkCommandBuffer cmd = recording;
+    auto recording = ctx->beginRecording(commandPool);
 
-    auto query = queries.allocate(cmd);
+    auto query = queries.allocate();
 
     // Use ScopedQuery for automatic begin/end and create future
-    vko::ScopedQuery<uint64_t> scopedQuery(ctx->device, cmd, query);
-
-    // In a real app, draw calls would go here
-    // The query automatically ends when scopedQuery goes out of scope
-
-    // Create future (will outlive the scoped query)
-    auto future = scopedQuery.future(queue.nextSubmitSemaphore());
+    vko::QueryResultFuture<uint64_t> future = [&]() {
+        vko::ScopedQuery<uint64_t> scopedQuery(ctx->device, recording, query);
+        // In a real app, draw calls would go here
+        // The query automatically ends when scopedQuery goes out of scope
+        return scopedQuery.future(queue.nextSubmitSemaphore());
+    }(); // Immediately invoked lambda ensures scopedQuery destructor runs before recording.end()
 
     // Verify type safety
-    static_assert(std::same_as<decltype(scopedQuery)::ResultType, uint64_t>);
     static_assert(std::same_as<decltype(future)::ResultType, uint64_t>);
 
     // Submit and mark queries recyclable
     VkCommandBuffer cmdBuffer = recording.end();
     queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{},
                  cmdBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-    queries.endBatch(queue.nextSubmitSemaphore());
+    queries.endBatch(future.semaphore());
 
     // Try non-blocking read first
     auto result = future.tryGet(ctx->device);
@@ -162,14 +159,14 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_MultiFrameRecycling) {
 
     // Simulate 3 frames
     for (int frame = 0; frame < 3; ++frame) {
-        auto recording = ctx->recordEmptyCommandBuffer(commandPool);
+        auto recording = ctx->beginRecording(commandPool);
         VkCommandBuffer cmd = recording;
 
         // Allocate 2 queries per frame
-        auto q1 = queries.allocate(cmd);
-        auto q2 = queries.allocate(cmd);
+        auto q1 = queries.allocate();
+        auto q2 = queries.allocate();
 
-        vko::cmdWriteTimestamp(ctx->device, cmd, q1,
+        auto f1 = vko::cmdWriteTimestamp(ctx->device, cmd, q1,
                               VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
                               queue.nextSubmitSemaphore());
         vko::cmdWriteTimestamp(ctx->device, cmd, q2,
@@ -180,7 +177,7 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_MultiFrameRecycling) {
         queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{},
                      cmdBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
-        queries.endBatch(queue.nextSubmitSemaphore());
+        queries.endBatch(f1.semaphore());
     }
 
     // Wait for all frames to complete
@@ -210,14 +207,18 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_PoolExpansion) {
 
     EXPECT_EQ(queries.poolCount(), 1u);
 
-    auto recording = ctx->recordEmptyCommandBuffer(commandPool);
-    VkCommandBuffer cmd = recording;
+    auto recording = ctx->beginRecording(commandPool);
 
     // Allocate more queries than fit in one pool
     std::vector<vko::Query<uint64_t>> allocatedQueries;
     for (int i = 0; i < 5; ++i) {  // More than 2 queries per pool
-        allocatedQueries.push_back(queries.allocate(cmd));
+        allocatedQueries.push_back(queries.allocate());
     }
+    
+    // Write a timestamp so we have a semaphore to use for endBatch
+    auto timestampFuture = vko::cmdWriteTimestamp(ctx->device, recording, allocatedQueries[0],
+                                                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                                   queue.nextSubmitSemaphore());
 
     // Should have expanded to more pools
     EXPECT_GT(queries.poolCount(), 1u);
@@ -227,7 +228,7 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_PoolExpansion) {
     VkCommandBuffer cmdBuffer = recording.end();
     queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{},
                  cmdBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-    queries.endBatch(queue.nextSubmitSemaphore());
+    queries.endBatch(timestampFuture.semaphore());
     queries.wait();
     ctx->device.vkQueueWaitIdle(queue);
 }

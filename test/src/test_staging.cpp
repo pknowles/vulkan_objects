@@ -2097,7 +2097,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_ActualDataTransfer) {
     
     // Record and submit copy command
     auto pool = ctx->createCommandPool();
-    auto cmd = ctx->recordEmptyCommandBuffer(pool);
+    auto cmd = ctx->beginRecording(pool);
     
     vko::copyBuffer(ctx->device, cmd, *uploadStaging, 0, deviceBuffer, 0, numElements);
     
@@ -2111,7 +2111,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_ActualDataTransfer) {
     auto* downloadStaging = staging.allocateUpTo<uint32_t>(numElements, [](bool) {});
     ASSERT_NE(downloadStaging, nullptr);
     
-    cmd = ctx->recordEmptyCommandBuffer(pool);
+    cmd = ctx->beginRecording(pool);
     vko::copyBuffer(ctx->device, cmd, deviceBuffer, 0, *downloadStaging, 0, numElements);
     
     auto downloadSemaphore = queue.nextSubmitSemaphore();
@@ -2332,7 +2332,7 @@ TEST_F(UnitTestFixture, StagingStream_QueueFamilyTransition) {
     
     // Transfer ownership from queue1 to queue2 with barrier
     auto pool1 = ctx->createCommandPool();
-    auto cmd1 = ctx->recordEmptyCommandBuffer(pool1);
+    auto cmd1 = ctx->beginRecording(pool1);
     
     VkBufferMemoryBarrier releaseBarrier{
         .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,

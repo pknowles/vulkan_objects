@@ -45,8 +45,11 @@ public:
     T get(const DeviceAndCommands& device) const {
         m_semaphore.wait(device);
         T result;
+        // TODO: Ideally, semaphore wait should be sufficient without WAIT_BIT.
+        // Investigate if additional synchronization (barrier/event) can eliminate the need for WAIT_BIT.
         check(device.vkGetQueryPoolResults(device, m_query.pool, m_query.index, 1,
-                                          sizeof(T), &result, sizeof(T), m_flags));
+                                          sizeof(T), &result, sizeof(T),
+                                          m_flags | VK_QUERY_RESULT_WAIT_BIT));
         return result;
     }
 
@@ -171,6 +174,7 @@ public:
         , m_pipelineStatistics(pipelineStatistics) {
 
         // Pre-allocate minimum pools as already-signaled batches
+        // New pools start with queries in unavailable state, ready to use
         for (size_t i = 0; i < m_minPools; ++i) {
             PoolBatch batch;
             batch.pools.push_back(makePool());
@@ -186,15 +190,14 @@ public:
 
     // Allocate a single query index. Returns nullopt if allocator is full and
     // cannot allocate more pools. Caller should endBatch() and try again.
-    // Resets pools via vkCmdResetQueryPool when recycling them.
-    std::optional<Query<T>> tryAllocate(VkCommandBuffer cmd) {
+    std::optional<Query<T>> tryAllocate() {
         // Try to allocate from current pool
         if (hasCurrentPool() && m_currentPoolUsed < m_queriesPerPool) {
             return Query<T>{currentPool(), m_currentPoolUsed++};
         }
 
         // Need a new pool
-        if (!addPoolToCurrentBatch(cmd)) {
+        if (!addPoolToCurrentBatch()) {
             return std::nullopt; // At capacity
         }
 
@@ -203,15 +206,15 @@ public:
     }
 
     // Allocate a single query index, blocking if necessary when at max capacity.
-    // Resets pools via vkCmdResetQueryPool when recycling them.
-    Query<T> allocate(VkCommandBuffer cmd) {
+    // Resets pools via vkResetQueryPool (host-side) when recycling them.
+    Query<T> allocate() {
         while (true) {
-            if (auto result = tryAllocate(cmd)) {
+            if (auto result = tryAllocate()) {
                 return *result;
             }
             // At max capacity, must wait for a pool to become available
             endBatch(SemaphoreValue::makeSignalled()); // Flush current batch
-            if (!addPoolToCurrentBatch(cmd)) {
+            if (!addPoolToCurrentBatch()) {
                 // Still can't allocate - this shouldn't happen if maxPools > 0
                 throw std::runtime_error("Failed to allocate query after waiting");
             }
@@ -264,16 +267,22 @@ private:
             .queryCount         = m_queriesPerPool,
             .pipelineStatistics = m_pipelineStatistics,
         };
-        return QueryPool(m_device.get(), createInfo);
+        QueryPool pool = QueryPool(m_device.get(), createInfo);
+        
+        // Reset new pool from host (queries start in undefined state)
+        // vkResetQueryPool is core Vulkan 1.2+, no creation flag needed
+        m_device.get().vkResetQueryPool(m_device.get(), pool, 0, m_queriesPerPool);
+        
+        return pool;
     }
 
     // Adds a pool to current batch (recycled if available, otherwise new)
     // Returns false if at max capacity and no pools are ready
-    bool addPoolToCurrentBatch(VkCommandBuffer cmd) {
+    bool addPoolToCurrentBatch() {
         // Try to recycle from ready batches (non-blocking)
         while (!m_inUse.empty() && m_inUse.frontSemaphore().isSignaled(m_device.get())) {
             auto& front = m_inUse.front(m_device.get());
-            recyclePool(front, cmd);
+            recyclePool(front);
 
             // Remove batch if it's now empty (no empty batches allowed)
             if (front.pools.empty()) {
@@ -294,7 +303,7 @@ private:
         // At max, block for a pool
         while (!m_inUse.empty()) {
             auto& front = m_inUse.front(m_device.get()); // BLOCKS
-            recyclePool(front, cmd);
+            recyclePool(front);
 
             // Remove batch if it's now empty (no empty batches allowed)
             if (front.pools.empty()) {
@@ -307,16 +316,16 @@ private:
         return false;
     }
 
-    // Takes a pool from batch, adds to current, resets it.
+    // Takes a pool from batch, resets it from the host, adds to current.
     // Precondition: batch.pools is not empty
     // Postcondition: batch.pools may become empty (caller should check and remove)
-    void recyclePool(PoolBatch& batch, VkCommandBuffer cmd) {
+    void recyclePool(PoolBatch& batch) {
         assert(!batch.pools.empty());
 
         VkQueryPool pool = batch.pools.back();
-
-        // Reset pool - all recycled pools went through endBatch() so need reset
-        m_device.get().vkCmdResetQueryPool(cmd, pool, 0, m_queriesPerPool);
+        
+        // Reset from host (core Vulkan 1.2+, pools created with HOST_RESET_BIT)
+        m_device.get().vkResetQueryPool(m_device.get(), pool, 0, m_queriesPerPool);
 
         m_current.pools.push_back(std::move(batch.pools.back()));
         batch.pools.pop_back();
