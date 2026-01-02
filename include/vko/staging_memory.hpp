@@ -708,7 +708,14 @@ struct DownloadFutureState {
     
     // No cancellation for foreach - it just doesn't call the producer
     bool isCancelled() const { return false; }
-    void cancel() { assert(!"Most likely a missing staging.submit()"); /* no-op for foreach */ }
+    void cancel() {
+        // Cancellation can happen for various reasons:
+        // - User forgot to call submit() (bug)
+        // - Staging pool destroyed before future evaluated (intentional)
+        // We can't reliably distinguish these cases
+        //assert(!"Most likely a missing staging.submit()");
+        /* no-op for foreach */
+    }
 };
 
 // Specialization for HasOutput = true (transform case - with output vector)
@@ -725,7 +732,11 @@ struct DownloadFutureState<Fn, T, Allocator, true> {
     // Cancelled = output cleared but subranges existed (not just zero-size)
     bool isCancelled() const { return output.empty() && !subranges.empty(); }
     void cancel() {
-        assert(!"Most likely a missing staging.submit()");
+        // Cancellation can happen for various reasons:
+        // - User forgot to call submit() (bug)
+        // - Staging pool destroyed before future evaluated (intentional)
+        // We can't reliably distinguish these cases
+        //assert(!"Most likely a missing staging.submit()");
         output.clear();
     }
 };
@@ -1185,11 +1196,12 @@ public:
 
     // TODO: to be really generic and match the Vulkan API, I think we want a "Submission" object
     template <typename WaitRange, typename SignalRange>
-    SemaphoreValue submit(WaitRange&& waitInfos, SignalRange&& signalInfos) {
+    SemaphoreValue submit(WaitRange&& waitInfos, SignalRange&& signalInfos,
+                          VkPipelineStageFlags2 timelineSemaphoreStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT) {
         bool           hasCommands    = m_commandBuffer.hasCurrent();
         SemaphoreValue semaphoreValue = m_commandBuffer.submit(
             std::forward<WaitRange>(waitInfos), std::forward<SignalRange>(signalInfos),
-            VK_PIPELINE_STAGE_TRANSFER_BIT /* TODO: is this right? */);
+            timelineSemaphoreStageMask);
         if (hasCommands) {
             m_staging.endBatch(semaphoreValue);
             m_justSubmitted = true;
