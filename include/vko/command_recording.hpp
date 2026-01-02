@@ -120,4 +120,15 @@ private:
 
 } // namespace simple
 
+// Pairs a recording command buffer with a submit promise. It is common to want
+// to know when commands in a command buffer finish. Note that this doesn't make
+// sense to use with command buffers that are submitted multiple times.
+struct TimelineCommandBuffer {
+    simple::RecordingCommandBuffer cmd;
+    SubmitPromise                  promise;
+    
+    // Implicit conversion to VkCommandBuffer for convenience
+    operator VkCommandBuffer() const { return cmd; }
+};
+
 } // namespace vko

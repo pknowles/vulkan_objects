@@ -707,7 +707,7 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_AlignmentPadding) {
 // avoiding the need to hold entire datasets in CPU memory before transfer.
 TEST_F(UnitTestFixture, StagingStream_UploadChunked) {
     // Setup: Create queue and staging allocator
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator, 
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16); // 64KB pools
@@ -737,7 +737,7 @@ TEST_F(UnitTestFixture, StagingStream_UploadChunked) {
 // Tests automatic chunking when transfer size > pool size. StagingStream should
 // transparently handle partial allocations and issue multiple copy commands.
 TEST_F(UnitTestFixture, StagingStream_UploadLarge) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 14); // Small 16KB pools
@@ -766,7 +766,7 @@ TEST_F(UnitTestFixture, StagingStream_UploadLarge) {
 // Tests downloadForEach() which processes data subranges without copying to a vector,
 // ideal for streaming analytics where only aggregate results are needed.
 TEST_F(UnitTestFixture, StagingStream_DownloadVoid) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16);
@@ -811,7 +811,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadVoid) {
 // Tests downloadTransform() which collects data into a vector with per-chunk processing.
 // Useful for reading back GPU results (render targets, compute output) to CPU.
 TEST_F(UnitTestFixture, StagingStream_DownloadWithTransform) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 14); // Small pools to force chunking
@@ -853,7 +853,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadWithTransform) {
 // Tests download() convenience wrapper which provides identity transform automatically.
 // This is the simplest API for reading back GPU data unchanged to CPU.
 TEST_F(UnitTestFixture, StagingStream_DownloadSimple) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16);
@@ -891,7 +891,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadSimple) {
 // Tests that multiple small transfers can be allocated from the same pool and submitted
 // together in one command buffer, minimizing GPU synchronization overhead.
 TEST_F(UnitTestFixture, StagingStream_MultipleBatchedTransfers) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16); // 64KB pools
@@ -927,7 +927,7 @@ TEST_F(UnitTestFixture, StagingStream_MultipleBatchedTransfers) {
 // Tests that transfers much larger than total pool capacity automatically cycle pools:
 // allocate → submit → wait → recycle repeatedly until complete, without manual intervention.
 TEST_F(UnitTestFixture, StagingStream_GiantTransferImplicitCycling) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14); // Small 16KB pools, 48KB total
@@ -1047,7 +1047,7 @@ TEST_F(UnitTestFixture, StagingStream_GiantTransferImplicitCycling) {
 // Tests that download futures remain valid even after staging pools are reused for other
 // work. The original download's data must be preserved until get() is called.
 TEST_F(UnitTestFixture, StagingStream_NonBlockingDownloadWithPoolCycling) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/2, /*poolSize=*/1 << 14); // 16KB pools
@@ -1104,7 +1104,7 @@ TEST_F(UnitTestFixture, StagingStream_NonBlockingDownloadWithPoolCycling) {
 // Tests that users can manually submit() even for tiny transfers that wouldn't trigger
 // automatic submission, and immediately get() the result for synchronous workflows.
 TEST_F(UnitTestFixture, StagingStream_ManualSubmitTinyDownload) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16);
@@ -1146,7 +1146,7 @@ TEST_F(UnitTestFixture, StagingStream_ManualSubmitTinyDownload) {
 // Tests that accessing a download future without submitting the batch throws
 // TimelineSubmitCancel, helping catch programmer errors where submit() was forgotten.
 TEST_F(UnitTestFixture, StagingStream_CancelOnScopeExit) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     
     // Create buffer outside the scope
     auto gpuBuffer = vko::BoundBuffer<int>(
@@ -1197,7 +1197,7 @@ TEST_F(UnitTestFixture, StagingStream_CancelOnScopeExit) {
 // Tests that even when automatic submits occur during pool cycling, the final chunk
 // still needs explicit submit(). Forgetting this should throw TimelineSubmitCancel.
 TEST_F(UnitTestFixture, StagingStream_PartialDownloadMissingFinalSubmit) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     
     // Create large buffer
     size_t largeSize = 50000; // Large enough to cause multiple auto-submits
@@ -1253,7 +1253,7 @@ TEST_F(UnitTestFixture, StagingStream_PartialDownloadMissingFinalSubmit) {
 // Tests that callbacks receive data-relative offsets (starting at 0) even when uploading/downloading
 // to non-zero buffer offsets. This is critical for user code to correctly index into source data.
 TEST_F(UnitTestFixture, StagingStream_NonZeroBufferOffset) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14); // Small 16KB pools to force chunking
@@ -1350,7 +1350,7 @@ TEST_F(UnitTestFixture, StagingStream_NonZeroBufferOffset) {
 // Edge case: Zero-size transfers
 // Tests that zero-size uploads/downloads are handled gracefully (should be no-ops)
 TEST_F(UnitTestFixture, StagingStream_ZeroSizeTransfer) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 16);
@@ -1401,7 +1401,7 @@ TEST_F(UnitTestFixture, StagingStream_ZeroSizeTransfer) {
 // Tests that transfers work correctly with non-aligned buffer offsets and sizes
 // Vulkan requires alignment but the staging system should handle this transparently
 TEST_F(UnitTestFixture, StagingStream_UnalignedOffsetAndSize) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 16);
@@ -1444,7 +1444,7 @@ TEST_F(UnitTestFixture, StagingStream_UnalignedOffsetAndSize) {
 // Use-case: Updating multiple non-contiguous regions (e.g., sparse texture updates)
 // Tests uploading and downloading multiple separate subranges of a buffer
 TEST_F(UnitTestFixture, StagingStream_SubrangeTransfers) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 16);
@@ -1499,7 +1499,7 @@ TEST_F(UnitTestFixture, StagingStream_SubrangeTransfers) {
 // Use-case: Cleanup during shutdown (e.g., some async reads complete, others are abandoned)
 // Tests that multiple futures can be cancelled or completed in any order without issues
 TEST_F(UnitTestFixture, StagingStream_MultipleDownloadsCancelledOutOfOrder) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
@@ -1558,7 +1558,7 @@ TEST_F(UnitTestFixture, StagingStream_MultipleDownloadsCancelledOutOfOrder) {
 // Use-case: Robust error handling (e.g., user callback throws during processing)
 // Tests that exceptions in user callbacks are propagated correctly without leaking resources
 TEST_F(UnitTestFixture, StagingStream_ExceptionInUserCallback) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
@@ -1614,7 +1614,7 @@ TEST_F(UnitTestFixture, StagingStream_ExceptionInUserCallback) {
 // Use-case: Mixed workloads with uploads and downloads (e.g., compute pipeline with feedback)
 // Tests that alternating uploads and downloads correctly manage command buffer state
 TEST_F(UnitTestFixture, StagingStream_InterleavedUploadDownload) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 15);
@@ -1677,7 +1677,7 @@ TEST_F(UnitTestFixture, StagingStream_InterleavedUploadDownload) {
 // Use-case: Multiple async readbacks (e.g., profiling multiple GPU timers)
 // Tests that multiple downloads can be in flight with different completion times
 TEST_F(UnitTestFixture, StagingStream_ConcurrentDownloads) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/3, /*maxPools=*/5, /*poolSize=*/1 << 14);
@@ -1738,7 +1738,7 @@ TEST_F(UnitTestFixture, StagingStream_ConcurrentDownloads) {
 // Use-case: Long-running streaming with many submissions (e.g., video encoding)
 // Tests that command buffers are properly recycled and not leaked over many submits
 TEST_F(UnitTestFixture, StagingStream_CommandBufferRecycling) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
@@ -1780,7 +1780,7 @@ TEST_F(UnitTestFixture, StagingStream_CommandBufferRecycling) {
 // Use-case: High-frequency streaming with limited memory (e.g., real-time texture streaming)
 // Tests behavior when all pools are exhausted and allocation must wait/block
 TEST_F(UnitTestFixture, StagingStream_MemoryPressure) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/2, /*poolSize=*/1 << 14); // Only 2 pools
@@ -1823,7 +1823,7 @@ TEST_F(UnitTestFixture, StagingStream_MemoryPressure) {
 // Use-case: Pipeline with dependent stages (e.g., multiple compute passes reading previous results)
 // Tests that timeline semaphores properly chain dependencies across multiple operations
 TEST_F(UnitTestFixture, StagingStream_SemaphoreChaining) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
@@ -1878,7 +1878,7 @@ TEST_F(UnitTestFixture, StagingStream_SemaphoreChaining) {
 // Use-case: Speculative readback that gets abandoned (e.g., user cancels before results needed)
 // Tests that futures can be destroyed without calling get(), ensuring proper cleanup
 TEST_F(UnitTestFixture, StagingStream_FutureAbandonedNeverAccessed) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
@@ -1919,7 +1919,7 @@ TEST_F(UnitTestFixture, StagingStream_FutureAbandonedNeverAccessed) {
 // Use-case: Long-lived result caching (e.g., keeping readback results after streaming context closed)
 // Tests that futures can be evaluated before StagingStream destruction and data accessed after
 TEST_F(UnitTestFixture, StagingStream_FutureOutlivesStaging) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     
     auto buffer = vko::BoundBuffer<int>(
         ctx->device, 500,
@@ -1967,7 +1967,7 @@ TEST_F(UnitTestFixture, StagingStream_FutureOutlivesStaging) {
 // Use-case: Error handling in async pipelines (e.g., detecting cancelled operations)
 // Tests that TimelineSubmitCancel is thrown when future is evaluated after StagingStream destruction
 TEST_F(UnitTestFixture, StagingStream_FutureThrowsWhenStagingDestroyed) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     
     auto buffer = vko::BoundBuffer<float>(
         ctx->device, 200,
@@ -2010,7 +2010,7 @@ TEST_F(UnitTestFixture, StagingStream_FutureThrowsWhenStagingDestroyed) {
 // Use-case: Dynamic result storage (e.g., moving futures into containers or returning from functions)
 // Tests that futures can be moved during pending transfers and remain valid
 TEST_F(UnitTestFixture, StagingStream_MoveSemanticsDuringPendingTransfers) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
         /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
@@ -2069,7 +2069,7 @@ TEST_F(UnitTestFixture, StagingStream_MoveSemanticsDuringPendingTransfers) {
 // Use-case: End-to-end data transfer with actual GPU operations
 // Tests the full pipeline: allocate staging, copy to device buffer, copy back, verify data
 TEST_F(UnitTestFixture, RecyclingStagingPool_ActualDataTransfer) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     vko::vma::RecyclingStagingPool<vko::Device> staging(
         ctx->device, ctx->allocator,
         /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 16);
@@ -2187,7 +2187,7 @@ static_assert(vko::staging_allocator<FailingStagingAllocator<vko::Device>>);
 // Use-case: Persistent allocation failure detection
 // Tests that StagingStream detects and throws when allocation persistently fails
 TEST_F(UnitTestFixture, StagingStream_PersistentAllocationFailureThrows) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     
     // Create a staging allocator that always fails
     FailingStagingAllocator<vko::Device> failingStaging(
@@ -2221,8 +2221,8 @@ TEST_F(UnitTestFixture, StagingStream_MultipleQueueSupport) {
         GTEST_SKIP() << "Test requires two queue families";
     }
     
-    vko::TimelineQueue queue1(ctx->device, ctx->queueFamilyIndex, 0);
-    vko::TimelineQueue queue2(ctx->device, ctx->queueFamilyIndex2.value(), 0);
+    vko::SerialTimelineQueue queue1(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue2(ctx->device, ctx->queueFamilyIndex2.value(), 0);
     
     auto staging1 = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
@@ -2297,8 +2297,8 @@ TEST_F(UnitTestFixture, StagingStream_QueueFamilyTransition) {
         GTEST_SKIP() << "Test requires two queue families";
     }
     
-    vko::TimelineQueue queue1(ctx->device, ctx->queueFamilyIndex, 0);
-    vko::TimelineQueue queue2(ctx->device, ctx->queueFamilyIndex2.value(), 0);
+    vko::SerialTimelineQueue queue1(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue2(ctx->device, ctx->queueFamilyIndex2.value(), 0);
     
     auto staging1 = vko::vma::RecyclingStagingPool<vko::Device>(
         ctx->device, ctx->allocator,
