@@ -86,43 +86,43 @@ public:
 
     SemaphoreValue() = delete;
     SemaphoreValue(const TimelineSemaphore& semaphore, const std::shared_future<uint64_t>& value)
-        : semaphore(semaphore)
-        , value(value) {}
+        : m_semaphore(semaphore)
+        , m_value(value) {}
 
     SemaphoreValue(const TimelineSemaphore& semaphore, std::shared_future<uint64_t>&& value)
-        : semaphore(semaphore)
-        , value(std::move(value)) {}
+        : m_semaphore(semaphore)
+        , m_value(std::move(value)) {}
 
     // Since we cache the signalled state we can provide a special constructor
     // for an already-signalled semaphore.
     struct already_signalled_t {};
     SemaphoreValue(already_signalled_t)
-        : signalledCache(true) {}
+        : m_signalledCache(true) {}
     static SemaphoreValue makeSignalled() { return SemaphoreValue(already_signalled_t{}); }
 
     // Wait for the semaphore to be signaled. Returns false on cancellation.
     template <vko::device_and_commands DeviceAndCommands>
     void wait(DeviceAndCommands& device) const {
-        if(signalledCache)
+        if(m_signalledCache)
             return;
-        assert(semaphore != VK_NULL_HANDLE);
-        assert(value.valid());
-        waitTimelineSemaphore(device, semaphore, value.get()); // May throw TimelineSubmitCancel
-        signalledCache = true;
+        assert(m_semaphore != VK_NULL_HANDLE);
+        assert(m_value.valid());
+        waitTimelineSemaphore(device, m_semaphore, m_value.get()); // May throw TimelineSubmitCancel
+        m_signalledCache = true;
     }
 
     // Wait for the semaphore to be signaled. Returns false on cancellation. Use
     // isSignaled() to poll instead of waiting.
     template <vko::device_and_commands DeviceAndCommands>
     bool tryWait(DeviceAndCommands& device) const {
-        if(signalledCache)
+        if(m_signalledCache)
             return true;
         try {
             wait(device);
         } catch (TimelineSubmitCancel&) {
             return false;
         }
-        signalledCache = true;
+        m_signalledCache = true;
         return true;
     }
 
@@ -130,9 +130,9 @@ public:
     // false on timeout or cancellation.
     template <vko::device_and_commands DeviceAndCommands, class Rep, class Period>
     bool waitFor(DeviceAndCommands& device, std::chrono::duration<Rep, Period> duration) const {
-        if(signalledCache)
+        if(m_signalledCache)
             return true;
-        assert(semaphore != VK_NULL_HANDLE);
+        assert(m_semaphore != VK_NULL_HANDLE);
         uint64_t remainingNs = 0;
         if (duration.count() <= 0) {
             if (!hasValue())
@@ -140,7 +140,7 @@ public:
         } else {
             const auto begin = Clock::now();
             try {
-                if (value.wait_until(begin + duration) == std::future_status::timeout)
+                if (m_value.wait_until(begin + duration) == std::future_status::timeout)
                     return false;
             } catch (TimelineSubmitCancel&) {
                 return false;
@@ -148,7 +148,7 @@ public:
             auto remaining = std::max(begin + duration - Clock::now(), Clock::duration::zero());
             remainingNs = std::chrono::duration_cast<std::chrono::nanoseconds>(remaining).count();
         }
-        return signalledCache = waitTimelineSemaphore(device, semaphore, value.get(), remainingNs);
+        return m_signalledCache = waitTimelineSemaphore(device, m_semaphore, m_value.get(), remainingNs);
     }
 
     // Wait for the semaphore to be signaled, up to the given time point. Returns
@@ -156,12 +156,12 @@ public:
     template <vko::device_and_commands DeviceAndCommands, class Clock, class Duration>
     bool waitUntil(DeviceAndCommands&                       device,
                    std::chrono::time_point<Clock, Duration> deadline) const {
-        if(signalledCache)
+        if(m_signalledCache)
             return true;
-        assert(semaphore != VK_NULL_HANDLE);
+        assert(m_semaphore != VK_NULL_HANDLE);
         // First wait for the submission value to become known, up to the deadline.
         try {
-            if (value.wait_until(deadline) == std::future_status::timeout)
+            if (m_value.wait_until(deadline) == std::future_status::timeout)
                 return false;
         } catch (TimelineSubmitCancel&) {
             return false;
@@ -170,16 +170,16 @@ public:
         const auto remaining = std::max(deadline - Clock::now(), Clock::duration::zero());
         uint64_t   remainingNs =
             std::chrono::duration_cast<std::chrono::nanoseconds>(remaining).count();
-        return signalledCache = waitTimelineSemaphore(device, semaphore, value.get(), remainingNs);
+        return m_signalledCache = waitTimelineSemaphore(device, m_semaphore, m_value.get(), remainingNs);
     }
 
     // Checks the semaphore value status, but not its signalled status. This is
     // typically used to check if a TimelineQueue submission has been made.
     bool hasValue() const {
-        if (signalledCache)
+        if (m_signalledCache)
             return true;
         try {
-            return value.wait_for(std::chrono::seconds(0)) != std::future_status::timeout;
+            return m_value.wait_for(std::chrono::seconds(0)) != std::future_status::timeout;
         } catch (TimelineSubmitCancel&) {
             return false;
         }
@@ -203,22 +203,26 @@ public:
     // a command buffer.
     [[nodiscard]] VkSemaphoreSubmitInfo waitSemaphoreInfo(VkPipelineStageFlags2 stageMask,
                                                           uint32_t              deviceIndex = 0) {
-        assert(semaphore != VK_NULL_HANDLE);
+        assert(m_semaphore != VK_NULL_HANDLE);
         return {.sType       = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                 .pNext       = nullptr,
-                .semaphore   = semaphore,
-                .value       = value.get(),
+                .semaphore   = m_semaphore,
+                .value       = m_value.get(),
                 .stageMask   = stageMask,
                 .deviceIndex = deviceIndex};
     }
+
+    // Direct access to the semaphore value. Use with caution as it's not common
+    // you'd want this. May be used to copy a value to a SubmitPromise.
+    uint64_t value() const { return m_value.get(); }
 
 private:
     // TODO: there's an argument for making this a
     // std::shared_ptr<TimelineSemaphore> instead. It allows the SemaphoreValue
     // to own its own semaphore. E.g. to mark it as already signalled.
-    VkSemaphore                  semaphore = VK_NULL_HANDLE;
-    std::shared_future<uint64_t> value;
-    mutable bool                 signalledCache = false; // caches semaphore status
+    VkSemaphore                  m_semaphore = VK_NULL_HANDLE;
+    std::shared_future<uint64_t> m_value;
+    mutable bool                 m_signalledCache = false; // caches semaphore status
 };
 
 template <class T>
@@ -774,6 +778,7 @@ private:
     uint32_t          m_deviceIndex = 0;
 };
 
+// WARNING: this is a big footgun as it hides the internal submit promise
 // A convenience wrapper that extends TimelineQueue with a managed internal
 // SubmitPromise. Not thread safe. Use only for tracking submissions to a single
 // device in a device group.
@@ -784,16 +789,16 @@ private:
 //
 // Usage pattern:
 //   SerialTimelineQueue queue(device, queueFamilyIndex, 0);
-//   
+//
 //   // Get the semaphore BEFORE recording dependencies or submitting
 //   auto semaphore = queue.nextSubmitSemaphore();
-//   
+//
 //   // Pass semaphore to functions that need to wait on this submission
 //   recordWork(cmd, semaphore);
-//   
+//
 //   // Submit the command buffer (advances internal counter)
 //   queue.submit(device, {}, cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-//   
+//
 //   // Wait for completion if needed
 //   semaphore.wait(device);
 class SerialTimelineQueue : public TimelineQueue {

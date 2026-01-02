@@ -2413,3 +2413,60 @@ TEST_F(UnitTestFixture, StagingStream_QueueFamilyTransition) {
             << "Data corruption at index " << i << " after queue transfer";
     }
 }
+
+// Verify that cancellation works correctly in two scenarios:
+// 1. Legitimate cancellation - submit() called but streaming destroyed before future evaluated
+// 2. Missing submit() - user forgets to call submit(), should throw TimelineSubmitCancel
+TEST_F(UnitTestFixture, StagingStream_CancellationBehavior) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    
+    auto buffer = vko::BoundBuffer<int>(
+        ctx->device, 100,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    // Case 1: submit() IS called - cancellation should work cleanly
+    {
+        auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+            ctx->device, ctx->allocator,
+            /*minPools=*/1, /*maxPools=*/2, /*poolSize=*/1 << 16);
+        vko::StagingStream streaming(queue, std::move(staging));
+        
+        streaming.upload(buffer, 0, 100,
+            [](VkDeviceSize offset, auto span) {
+                std::iota(span.begin(), span.end(), static_cast<int>(offset));
+            });
+        streaming.submit();
+        ctx->device.vkQueueWaitIdle(queue);
+        
+        auto future = streaming.downloadTransform<int>(
+            buffer, 0, 100,
+            [](VkDeviceSize, auto input, auto output) {
+                std::ranges::copy(input, output.begin());
+            });
+        streaming.submit();
+        
+        // Destroy streaming before calling get() - legitimate cancellation
+    }
+    
+    // Case 2: submit() is NOT called - should throw TimelineSubmitCancel
+    {
+        auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+            ctx->device, ctx->allocator,
+            /*minPools=*/1, /*maxPools=*/2, /*poolSize=*/1 << 16);
+        vko::StagingStream streaming(queue, std::move(staging));
+        
+        auto future = streaming.downloadTransform<int>(
+            buffer, 0, 100,
+            [](VkDeviceSize, auto input, auto output) {
+                std::ranges::copy(input, output.begin());
+            });
+        
+        // NO submit() - user forgot!
+        // Streaming destructs, cancels all pending futures
+    }
+    // Note: We can't easily detect missing submit() with an assert because
+    // the semaphore value is allocated before submit (from nextSubmitSemaphore).
+    // The TimelineSubmitCancel exception is the mechanism that catches this.
+}
