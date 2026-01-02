@@ -18,7 +18,7 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_TimestampProfiling) {
         << "Invalid timestampPeriod";
 
     // Create a timeline queue and command pool for submissions
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     vko::CommandPool commandPool = ctx->createCommandPool();
 
     // Create timestamp query pool (uint64_t results)
@@ -86,7 +86,7 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_TimestampProfiling) {
 // Common for conditional rendering and visibility determination.
 TEST_F(UnitTestFixture, RecyclingQueryPool_OcclusionQuery) {
     // Create a timeline queue and command pool
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     vko::CommandPool commandPool = ctx->createCommandPool();
 
     // Create occlusion query pool (can use uint32_t for sample counts)
@@ -146,7 +146,7 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_MultiFrameRecycling) {
     ASSERT_TRUE(props.limits.timestampComputeAndGraphics)
         << "Timestamps not supported on this device";
 
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     vko::CommandPool commandPool = ctx->createCommandPool();
 
     // Small pool to force recycling
@@ -196,7 +196,7 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_PoolExpansion) {
     ASSERT_TRUE(props.limits.timestampComputeAndGraphics)
         << "Timestamps not supported on this device";
 
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     vko::CommandPool commandPool = ctx->createCommandPool();
 
     // Very small pool to test expansion

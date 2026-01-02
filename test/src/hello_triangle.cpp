@@ -129,7 +129,7 @@ TEST(Integration, WindowSystemIntegration) {
     // Create a VkDevice
     vko::Device device(instance, physicalDevice, TestDeviceCreateInfo(queueFamilyIndex));
 
-    // vko::simple::TimelineQueue queue(device, queueFamilyIndex, 0);
+    // vko::simple::SerialTimelineQueue queue(device, queueFamilyIndex, 0);
     VkQueue queue = vko::get(device.vkGetDeviceQueue, device, queueFamilyIndex, 0);
 
     // Test the first device call
@@ -436,7 +436,7 @@ TEST(Integration, HelloTriangleRayTracing) {
     // Create a VkDevice
     vko::Device device(instance, physicalDevice, RayTracingDeviceCreateInfo(queueFamilyIndex));
 
-    // vko::simple::TimelineQueue queue(device, queueFamilyIndex, 0);
+    // vko::simple::SerialTimelineQueue queue(device, queueFamilyIndex, 0);
     VkQueue queue = vko::get(device.vkGetDeviceQueue, device, queueFamilyIndex, 0);
 
     // Test the first device call

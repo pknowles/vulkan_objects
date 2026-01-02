@@ -6,7 +6,7 @@
 #include <vko/timeline_queue.hpp>
 
 TEST_F(UnitTestFixture, TimelineQueue_BasicConstruction) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     
     // Test accessor methods
     EXPECT_EQ(queue.familyIndex(), ctx->queueFamilyIndex);
@@ -18,7 +18,7 @@ TEST_F(UnitTestFixture, TimelineQueue_BasicConstruction) {
 }
 
 TEST_F(UnitTestFixture, TimelineQueue_NextSubmitSemaphore) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0, 100);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0, 100);
     
     // Get the next semaphore value before submitting
     vko::SemaphoreValue nextValue = queue.nextSubmitSemaphore();
@@ -27,26 +27,8 @@ TEST_F(UnitTestFixture, TimelineQueue_NextSubmitSemaphore) {
     EXPECT_FALSE(nextValue.hasValue());
 }
 
-TEST_F(UnitTestFixture, TimelineQueue_SignalInfoAndAdvance) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0, 50);
-    
-    // Get signal info and verify it advances
-    VkSemaphoreSubmitInfo info1 = queue.signalInfoAndAdvance(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-    EXPECT_EQ(info1.sType, VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO);
-    EXPECT_EQ(info1.value, 51u);
-    EXPECT_EQ(info1.stageMask, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-    EXPECT_EQ(info1.deviceIndex, 0u);
-    EXPECT_NE(info1.semaphore, VK_NULL_HANDLE);
-    
-    // Next one should have incremented value
-    VkSemaphoreSubmitInfo info2 = queue.signalInfoAndAdvance(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
-    EXPECT_EQ(info2.value, 52u);
-    EXPECT_EQ(info2.stageMask, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
-    EXPECT_EQ(info2.semaphore, info1.semaphore); // Same semaphore
-}
-
 TEST_F(UnitTestFixture, TimelineQueue_SimpleSubmit) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     vko::CommandPool commandPool = ctx->createCommandPool();
     
     // Test the raw submit API - record and end command buffer manually
@@ -62,7 +44,7 @@ TEST_F(UnitTestFixture, TimelineQueue_SimpleSubmit) {
 }
 
 TEST_F(UnitTestFixture, TimelineQueue_MultipleSubmissions) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     vko::CommandPool commandPool = ctx->createCommandPool();
     
     // Submit multiple command buffers
@@ -85,7 +67,7 @@ TEST_F(UnitTestFixture, SemaphoreValue_AlreadySignalled) {
 }
 
 TEST_F(UnitTestFixture, SemaphoreValue_WaitOnSubmission) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     vko::CommandPool commandPool = ctx->createCommandPool();
     
     // Get the semaphore value for the next submission
@@ -108,7 +90,7 @@ TEST_F(UnitTestFixture, SemaphoreValue_WaitOnSubmission) {
 }
 
 TEST_F(UnitTestFixture, SemaphoreValue_TryWait) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     vko::CommandPool commandPool = ctx->createCommandPool();
     
     vko::SemaphoreValue nextValue = queue.nextSubmitSemaphore();
@@ -121,7 +103,7 @@ TEST_F(UnitTestFixture, SemaphoreValue_TryWait) {
 }
 
 TEST_F(UnitTestFixture, SemaphoreValue_WaitFor) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     vko::CommandPool commandPool = ctx->createCommandPool();
     
     vko::SemaphoreValue nextValue = queue.nextSubmitSemaphore();
@@ -134,7 +116,7 @@ TEST_F(UnitTestFixture, SemaphoreValue_WaitFor) {
 }
 
 TEST_F(UnitTestFixture, SemaphoreValue_WaitUntil) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     vko::CommandPool commandPool = ctx->createCommandPool();
     
     vko::SemaphoreValue nextValue = queue.nextSubmitSemaphore();
@@ -148,7 +130,7 @@ TEST_F(UnitTestFixture, SemaphoreValue_WaitUntil) {
 }
 
 TEST_F(UnitTestFixture, SemaphoreValue_WaitSemaphoreInfo) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     vko::CommandPool commandPool = ctx->createCommandPool();
     
     vko::SemaphoreValue nextValue = queue.nextSubmitSemaphore();
@@ -169,7 +151,7 @@ TEST_F(UnitTestFixture, SemaphoreValue_WaitSemaphoreInfo) {
 }
 
 TEST_F(UnitTestFixture, TimelineQueue_SubmitWithDependency) {
-    vko::TimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     vko::CommandPool commandPool = ctx->createCommandPool();
     
     // First submission

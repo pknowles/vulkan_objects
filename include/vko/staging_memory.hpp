@@ -917,36 +917,43 @@ public:
     // TODO: to be really generic and match the Vulkan API, I think we want a "Submission" object
     template <typename WaitRange, typename SignalRange>
     SemaphoreValue submit(WaitRange&& waitInfos, SignalRange&& signalInfos, VkPipelineStageFlags2 timelineSemaphoreStageMask) {
-        SemaphoreValue semaphoreValue = m_queue.get().nextSubmitSemaphore();
-        if (m_currentCmd) {
-            CommandBuffer cmd(m_currentCmd->end());
-            m_currentCmd.reset();
-            m_queue.get().submit(m_device.get(), std::forward<WaitRange>(waitInfos), cmd,
-                                    timelineSemaphoreStageMask,
-                                    std::forward<SignalRange>(signalInfos));
-            m_inFlightCmds.push_back({std::move(cmd), semaphoreValue});
+        if (!m_current) {
+            // No command buffer was created, nothing to submit
+            return SemaphoreValue::makeSignalled();
         }
-        return semaphoreValue;
+        
+        SemaphoreValue result = m_current->promise.futureValue();
+        CommandBuffer cmd(m_current->cmd.end());
+        
+        m_queue.get().submit(m_device.get(), std::forward<WaitRange>(waitInfos), cmd, std::move(m_current->promise), 
+                            timelineSemaphoreStageMask, std::forward<SignalRange>(signalInfos));
+        m_current.reset();
+        
+        m_inFlightCmds.push_back({std::move(cmd), result});
+        return result;
     }
 
     // TODO: maybe limit access via a callback? LLMs love to store the result
     // and it's really dangerous due to it cycling.
-    VkCommandBuffer commandBuffer() {
-        if (!m_currentCmd) {
-            m_currentCmd.emplace(m_device.get(), reuseOrMakeCommandBuffer(),
-                                    VkCommandBufferBeginInfo{
-                                        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                                        .pNext = nullptr,
-                                        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-                                        .pInheritanceInfo = nullptr,
-                                    });
+    const TimelineCommandBuffer& commandBuffer() {
+        if (!m_current) {
+            m_current = TimelineCommandBuffer{
+                simple::RecordingCommandBuffer(m_device.get(), reuseOrMakeCommandBuffer(),
+                                              VkCommandBufferBeginInfo{
+                                                  .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                                  .pNext = nullptr,
+                                                  .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+                                                  .pInheritanceInfo = nullptr,
+                                              }),
+                m_queue.get().submitPromise()
+            };
         }
-        return *m_currentCmd;
+        return *m_current;
     }
 
     // Check to see if commandBuffer() was called since the last submit. Handy
     // to skip operations if no commands were recorded.
-    bool hasCurrent() const { return m_currentCmd.has_value(); }
+    bool hasCurrent() const { return m_current.has_value(); }
 
     // Implicit conversion to VkCommandBuffer for convenience
     // WARNING: Do NOT store the result as VkCommandBuffer - the handle can change after submit!
@@ -954,7 +961,10 @@ public:
     // the current handle on each use via this conversion operator.
     operator VkCommandBuffer() { return commandBuffer(); }
 
-    SemaphoreValue nextSubmitSemaphore() const { return m_queue.get().nextSubmitSemaphore(); }
+    // Convenience helper to get the semaphore value for the current command buffer's next submit.
+    SemaphoreValue nextSubmitSemaphore() {
+        return commandBuffer().promise.futureValue();
+    }
 
 private:
     struct InFlightCmd {
@@ -990,10 +1000,10 @@ private:
                              VK_COMMAND_BUFFER_LEVEL_PRIMARY);
     }
     std::reference_wrapper<const DeviceAndCommands> m_device;
-    std::reference_wrapper<TimelineQueue>         m_queue;
-    CommandPool                                   m_commandPool;
-    std::deque<InFlightCmd>                       m_inFlightCmds;
-    std::optional<simple::RecordingCommandBuffer> m_currentCmd;
+    std::reference_wrapper<TimelineQueue>           m_queue;
+    CommandPool                                     m_commandPool;
+    std::deque<InFlightCmd>                         m_inFlightCmds;
+    std::optional<TimelineCommandBuffer>            m_current;
 };
 
 // Staging wrapper that also holds a queue and command buffer for
