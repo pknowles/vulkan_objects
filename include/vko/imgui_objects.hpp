@@ -1,10 +1,11 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
-#include <imgui.h>
-#include <backends/imgui_impl_vulkan.h>
 #include <backends/imgui_impl_glfw.h>
+#include <backends/imgui_impl_vulkan.h>
+#include <imgui.h>
 #include <vko/exceptions.hpp>
+#include <vko/shortcuts.hpp>
 
 namespace vko {
 namespace imgui {
@@ -358,6 +359,61 @@ public:
 };
 
 #endif // VULKAN_OBJECTS_IMGUI_SCOPED_BLOCKS
+
+// RAII wrapper for ImGui texture descriptor set
+class Texture {
+public:
+    Texture(VkSampler sampler, VkImageView imageView, VkImageLayout imageLayout) {
+        // Explicit global initialization check, but then a null pointer crash
+        // happens anyway, so this is just a minor perf hit for the happy path
+        if (!ImGui::GetCurrentContext()) {
+            throw Exception("ImGui context not initialized - create a vko::imgui::Context first");
+        }
+
+        m_descriptor = ImGui_ImplVulkan_AddTexture(sampler, imageView, imageLayout);
+
+        if (m_descriptor == VK_NULL_HANDLE) {
+            throw Exception(
+                "ImGui_ImplVulkan_AddTexture failed - ensure ImGui_ImplVulkan_Init() was called");
+        }
+    }
+
+    ~Texture() {
+        if (m_descriptor != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(m_descriptor);
+        }
+    }
+
+    // No copy
+    Texture(const Texture&)            = delete;
+    Texture& operator=(const Texture&) = delete;
+
+    // Move only
+    Texture(Texture&& other) noexcept
+        : m_descriptor(other.m_descriptor) {
+        other.m_descriptor = VK_NULL_HANDLE;
+    }
+
+    Texture& operator=(Texture&& other) noexcept {
+        if (m_descriptor != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(m_descriptor);
+        }
+        m_descriptor       = other.m_descriptor;
+        other.m_descriptor = VK_NULL_HANDLE;
+        return *this;
+    }
+
+    operator VkDescriptorSet() const& { return m_descriptor; }
+    operator ImTextureID() const {
+        return reinterpret_cast<ImTextureID>(m_descriptor);
+    } // for imgui compatibility
+    VkDescriptorSet        object() const { return m_descriptor; }
+    const VkDescriptorSet* ptr() const { return &m_descriptor; }
+    bool engaged() const { return m_descriptor != VK_NULL_HANDLE; } // for moved-from objects
+
+private:
+    VkDescriptorSet m_descriptor = VK_NULL_HANDLE;
+};
 
 } // namespace imgui
 } // namespace vko

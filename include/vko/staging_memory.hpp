@@ -1253,6 +1253,9 @@ private:
     }
 };
 
+// TODO: audit the upload and download functions to ensure they are correct and
+// safe, now that we have StagingStream.
+
 // Helper: Create a device buffer and upload data to it in one call
 // Usage: auto buffer = vko::upload(staging, device, allocator, data, usageFlags);
 template <std::ranges::sized_range SrcRange, typename StagingT, device_and_commands DeviceAndCommands, 

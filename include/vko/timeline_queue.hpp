@@ -774,6 +774,7 @@ private:
     uint32_t          m_deviceIndex = 0;
 };
 
+// WARNING: this is a big footgun as it hides the internal submit promise
 // A convenience wrapper that extends TimelineQueue with a managed internal
 // SubmitPromise. Not thread safe. Use only for tracking submissions to a single
 // device in a device group.
@@ -784,16 +785,16 @@ private:
 //
 // Usage pattern:
 //   SerialTimelineQueue queue(device, queueFamilyIndex, 0);
-//   
+//
 //   // Get the semaphore BEFORE recording dependencies or submitting
 //   auto semaphore = queue.nextSubmitSemaphore();
-//   
+//
 //   // Pass semaphore to functions that need to wait on this submission
 //   recordWork(cmd, semaphore);
-//   
+//
 //   // Submit the command buffer (advances internal counter)
 //   queue.submit(device, {}, cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
-//   
+//
 //   // Wait for completion if needed
 //   semaphore.wait(device);
 class SerialTimelineQueue : public TimelineQueue {
