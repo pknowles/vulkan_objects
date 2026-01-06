@@ -81,6 +81,10 @@ endif()
 
 if(MSVC)
   target_compile_options(vulkan_objects_tests PRIVATE /W4 /WX)
+  # Enable static analysis in Debug builds
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(vulkan_objects_tests PRIVATE /analyze)
+  endif()
 else()
   target_compile_options(vulkan_objects_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
