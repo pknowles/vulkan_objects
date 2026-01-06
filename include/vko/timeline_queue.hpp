@@ -522,9 +522,10 @@ public:
     }
 
     // Access to entries without checking if they are ready
-    void visitAll(std::function<void(T&)> callback) {
+    template <class Fn>
+    void visitAll(Fn&& callback) {
         for (auto& entry : m_entries) {
-            callback(entry.value);
+            callback(entry.value, entry.semaphore);
         }
     }
 

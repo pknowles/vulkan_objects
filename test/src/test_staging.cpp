@@ -207,34 +207,29 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_CallbackOnDestruct) {
     {
         vko::vma::RecyclingStagingPool<vko::Device> staging(ctx->device, ctx->allocator,
             /*minPools=*/1, /*maxPools=*/3, /*poolSize=*/1 << 16);
-        
-        // Allocate but don't end batch - should get false on destruct
+
+        // Allocate but don't end batch - should get false on destruct (unsubmitted work)
         auto* buffer1 = staging.allocateUpTo<uint32_t>(100, [&](bool signaled) {
             callback1Called = true;
             callback1Signaled = signaled;
         });
         ASSERT_NE(buffer1, nullptr);
-        
-        // Allocate and end batch with unsignaled semaphore - should also get false
+
+        // Allocate another in the same unsubmitted batch
         auto* buffer2 = staging.allocateUpTo<uint32_t>(100, [&](bool signaled) {
             callback2Called = true;
             callback2Signaled = signaled;
         });
         ASSERT_NE(buffer2, nullptr);
-        
-        // Create an unsignaled timeline semaphore and SemaphoreValue
-        vko::TimelineSemaphore sem(ctx->device, 0);
-        std::promise<uint64_t> promise;
-        promise.set_value(1); // Set the value but semaphore is still at 0
-        staging.endBatch(vko::SemaphoreValue(sem, promise.get_future().share()));
-        
-        // Destructor called here - both callbacks should be called with false
+
+        // Destructor called here without calling endBatch()
+        // Both callbacks should be called with false (work was never submitted)
     }
     
     EXPECT_TRUE(callback1Called);
-    EXPECT_FALSE(callback1Signaled);
+    EXPECT_FALSE(callback1Signaled) << "Callback should receive false for unsubmitted work";
     EXPECT_TRUE(callback2Called);
-    EXPECT_FALSE(callback2Signaled);
+    EXPECT_FALSE(callback2Signaled) << "Callback should receive false for unsubmitted work";
 }
 
 // Use-case: Overlapping transfers for maximum GPU utilization
@@ -1964,9 +1959,10 @@ TEST_F(UnitTestFixture, StagingStream_FutureOutlivesStaging) {
     }
 }
 
-// Use-case: Error handling in async pipelines (e.g., detecting cancelled operations)
-// Tests that TimelineSubmitCancel is thrown when future is evaluated after StagingStream destruction
-TEST_F(UnitTestFixture, StagingStream_FutureThrowsWhenStagingDestroyed) {
+// Use-case: Futures remain valid after staging destruction when work was properly submitted
+// Tests that submitted GPU work completes successfully even after StagingStream destructs,
+// thanks to proper destructor synchronization
+TEST_F(UnitTestFixture, StagingStream_FutureCompletesAfterStagingDestroyed) {
     vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     
     auto buffer = vko::BoundBuffer<float>(
@@ -1978,8 +1974,8 @@ TEST_F(UnitTestFixture, StagingStream_FutureThrowsWhenStagingDestroyed) {
     auto copyLambda = [](VkDeviceSize, auto input, auto output) {
         std::ranges::copy(input, output.begin());
     };
-    
-    // Create future but destroy StagingStream before evaluation
+
+    // Create future and destroy StagingStream before evaluation
     auto future = [&]() {
         auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
             ctx->device, ctx->allocator,
@@ -1996,15 +1992,20 @@ TEST_F(UnitTestFixture, StagingStream_FutureThrowsWhenStagingDestroyed) {
         
         auto result = streaming.downloadTransform<float>(buffer, 0, 200, copyLambda);
         streaming.submit();
-        
-        // Return future WITHOUT calling get() - StagingStream destroyed here
+
+        // StagingStream destructor waits for submitted work, so future remains valid
         return result;
-    }();
-    
-    // Attempting to evaluate after StagingStream destruction should throw
-    EXPECT_THROW({
-        future.get(ctx->device);
-    }, vko::TimelineSubmitCancel);
+    }(); // streaming destroyed here, but work was submitted so it waits
+
+    // Future should work fine because destructor waited for GPU work
+    EXPECT_NO_THROW({
+        auto& data = future.get(ctx->device);
+        ASSERT_EQ(data.size(), 200u);
+        // Verify data is correct
+        for (size_t i = 0; i < 10; ++i) {
+            EXPECT_FLOAT_EQ(data[i], static_cast<float>(i));
+        }
+    });
 }
 
 // Use-case: Dynamic result storage (e.g., moving futures into containers or returning from functions)
@@ -2469,4 +2470,168 @@ TEST_F(UnitTestFixture, StagingStream_CancellationBehavior) {
     // Note: We can't easily detect missing submit() with an assert because
     // the semaphore value is allocated before submit (from nextSubmitSemaphore).
     // The TimelineSubmitCancel exception is the mechanism that catches this.
+}
+
+// Regression test: Destructor must wait for in-flight GPU work before destroying buffers
+// Tests that rapid creation/destruction of staging pools with submitted work doesn't cause
+// device loss or data corruption from use-after-free on GPU. If destructors don't wait,
+// staging buffers get freed while GPU is still reading from them, causing corruption or crash.
+TEST_F(UnitTestFixture, StagingStream_DestructorWaitsForInFlightWork) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+
+    // Use larger buffers to increase GPU operation duration
+    constexpr size_t bufferSize = 5000;
+    auto             buffer =
+        vko::BoundBuffer<int>(ctx->device, bufferSize,
+                              VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    // Lambda for downloading data
+    auto copyLambda = [](VkDeviceSize, auto input, auto output) {
+        std::ranges::copy(input, output.begin());
+    };
+
+    // Step-by-step type deduction for future storage
+    // Fn deduces as a reference because copyLambda is an lvalue
+    using Fn = decltype(copyLambda)&;
+    // Allocator type used by RecyclingStagingPool
+    using Alloc = vko::vma::Allocator;
+    // Exact future type returned by downloadTransform when passed an lvalue callable
+    using Future = vko::DownloadTransformFuture<Fn, int, Alloc>;
+
+    // Store futures to create overlapping GPU work
+    std::vector<Future> futures;
+
+    // Rapidly create/destroy multiple staging pools with overlapping GPU work
+    for (int iteration = 0; iteration < 10; ++iteration) {
+        auto future = [&]() {
+            auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+                ctx->device, ctx->allocator,
+                /*minPools=*/2, /*maxPools=*/3, /*poolSize=*/1 << 14);
+            vko::StagingStream streaming(queue, std::move(staging));
+
+            // Upload unique data for this iteration
+            streaming.upload(buffer, 0, bufferSize,
+                             [iter = iteration](VkDeviceSize offset, auto span) {
+                                 for (size_t i = 0; i < span.size(); ++i) {
+                                     span[i] = static_cast<int>(iter * 100000 + offset + i);
+                                 }
+                             });
+            streaming.submit();
+
+            // Download to verify data integrity later
+            auto result = streaming.downloadTransform<int>(buffer, 0, bufferSize, copyLambda);
+            streaming.submit();
+
+            // CRITICAL: Return future while staging pool destructs here with GPU work in-flight
+            // Without proper synchronization, staging buffers are freed while GPU reads them
+            return result;
+        }(); // staging destructs here - MUST wait for GPU
+
+        futures.push_back(std::move(future));
+    }
+
+    // Verify all futures complete successfully with correct data
+    // If destructors didn't wait, we'd see corrupted data or device loss
+    for (size_t iteration = 0; iteration < futures.size(); ++iteration) {
+        auto& data = futures[iteration].get(ctx->device);
+        ASSERT_EQ(data.size(), bufferSize);
+
+        // Verify several values to detect corruption
+        int expectedBase = static_cast<int>(iteration * 100000);
+        EXPECT_EQ(data[0], expectedBase) << "Iteration " << iteration << " corrupted at index 0";
+        EXPECT_EQ(data[100], expectedBase + 100)
+            << "Iteration " << iteration << " corrupted at index 100";
+        EXPECT_EQ(data[bufferSize - 1], expectedBase + bufferSize - 1)
+            << "Iteration " << iteration << " corrupted at last index";
+    }
+
+    // Ensure all GPU work is complete before test ends
+    ctx->device.vkQueueWaitIdle(queue);
+}
+
+// Use-case: Non-owning reference to staging resources
+// Tests StagingStreamRef which holds references to separately-owned command buffer
+// and staging allocator. This allows flexible sharing and eliminates lifetime issues
+// since the ref has a trivial destructor.
+TEST_F(UnitTestFixture, StagingStreamRef_BasicUploadDownload) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator,
+                                                               /*minPools=*/2, /*maxPools=*/4,
+                                                               /*poolSize=*/1 << 16);
+    vko::CyclingCommandBuffer<vko::Device> cmdBuffer(ctx->device, queue);
+
+    // Create a reference to the owned resources (following std::atomic_ref pattern)
+    vko::StagingStreamRef<vko::vma::RecyclingStagingPool<vko::Device>> streamingRef(cmdBuffer,
+                                                                                    staging);
+
+    // Create GPU buffer
+    auto gpuBuffer = vko::BoundBuffer<int>(
+        ctx->device, 1000, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    // Upload via ref
+    streamingRef.upload(gpuBuffer, 0, 1000, [](VkDeviceSize offset, auto span) {
+        std::iota(span.begin(), span.end(), static_cast<int>(offset));
+    });
+    streamingRef.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+
+    // Download via ref
+    auto downloadFuture = streamingRef.download(gpuBuffer, 0, 1000);
+    streamingRef.submit();
+
+    auto& result = downloadFuture.get(ctx->device);
+    EXPECT_EQ(result.size(), 1000);
+    for (size_t i = 0; i < result.size(); ++i) {
+        EXPECT_EQ(result[i], static_cast<int>(i));
+    }
+
+    // Wait for all GPU work to complete before test cleanup
+    ctx->device.vkQueueWaitIdle(queue);
+}
+
+// Use-case: Multiple refs can share same resources
+// Demonstrates that multiple StagingStreamRef instances can reference the same
+// command buffer and staging allocator, useful for passing to different functions
+// or subsystems without ownership transfer.
+TEST_F(UnitTestFixture, StagingStreamRef_SharedResources) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator,
+                                                               /*minPools=*/2, /*maxPools=*/4,
+                                                               /*poolSize=*/1 << 16);
+    vko::CyclingCommandBuffer<vko::Device> cmdBuffer(ctx->device, queue);
+
+    // Create two refs to the same resources
+    vko::StagingStreamRef<vko::vma::RecyclingStagingPool<vko::Device>> ref1(cmdBuffer, staging);
+    vko::StagingStreamRef<vko::vma::RecyclingStagingPool<vko::Device>> ref2(cmdBuffer, staging);
+
+    // Create two buffers
+    auto buffer1 = vko::BoundBuffer<int>(
+        ctx->device, 500, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    auto buffer2 = vko::BoundBuffer<int>(
+        ctx->device, 500, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    // Upload using ref1
+    ref1.upload(buffer1, 0, 500, [](VkDeviceSize /*offset*/, auto span) {
+        std::fill(span.begin(), span.end(), 100);
+    });
+
+    // Upload using ref2 (shares same command buffer and staging)
+    ref2.upload(buffer2, 0, 500, [](VkDeviceSize /*offset*/, auto span) {
+        std::fill(span.begin(), span.end(), 200);
+    });
+
+    // Both uploads in same batch, submitted together
+    ref1.submit();
+
+    // Verify both resources are shared (same capacity)
+    EXPECT_EQ(ref1.capacity(), ref2.capacity());
+    EXPECT_GT(ref1.capacity(), 0u);
+
+    // Wait for all GPU work to complete before test cleanup
+    ctx->device.vkQueueWaitIdle(queue);
 }
