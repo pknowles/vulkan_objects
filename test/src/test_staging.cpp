@@ -2415,6 +2415,178 @@ TEST_F(UnitTestFixture, StagingStream_QueueFamilyTransition) {
     }
 }
 
+// Use-case: Atomic paired allocation succeeds with exact fit
+// Tests that withSingleAndStagingBuffer allocates both buffers successfully
+TEST_F(UnitTestFixture, StagingStream_AtomicPairAllocation_ExactFit) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    
+    // Small pool to test basic functionality
+    constexpr size_t dataSize = 1000;
+    constexpr size_t tinyPoolSize = 4096; // Generous headroom for alignment and VMA overhead
+    
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator, 1, 2, tinyPoolSize);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    int callCount = 0;
+    
+    streaming.withSingleAndStagingBuffer<VkCopyMemoryIndirectCommandNV, std::byte>(
+        dataSize,
+        [&](VkCommandBuffer, auto& cmd, auto& data, VkDeviceSize)
+            -> std::optional<std::function<void(bool)>>
+        {
+            callCount++;
+            EXPECT_EQ(cmd.size(), 1u);
+            EXPECT_GT(data.size(), 0u);
+            EXPECT_LE(data.size(), dataSize);
+            return std::nullopt;
+        });
+    
+    EXPECT_GT(callCount, 0);
+    
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+}
+
+// Use-case: Atomic paired allocation chunks when data exceeds pool size
+// Tests automatic chunking and retry logic
+TEST_F(UnitTestFixture, StagingStream_AtomicPairAllocation_Chunking) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    
+    constexpr size_t poolSize = 2048;
+    constexpr VkDeviceSize dataSize = 5000; // Larger than a single pool to force chunking
+    
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator, 1, 2, poolSize);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    int callCount = 0;
+    VkDeviceSize totalProcessed = 0;
+    
+    streaming.withSingleAndStagingBuffer<VkCopyMemoryIndirectCommandNV, std::byte>(
+        dataSize,
+        [&](VkCommandBuffer, auto& cmd, auto& data, VkDeviceSize offset)
+            -> std::optional<std::function<void(bool)>>
+        {
+            callCount++;
+            EXPECT_EQ(cmd.size(), 1u);
+            EXPECT_EQ(offset, totalProcessed);
+            totalProcessed += data.size();
+            return std::nullopt;
+        });
+    
+    EXPECT_GT(callCount, 1) << "Should have chunked into multiple calls";
+    EXPECT_EQ(totalProcessed, dataSize);
+    
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+}
+
+// Use-case: Atomic paired allocation userOffset increments correctly
+// Tests that userOffset parameter tracks progress through the data
+TEST_F(UnitTestFixture, StagingStream_AtomicPairAllocation_OffsetTracking) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    
+    constexpr size_t poolSize = 4096;
+    constexpr VkDeviceSize largeSize = 8000; // Larger than single pool to force chunking
+    
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator, 1, 2, poolSize);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    std::vector<VkDeviceSize> offsets;
+    
+    streaming.withSingleAndStagingBuffer<VkCopyMemoryIndirectCommandNV, std::byte>(
+        largeSize,
+        [&](VkCommandBuffer, auto&, auto&, VkDeviceSize offset)
+            -> std::optional<std::function<void(bool)>>
+        {
+            offsets.push_back(offset);
+            return std::nullopt;
+        });
+    
+    EXPECT_FALSE(offsets.empty());
+    EXPECT_EQ(offsets[0], 0u) << "First chunk should start at 0";
+    
+    // Verify offsets are sequential
+    for (size_t i = 1; i < offsets.size(); ++i) {
+        EXPECT_GT(offsets[i], offsets[i-1]) << "Offsets should increment";
+    }
+    
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+}
+
+// Test downloadFromAddress with real data using VK_NV_copy_memory_indirect
+TEST_F(UnitTestFixture, StagingStream_DownloadFromAddress) {
+    // Check if VK_NV_copy_memory_indirect is supported
+    if (!ctx->device.vkCmdCopyMemoryIndirectNV) {
+        GTEST_SKIP() << "VK_NV_copy_memory_indirect not available";
+    }
+    
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    
+    constexpr size_t dataSize = 1000;
+    std::vector<int> testData(dataSize);
+    std::iota(testData.begin(), testData.end(), 42);
+    
+    // Create device buffer with shader device address support
+    auto buffer = vko::BoundBuffer<int>(
+        ctx->device, dataSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        ctx->allocator);
+    
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator, 1, 3, 16384,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | 
+        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    vko::StagingStream streaming(queue, std::move(staging));
+    
+    // Upload test data
+    streaming.upload(buffer, testData, 0, dataSize);
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+    
+    // Test 1: Download full buffer using DeviceSpan constructor
+    {
+        vko::DeviceAddress<int> deviceAddr(buffer, ctx->device);
+        vko::DeviceSpan<const int> deviceSpan(
+            vko::DeviceAddress<const int>(deviceAddr.raw()), buffer.size());
+        
+        auto future = vko::downloadFromAddress(streaming, ctx->device, deviceSpan);
+        streaming.submit();
+        
+        auto& result = future.get(ctx->device);
+        
+        ASSERT_EQ(result.size(), dataSize);
+        for (size_t i = 0; i < dataSize; ++i) {
+            EXPECT_EQ(result[i], testData[i]) << "Mismatch at index " << i;
+        }
+    }
+    
+    // Test 2: Download subspan with offset to verify offset handling
+    {
+        constexpr size_t offset = 100;
+        constexpr size_t count = 200;
+        
+        vko::DeviceAddress<int> addr(buffer, ctx->device);
+        vko::DeviceSpan<const int> fullSpan(
+            vko::DeviceAddress<const int>(addr.raw()), buffer.size());
+        vko::DeviceSpan<const int> subSpan = fullSpan.subspan(offset, count);
+        
+        auto future = vko::downloadFromAddress(streaming, ctx->device, subSpan);
+        streaming.submit();
+        
+        auto& result = future.get(ctx->device);
+        
+        ASSERT_EQ(result.size(), count);
+        for (size_t i = 0; i < count; ++i) {
+            EXPECT_EQ(result[i], testData[offset + i]) << "Mismatch at index " << i;
+        }
+    }
+}
+
 // Verify that cancellation works correctly in two scenarios:
 // 1. Legitimate cancellation - submit() called but streaming destroyed before future evaluated
 // 2. Missing submit() - user forgets to call submit(), should throw TimelineSubmitCancel
