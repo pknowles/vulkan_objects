@@ -46,6 +46,7 @@ struct Context {
     VkPhysicalDevice           physicalDevice    = VK_NULL_HANDLE;
     uint32_t                   queueFamilyIndex  = 0;
     std::optional<uint32_t>    queueFamilyIndex2;
+    std::vector<const char*>   optionalExtensions;
     vko::Device                device;
     vko::vma::Allocator        allocator;
 
@@ -85,10 +86,23 @@ struct Context {
             vko::toVector(instance.vkGetPhysicalDeviceQueueFamilyProperties, physicalDevice),
             VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT,
             queueFamilyIndex))
+        // Detect and enable optional vendor-specific extensions if available
+        // Note: a real app would prioritize the physical device supporting desired extensions
+        , optionalExtensions([this]() {
+            std::vector<const char*> extensions;
+            auto availableExts = vko::toVector(instance.vkEnumerateDeviceExtensionProperties, 
+                                              physicalDevice, nullptr);
+            if (std::ranges::any_of(availableExts, [](const VkExtensionProperties& p) {
+                return std::string_view(p.extensionName) == VK_NV_COPY_MEMORY_INDIRECT_EXTENSION_NAME;
+            })) {
+                extensions.push_back(VK_NV_COPY_MEMORY_INDIRECT_EXTENSION_NAME);
+            }
+            return extensions;
+        }())
         , device(instance, physicalDevice,
                  queueFamilyIndex2.has_value()
-                     ? TestDeviceCreateInfo(queueFamilyIndex, queueFamilyIndex2.value())
-                     : TestDeviceCreateInfo(queueFamilyIndex))
+                     ? TestDeviceCreateInfo(queueFamilyIndex, queueFamilyIndex2.value(), optionalExtensions)
+                     : TestDeviceCreateInfo(queueFamilyIndex, optionalExtensions))
         , allocator(globalCommands, instance, physicalDevice, device, VK_API_VERSION_1_4, 0) {}
 
     // Helper to create a command pool for testing

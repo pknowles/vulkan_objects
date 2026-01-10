@@ -17,8 +17,10 @@ concept buffer = requires(T t) {
 template <class T, class Allocator>
 class BufferMapping {
 public:
-    using Allocation = typename Allocator::AllocationType;
-    using Map        = typename Allocator::MapType;
+    using AllocatorType = Allocator;
+    using Allocation    = typename Allocator::AllocationType;
+    using Map           = typename Allocator::MapType;
+    using ValueType     = T;
     BufferMapping(const Allocation& allocation, VkDeviceSize elementCount)
         : m_map(allocation.map())
         , m_size(elementCount) {}
