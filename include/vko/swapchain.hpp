@@ -103,12 +103,13 @@ struct Swapchain {
         };
     }
 
+    // Present with extension chain (e.g. VK_KHR_present_id, VK_GOOGLE_display_timing)
     template <device_and_commands DeviceAndCommands>
     void present(const DeviceAndCommands& device, VkQueue queue, uint32_t index,
-                 VkSemaphore renderFinished) {
+                 VkSemaphore renderFinished, const void* presentInfoPNext) {
         VkPresentInfoKHR presentInfo{
             .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            .pNext              = nullptr,
+            .pNext              = presentInfoPNext,
             .waitSemaphoreCount = 1U,
             .pWaitSemaphores    = &renderFinished,
             .swapchainCount     = 1U,
@@ -118,6 +119,25 @@ struct Swapchain {
         };
         check(device.vkQueuePresentKHR(queue, &presentInfo));
         presented[index] = true;
+    }
+
+    // Present with VK_KHR_present_id
+    template <device_and_commands DeviceAndCommands>
+    void present(const DeviceAndCommands& device, VkQueue queue, uint32_t index,
+                 VkSemaphore renderFinished, uint64_t presentId) {
+        VkPresentIdKHR presentIdInfo{
+            .sType          = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+            .pNext          = nullptr,
+            .swapchainCount = 1U,
+            .pPresentIds    = &presentId,
+        };
+        present(device, queue, index, renderFinished, &presentIdInfo);
+    }
+
+    template <device_and_commands DeviceAndCommands>
+    void present(const DeviceAndCommands& device, VkQueue queue, uint32_t index,
+                 VkSemaphore renderFinished) {
+        present(device, queue, index, renderFinished, nullptr);
     }
 
     SwapchainKHR           swapchain;
