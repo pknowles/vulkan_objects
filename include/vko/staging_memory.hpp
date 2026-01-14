@@ -1,6 +1,26 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
+// Staging memory utilities for GPU data transfer. Quick reference:
+//
+// Upload overloads:
+//   upload(stream, device, buffer, offset, size, fn)      - callback populates staging
+//   upload(stream, device, buffer, range, offset)         - range to typed buffer
+//   upload(stream, device, DeviceSpan, size, fn)          - callback to device address
+//   upload(stream, device, DeviceSpan, range)             - range to device address
+//   upload<T>(stream, device, alloc, size, usage, fn)     - creates buffer via callback
+//   upload(stream, device, allocator, range, usage)       - creates buffer from range
+//   uploadBytes(stream, device, VkBuffer, offset, sz, fn) - raw VkBuffer callback
+//   uploadBytes(stream, device, VkBuffer, byteRange, off) - raw VkBuffer range
+//
+// Download overloads:
+//   download(stream, device, buffer, offset, size)        - identity to vector
+//   download<DstT>(stream, device, buffer, off, sz, fn)   - transform to vector
+//   download(stream, device, DeviceSpan)                  - identity from address
+//   download<DstT>(stream, device, DeviceSpan, fn)        - transform from address
+//   downloadForEach(stream, device, buffer, off, sz, fn)  - streaming callback
+//   downloadForEach(stream, device, DeviceSpan, fn)       - streaming from address
+
 #include <cstdio>
 #include <functional>
 #include <stdexcept>
@@ -1102,11 +1122,11 @@ concept staging_stream = requires(T& t, VkDeviceSize size) {
     { t.submit() };
 };
 
-// Upload to a raw VkBuffer with a callback that populates the staging buffer
+// Upload to a raw VkBuffer with a callback (byte-oriented escape hatch)
 // Callback signature: fn(VkDeviceSize offset, std::span<std::byte> mapped)
 template <staging_stream StreamType, device_and_commands DeviceAndCommands, class Fn>
-void uploadToRawBuffer(StreamType& stream, const DeviceAndCommands& device, VkBuffer dstBuffer,
-                       VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
+void uploadBytes(StreamType& stream, const DeviceAndCommands& device, VkBuffer dstBuffer,
+                 VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
     stream.template withStagingBuffer<std::byte>(
         dstSize,
         [&, userOffset =
@@ -1124,12 +1144,25 @@ void uploadToRawBuffer(StreamType& stream, const DeviceAndCommands& device, VkBu
         });
 }
 
+// Upload a byte range to a raw VkBuffer (byte-oriented escape hatch)
+template <staging_stream StreamType, device_and_commands DeviceAndCommands,
+          std::ranges::contiguous_range SrcRange>
+    requires std::same_as<std::ranges::range_value_t<SrcRange>, std::byte>
+void uploadBytes(StreamType& stream, const DeviceAndCommands& device, VkBuffer dstBuffer,
+                 SrcRange&& srcRange, VkDeviceSize dstOffset = 0) {
+    auto it = std::ranges::begin(srcRange);
+    uploadBytes(stream, device, dstBuffer, dstOffset, std::ranges::size(srcRange),
+                [&](VkDeviceSize offset, std::span<std::byte> mapped) {
+                    std::copy_n(it + offset, mapped.size(), mapped.begin());
+                });
+}
+
 // Upload with a callback that populates the staging buffer
 // Callback signature: fn(VkDeviceSize offset, std::span<T> mapped)
 template <staging_stream StreamType, device_and_commands DeviceAndCommands, buffer DstBuffer,
           class Fn>
-void uploadWith(StreamType& stream, const DeviceAndCommands& device, const DstBuffer& dstBuffer,
-                VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
+void upload(StreamType& stream, const DeviceAndCommands& device, const DstBuffer& dstBuffer,
+            VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
     using T = typename DstBuffer::ValueType;
     stream.template withStagingBuffer<T>(
         dstSize,
@@ -1146,41 +1179,23 @@ void uploadWith(StreamType& stream, const DeviceAndCommands& device, const DstBu
 
 // Upload a contiguous range to an existing typed buffer
 template <staging_stream StreamType, device_and_commands DeviceAndCommands,
-          std::ranges::input_range SrcRange, buffer DstBuffer>
-void uploadTo(StreamType& stream, const DeviceAndCommands& device, const DstBuffer& dstBuffer,
-              SrcRange&& srcRange, VkDeviceSize dstOffset = 0) {
-    using T           = typename DstBuffer::ValueType;
-    VkDeviceSize size = std::ranges::size(srcRange);
-    stream.template withStagingBuffer<T>(
-        size,
-        [&, it = std::ranges::begin(srcRange)](
-            VkCommandBuffer cmd, auto& stagingBuf,
-            VkDeviceSize offset) mutable -> std::optional<std::function<void(bool)>> {
-            // Copy data chunk to staging buffer
-            auto chunkEnd = it;
-            std::advance(chunkEnd, stagingBuf.size());
-            std::copy(it, chunkEnd, stagingBuf.map().begin());
-            it = chunkEnd;
-
-            // Record copy command
-            VkBufferCopy copyRegion{
-                .srcOffset = 0,
-                .dstOffset = (dstOffset + offset) * sizeof(T),
-                .size      = stagingBuf.sizeBytes(),
-            };
-            device.vkCmdCopyBuffer(cmd, stagingBuf, dstBuffer, 1, &copyRegion);
-
-            return std::nullopt; // No cleanup callback needed
-        });
+          std::ranges::contiguous_range SrcRange, buffer DstBuffer>
+void upload(StreamType& stream, const DeviceAndCommands& device, const DstBuffer& dstBuffer,
+            SrcRange&& srcRange, VkDeviceSize dstOffset = 0) {
+    using T = typename DstBuffer::ValueType;
+    auto it = std::ranges::begin(srcRange);
+    upload(stream, device, dstBuffer, dstOffset, std::ranges::size(srcRange),
+           [&](VkDeviceSize offset, std::span<T> mapped) {
+               std::copy_n(it + offset, mapped.size(), mapped.begin());
+           });
 }
 
 // Download to a vector via a transform function that operates in batches
 // Transform signature: fn(VkDeviceSize offset, std::span<const SrcT> input, std::span<DstT> output)
 template <class DstT, staging_stream StreamType, device_and_commands DeviceAndCommands,
           buffer SrcBuffer, class Fn>
-auto downloadTransformFrom(StreamType& stream, const DeviceAndCommands& device,
-                           const SrcBuffer& srcBuffer, VkDeviceSize srcOffset, VkDeviceSize srcSize,
-                           Fn&& fn) {
+auto download(StreamType& stream, const DeviceAndCommands& device, const SrcBuffer& srcBuffer,
+              VkDeviceSize srcOffset, VkDeviceSize srcSize, Fn&& fn) {
     using T         = typename SrcBuffer::ValueType;
     using Allocator = typename StreamType::Allocator;
 
@@ -1206,23 +1221,22 @@ auto downloadTransformFrom(StreamType& stream, const DeviceAndCommands& device,
 
 // Download to a vector (identity transform)
 template <staging_stream StreamType, device_and_commands DeviceAndCommands, buffer SrcBuffer>
-auto downloadFrom(StreamType& stream, const DeviceAndCommands& device, const SrcBuffer& srcBuffer,
-                  VkDeviceSize offset, VkDeviceSize size) {
+auto download(StreamType& stream, const DeviceAndCommands& device, const SrcBuffer& srcBuffer,
+              VkDeviceSize offset, VkDeviceSize size) {
     using T = typename SrcBuffer::ValueType;
-    return downloadTransformFrom<T>(
-        stream, device, srcBuffer, offset, size,
-        [](VkDeviceSize, std::span<const T> input, std::span<T> output) {
-            std::ranges::copy(input, output.begin());
-        });
+    return download<T>(stream, device, srcBuffer, offset, size,
+                       [](VkDeviceSize, std::span<const T> input, std::span<T> output) {
+                           std::ranges::copy(input, output.begin());
+                       });
 }
 
 // Download and call a function on each batch of data
 // Callback signature: fn(VkDeviceSize offset, std::span<const T> data)
 template <staging_stream StreamType, device_and_commands DeviceAndCommands, buffer SrcBuffer,
           class Fn>
-auto downloadForEachFrom(StreamType& stream, const DeviceAndCommands& device,
-                         const SrcBuffer& srcBuffer, VkDeviceSize srcOffset, VkDeviceSize srcSize,
-                         Fn&& fn) {
+auto downloadForEach(StreamType& stream, const DeviceAndCommands& device,
+                     const SrcBuffer& srcBuffer, VkDeviceSize srcOffset, VkDeviceSize srcSize,
+                     Fn&& fn) {
     using T         = typename SrcBuffer::ValueType;
     using Allocator = typename StreamType::Allocator;
 
@@ -1246,26 +1260,39 @@ auto downloadForEachFrom(StreamType& stream, const DeviceAndCommands& device,
     return DownloadForEachHandle<Fn, T, Allocator>{std::move(builder), finalSemaphore};
 }
 
-// Create a device buffer and upload data to it
-// Usage: auto buffer = vko::upload(staging, device, allocator, data, usageFlags);
-template <std::ranges::sized_range SrcRange, staging_stream StagingT,
+// Create a device buffer and upload data via callback
+// Usage: auto buf = vko::upload<T>(stream, device, allocator, size, usage, fn);
+template <class T, staging_stream StreamType, device_and_commands DeviceAndCommands,
+          allocator AllocatorT, class Fn>
+auto upload(StreamType& stream, const DeviceAndCommands& device, AllocatorT& allocator,
+            VkDeviceSize size, VkBufferUsageFlags usage, Fn&& fn,
+            VkMemoryPropertyFlags memoryProperties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
+    vko::DeviceBuffer<T, AllocatorT> buffer(
+        device, size, usage, vko::vma::allocationCreateInfo(memoryProperties), allocator);
+    upload(stream, device, buffer, VkDeviceSize{0}, size, std::forward<Fn>(fn));
+    return buffer;
+}
+
+// Create a device buffer and upload data from a range
+// Usage: auto buf = vko::upload(stream, device, allocator, data, usage);
+template <std::ranges::sized_range SrcRange, staging_stream StreamType,
           device_and_commands DeviceAndCommands, allocator AllocatorT>
-auto upload(StagingT& staging, const DeviceAndCommands& device, AllocatorT& allocator,
+auto upload(StreamType& stream, const DeviceAndCommands& device, AllocatorT& allocator,
             SrcRange&& data, VkBufferUsageFlags usage,
             VkMemoryPropertyFlags memoryProperties = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
     using T = std::remove_cv_t<std::ranges::range_value_t<SrcRange>>;
     vko::DeviceBuffer<T, AllocatorT> buffer(device, std::ranges::size(data), usage,
                                             vko::vma::allocationCreateInfo(memoryProperties),
                                             allocator);
-    uploadTo(staging, device, buffer, std::forward<SrcRange>(data), 0);
+    upload(stream, device, buffer, std::forward<SrcRange>(data), 0);
     return buffer;
 }
 
 // Upload to VkDeviceAddress using VK_NV_copy_memory_indirect extension
 // Callback signature: fn(VkDeviceSize offset, std::span<T> mapped)
 template <class T, staging_stream StreamType, device_and_commands DeviceAndCommands, class Fn>
-void uploadToAddress(StreamType& stream, const DeviceAndCommands& device, DeviceSpan<T> dst,
-                     VkDeviceSize size, Fn&& fn) {
+void upload(StreamType& stream, const DeviceAndCommands& device, DeviceSpan<T> dst,
+            VkDeviceSize size, Fn&& fn) {
     stream.template withSingleAndStagingBuffer<VkCopyMemoryIndirectCommandNV, T>(
         size,
         [&, userOffset =
@@ -1297,33 +1324,29 @@ void uploadToAddress(StreamType& stream, const DeviceAndCommands& device, Device
 // Upload a range to VkDeviceAddress using VK_NV_copy_memory_indirect extension
 template <staging_stream StreamType, device_and_commands DeviceAndCommands,
           std::ranges::contiguous_range SrcRange>
-void uploadToAddress(StreamType& stream, const DeviceAndCommands& device,
-                     DeviceSpan<std::ranges::range_value_t<SrcRange>> dst, SrcRange&& srcRange) {
+void upload(StreamType& stream, const DeviceAndCommands& device,
+            DeviceSpan<std::ranges::range_value_t<SrcRange>> dst, SrcRange&& srcRange) {
     using T = std::ranges::range_value_t<SrcRange>;
     if (std::ranges::size(srcRange) > dst.size())
         throw std::out_of_range("destination span is too small");
 
     auto it = std::ranges::begin(srcRange);
-    uploadToAddress<T>(stream, device, dst, std::ranges::size(srcRange),
-                       [&](VkDeviceSize offset, std::span<T> mapped) {
-                           std::copy_n(it + offset, mapped.size(), mapped.begin());
-                       });
+    upload<T>(stream, device, dst, std::ranges::size(srcRange),
+              [&](VkDeviceSize offset, std::span<T> mapped) {
+                  std::copy_n(it + offset, mapped.size(), mapped.begin());
+              });
 }
 
-// Download from VkDeviceAddress using VK_NV_copy_memory_indirect extension
-template <class T, staging_stream StreamType, device_and_commands DeviceAndCommands>
-auto downloadFromAddress(StreamType& stream, const DeviceAndCommands& device,
-                         DeviceSpan<const T> src) {
+// Download from VkDeviceAddress with transform using VK_NV_copy_memory_indirect extension
+// Transform signature: fn(VkDeviceSize offset, std::span<const SrcT> input, std::span<DstT> output)
+template <class DstT, class T, staging_stream StreamType, device_and_commands DeviceAndCommands,
+          class Fn>
+auto download(StreamType& stream, const DeviceAndCommands& device, DeviceSpan<const T> src,
+              Fn&& fn) {
     using Allocator = typename StreamType::Allocator;
 
-    // Build future for collecting chunks
-    auto copyFn = [](VkDeviceSize, std::span<const T> input, std::span<T> output) {
-        std::ranges::copy(input, output.begin());
-    };
-    DownloadFutureBuilder<decltype(copyFn), T, Allocator, true> builder(std::move(copyFn),
-                                                                        src.size());
+    DownloadFutureBuilder<Fn, DstT, Allocator, true> builder(std::forward<Fn>(fn), src.size());
 
-    // Chunking loop handled by withSingleAndStagingBuffer
     stream.template withSingleAndStagingBuffer<VkCopyMemoryIndirectCommandNV, T>(
         src.size(),
         [&](VkCommandBuffer cmd, auto& indirectCmdBuf, auto& stagingBuf,
@@ -1340,11 +1363,9 @@ auto downloadFromAddress(StreamType& stream, const DeviceAndCommands& device,
 
             // Record indirect copy command
             VkDeviceAddress cmdAddr = indirectCmdBuf.address(device);
-
             device.vkCmdCopyMemoryIndirectNV(
                 cmd, cmdAddr, 1, static_cast<uint32_t>(sizeof(VkCopyMemoryIndirectCommandNV)));
 
-            // Return future callback for this chunk
             return builder.addSubrange(offset, std::move(stagingBuf.map()));
         });
 
@@ -1352,8 +1373,54 @@ auto downloadFromAddress(StreamType& stream, const DeviceAndCommands& device,
                                         ? SemaphoreValue::makeSignalled()
                                         : stream.commandBuffer().nextSubmitSemaphore();
 
-    return DownloadTransformFuture<decltype(copyFn), T, Allocator>{std::move(builder),
-                                                                   finalSemaphore};
+    return DownloadTransformFuture<Fn, DstT, Allocator>{std::move(builder), finalSemaphore};
+}
+
+// Download from VkDeviceAddress using VK_NV_copy_memory_indirect extension (identity)
+template <class T, staging_stream StreamType, device_and_commands DeviceAndCommands>
+auto download(StreamType& stream, const DeviceAndCommands& device, DeviceSpan<const T> src) {
+    return download<T>(stream, device, src,
+                       [](VkDeviceSize, std::span<const T> input, std::span<T> output) {
+                           std::ranges::copy(input, output.begin());
+                       });
+}
+
+// Download from VkDeviceAddress and call a function on each batch
+// Callback signature: fn(VkDeviceSize offset, std::span<const T> data)
+template <class T, staging_stream StreamType, device_and_commands DeviceAndCommands, class Fn>
+auto downloadForEach(StreamType& stream, const DeviceAndCommands& device, DeviceSpan<const T> src,
+                     Fn&& fn) {
+    using Allocator = typename StreamType::Allocator;
+
+    DownloadFutureBuilder<Fn, T, Allocator, false> builder(std::forward<Fn>(fn));
+
+    stream.template withSingleAndStagingBuffer<VkCopyMemoryIndirectCommandNV, T>(
+        src.size(),
+        [&](VkCommandBuffer cmd, auto& indirectCmdBuf, auto& stagingBuf,
+            VkDeviceSize offset) -> std::optional<std::function<void(bool)>> {
+            // Setup indirect copy command
+            VkDeviceAddress srcAddr = src.data().raw() + offset * sizeof(T);
+            VkDeviceAddress dstAddr = stagingBuf.address(device);
+
+            indirectCmdBuf.map()[0] = VkCopyMemoryIndirectCommandNV{
+                .srcAddress = srcAddr,
+                .dstAddress = dstAddr,
+                .size       = stagingBuf.size() * sizeof(T),
+            };
+
+            // Record indirect copy command
+            VkDeviceAddress cmdAddr = indirectCmdBuf.address(device);
+            device.vkCmdCopyMemoryIndirectNV(
+                cmd, cmdAddr, 1, static_cast<uint32_t>(sizeof(VkCopyMemoryIndirectCommandNV)));
+
+            return builder.addSubrange(offset, std::move(stagingBuf.map()));
+        });
+
+    SemaphoreValue finalSemaphore = builder.m_state->subranges.empty()
+                                        ? SemaphoreValue::makeSignalled()
+                                        : stream.commandBuffer().nextSubmitSemaphore();
+
+    return DownloadForEachHandle<Fn, T, Allocator>{std::move(builder), finalSemaphore};
 }
 
 // Lightweight non-owning view for staging operations. Holds references to a
@@ -1374,24 +1441,21 @@ public:
 
     template <buffer DstBuffer, class Fn>
     void upload(const DstBuffer& dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
-        uploadWith(*this, m_staging.get().device(), dstBuffer, dstOffset, dstSize,
-                   std::forward<Fn>(fn));
+        vko::upload(*this, m_staging.get().device(), dstBuffer, dstOffset, dstSize,
+                    std::forward<Fn>(fn));
     }
 
-    // Overload for raw VkBuffer (byte-oriented upload)
+    // Raw VkBuffer upload (byte-oriented escape hatch)
     template <class Fn>
-    void upload(VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
-        uploadToRawBuffer(*this, m_staging.get().device(), dstBuffer, dstOffset, dstSize,
-                          std::forward<Fn>(fn));
+    void uploadBytes(VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
+        vko::uploadBytes(*this, m_staging.get().device(), dstBuffer, dstOffset, dstSize,
+                         std::forward<Fn>(fn));
     }
 
-    // TODO: should this return a future as well to be safer?
-    template <std::ranges::input_range SrcRange, buffer DstBuffer>
-    void upload(const DstBuffer& dstBuffer, SrcRange&& srcRange, VkDeviceSize dstOffset,
-                VkDeviceSize size) {
-        assert(size == static_cast<VkDeviceSize>(std::ranges::size(srcRange)));
-        uploadTo(*this, m_staging.get().device(), dstBuffer, std::forward<SrcRange>(srcRange),
-                 dstOffset);
+    template <std::ranges::contiguous_range SrcRange, buffer DstBuffer>
+    void upload(const DstBuffer& dstBuffer, SrcRange&& srcRange, VkDeviceSize dstOffset = 0) {
+        vko::upload(*this, m_staging.get().device(), dstBuffer, std::forward<SrcRange>(srcRange),
+                    dstOffset);
     }
 
     // Extensibility primitive: chunked single+upTo allocation with callbacks
@@ -1459,14 +1523,14 @@ public:
     DownloadTransformFuture<Fn, DstT, Allocator> downloadTransform(const SrcBuffer& srcBuffer,
                                                                    VkDeviceSize     srcOffset,
                                                                    VkDeviceSize srcSize, Fn&& fn) {
-        return downloadTransformFrom<DstT>(*this, m_staging.get().device(), srcBuffer, srcOffset,
-                                           srcSize, std::forward<Fn>(fn));
+        return vko::download<DstT>(*this, m_staging.get().device(), srcBuffer, srcOffset, srcSize,
+                                   std::forward<Fn>(fn));
     }
 
     // Regular download function with an identity transform to a vector
     template <buffer SrcBuffer>
     auto download(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size) {
-        return downloadFrom(*this, m_staging.get().device(), srcBuffer, offset, size);
+        return vko::download(*this, m_staging.get().device(), srcBuffer, offset, size);
     }
 
     // Call the given function on each batch of the download
@@ -1474,8 +1538,8 @@ public:
     DownloadForEachHandle<Fn, typename SrcBuffer::ValueType, Allocator>
     downloadForEach(const SrcBuffer& srcBuffer, VkDeviceSize srcOffset, VkDeviceSize srcSize,
                     Fn&& fn) {
-        return downloadForEachFrom(*this, m_staging.get().device(), srcBuffer, srcOffset, srcSize,
-                                   std::forward<Fn>(fn));
+        return vko::downloadForEach(*this, m_staging.get().device(), srcBuffer, srcOffset, srcSize,
+                                    std::forward<Fn>(fn));
     }
 
     // Manual submission interface.
@@ -1592,14 +1656,13 @@ public:
     }
 
     template <class Fn>
-    void upload(VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
-        m_ref.upload(dstBuffer, dstOffset, dstSize, std::forward<Fn>(fn));
+    void uploadBytes(VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
+        m_ref.uploadBytes(dstBuffer, dstOffset, dstSize, std::forward<Fn>(fn));
     }
 
-    template <std::ranges::input_range SrcRange, buffer DstBuffer>
-    void upload(const DstBuffer& dstBuffer, SrcRange&& srcRange, VkDeviceSize dstOffset,
-                VkDeviceSize size) {
-        m_ref.upload(dstBuffer, std::forward<SrcRange>(srcRange), dstOffset, size);
+    template <std::ranges::contiguous_range SrcRange, buffer DstBuffer>
+    void upload(const DstBuffer& dstBuffer, SrcRange&& srcRange, VkDeviceSize dstOffset = 0) {
+        m_ref.upload(dstBuffer, std::forward<SrcRange>(srcRange), dstOffset);
     }
 
     template <class TSingle, class TUpTo, class Fn>
