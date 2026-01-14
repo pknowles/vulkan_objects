@@ -1,6 +1,6 @@
 # Copyright (c) 2024-2025 Pyarelal Knowles, MIT License
 
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.24)
 
 project(vulkan_objects)
 
@@ -47,13 +47,14 @@ else()
   # 17MB and counting, for just the text header files!!
   include(FetchContent)
   FetchContent_Declare(
-    vulkan_headers
+    VulkanHeaders
     GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
     GIT_TAG ${VULKAN_OBJECTS_SPEC_TAG}
     GIT_SHALLOW TRUE
+    OVERRIDE_FIND_PACKAGE  # Makes find_package(VulkanHeaders) use this FetchContent, e.g. from Vulkan-Utility-Libraries
   )
-  FetchContent_MakeAvailable(vulkan_headers)
-  set(VULKAN_SPEC_XML ${vulkan_headers_SOURCE_DIR}/registry/vk.xml)
+  FetchContent_MakeAvailable(VulkanHeaders)
+  set(VULKAN_SPEC_XML ${vulkanheaders_SOURCE_DIR}/registry/vk.xml)
   target_link_libraries(vulkan_objects PUBLIC Vulkan::Headers)
 endif()
 
@@ -106,15 +107,11 @@ foreach(generated_source IN LISTS generated_sources)
   add_generated_file("${CMAKE_CURRENT_SOURCE_DIR}/${generated_source}")
 endforeach()
 
-# Just for convenience because users would probably want these optional libs
-# anyway. vulkan_objects includes wrappers/helpers for them but they
-
-# ============================================================================
-# SHARED DEPENDENCIES (for VVL and Shaderc)
-# ============================================================================
-# Both Vulkan Validation Layers and Shaderc require these Khronos tools.
-# Fetch them once here to ensure version consistency and avoid duplicates.
-# ============================================================================
+# Optional dependencies added for user convenience, even though vulkan_objects
+# doesn't strictly need them. Slang and Shaderc are both shader compilers -
+# Shaderc is simpler for GLSL while Slang supports modules but is more verbose.
+# VVL and Shaderc share SPIRV-Tools, SPIRV-Headers and glslang, fetched here to
+# avoid duplication.
 
 if (VULKAN_OBJECTS_FETCH_VVL OR VULKAN_OBJECTS_FETCH_SHADERC)
   include(FetchContent)
@@ -240,45 +237,9 @@ if(VULKAN_OBJECTS_FETCH_SLANG)
 endif()
 
 if(VULKAN_OBJECTS_FETCH_SHADERC)
-  # ============================================================================
-  # Shaderc (GLSL/HLSL to SPIR-V compiler)
-  # ============================================================================
-  # Shaderc is a collection of tools and libraries for compiling GLSL/HLSL
-  # shaders to SPIR-V. It wraps glslang (the Khronos reference compiler) and
-  # SPIRV-Tools to provide a more stable API and better build integration.
-  #
-  # DEPENDENCY HANDLING:
-  # Shaderc's core dependencies (SPIRV-Headers, SPIRV-Tools, glslang) are now
-  # fetched in the shared dependencies section at the top of this file to avoid
-  # duplication with VVL and ensure version consistency.
-  #
-  # VERSIONS (as of Dec 2025):
-  #   - Shaderc:       v2025.5 (configurable via VULKAN_OBJECTS_SHADERC_TAG)
-  #   - SPIRV-Tools:   v2025.4 (shared with VVL)
-  #   - glslang:       16.1.0 (shared with VVL)
-  #   - SPIRV-Headers: vulkan-sdk-1.4.335.0 (shared with VVL)
-  #
-  # LINKING:
-  # We link to shaderc_combined, which is a static library containing shaderc
-  # and all its dependencies (SPIRV-Tools, glslang) in one convenient package.
-  # Note: Shaderc also builds separate shaderc and shaderc_shared libraries,
-  # but we only use shaderc_combined to minimize linking complexity.
-  #
-  # OFFLINE SHADER COMPILATION:
-  # By default, we skip building the glslc executable (command-line compiler).
-  # To enable offline shader compilation, set:
-  #   -DVULKAN_OBJECTS_SHADERC_BUILD_EXECUTABLES=ON
-  # This builds the glslc tool for compiling shaders at build-time instead of
-  # runtime. The executable will be located at:
-  #   ${FETCHCONTENT_BASE_DIR}/shaderc-build/glslc/<config>/glslc[.exe]
-  # Note: On MSVC, glslc may have linking issues with some math functions
-  # (exp2, floor, log2, atof). The library works fine; only the exe is affected.
-  # ============================================================================
+  # Shaderc (GLSL/HLSL to SPIR-V compiler). Dependencies (SPIRV-Tools,
+  # SPIRV-Headers, glslang) are provided by the shared section above.
   include(FetchContent)
-  
-  # Dependencies (SPIRV-Tools, SPIRV-Headers, glslang) are provided by the
-  # shared dependencies section. Shaderc will detect them and skip adding them again.
-  
   set(SHADERC_SKIP_TESTS ON CACHE BOOL "" FORCE)
   set(SHADERC_SKIP_EXAMPLES ON CACHE BOOL "" FORCE)
   set(SHADERC_SKIP_INSTALL ON CACHE BOOL "" FORCE)
@@ -305,7 +266,7 @@ if(VULKAN_OBJECTS_FETCH_SHADERC)
   # Workaround for shaderc failing to export its include directories
   target_include_directories(shaderc_combined INTERFACE "${shaderc_SOURCE_DIR}/libshaderc/include")
 
-  # Use shaderc_combined - it's a static library with all dependencies included
+  # Statically linked shaderc_combined
   target_link_libraries(vulkan_objects PUBLIC shaderc_combined)
 endif()
 

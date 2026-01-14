@@ -773,27 +773,28 @@ TEST_F(UnitTestFixture, StagingStream_DownloadVoid) {
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         ctx->allocator);
-    
-    streaming.upload(gpuBuffer, 0, 1000,
-        [](VkDeviceSize offset, auto span) {
-            std::iota(span.begin(), span.end(), static_cast<int>(offset));
-        });
+
+    vko::upload(streaming, ctx->device, gpuBuffer, VkDeviceSize{0}, VkDeviceSize{1000},
+                [](VkDeviceSize offset, auto span) {
+                    std::iota(span.begin(), span.end(), static_cast<int>(offset));
+                });
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
-    
-    // Download with void callback - just accumulate stats, no storage
+
+    // Download with void callback using free function - just accumulate stats, no storage
     int sum = 0;
     int count = 0;
-    
-    auto handle = streaming.downloadForEach(gpuBuffer, 0, 1000,
-        [&sum, &count](VkDeviceSize, auto mapped) {
-            // Process chunk without storing
-            for (auto val : mapped) {
-                sum += val;
-                count++;
-            }
-        });
-    
+
+    auto handle =
+        vko::downloadForEach(streaming, ctx->device, gpuBuffer, VkDeviceSize{0}, VkDeviceSize{1000},
+                             [&sum, &count](VkDeviceSize, auto mapped) {
+                                 // Process chunk without storing
+                                 for (auto val : mapped) {
+                                     sum += val;
+                                     count++;
+                                 }
+                             });
+
     streaming.submit();
     handle.wait(ctx->device);  // Wait and process all chunks
     
@@ -827,12 +828,13 @@ TEST_F(UnitTestFixture, StagingStream_DownloadWithTransform) {
         });
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
-    
-    // Download with transform - returns transformed data
+
+    // Download with transform using free function
     auto downloadFuture =
-        streaming.downloadTransform<float>(gpuBuffer, 0, 5000, [](VkDeviceSize, auto input, auto output) {
-            std::ranges::copy(input, output.begin()); // Identity transform
-        });
+        vko::download<float>(streaming, ctx->device, gpuBuffer, VkDeviceSize{0}, VkDeviceSize{5000},
+                             [](VkDeviceSize, auto input, auto output) {
+                                 std::ranges::copy(input, output.begin()); // Identity transform
+                             });
 
     streaming.submit();
     
@@ -860,18 +862,19 @@ TEST_F(UnitTestFixture, StagingStream_DownloadSimple) {
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         ctx->allocator);
-    
-    streaming.upload(gpuBuffer, 0, 2000,
-        [](VkDeviceSize offset, auto span) {
-            for (size_t i = 0; i < span.size(); ++i) {
-                span[i] = static_cast<int>(offset + i) * 10;
-            }
-        });
+
+    vko::upload(streaming, ctx->device, gpuBuffer, VkDeviceSize{0}, VkDeviceSize{2000},
+                [](VkDeviceSize offset, auto span) {
+                    for (size_t i = 0; i < span.size(); ++i) {
+                        span[i] = static_cast<int>(offset + i) * 10;
+                    }
+                });
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
-    
-    // Use simple download() - no transform lambda needed
-    auto downloadFuture = streaming.download(gpuBuffer, 0, 2000);
+
+    // Use simple download() free function - no transform lambda needed
+    auto downloadFuture =
+        vko::download(streaming, ctx->device, gpuBuffer, VkDeviceSize{0}, VkDeviceSize{2000});
     streaming.submit();
     
     // Wait and get result
@@ -2517,8 +2520,8 @@ TEST_F(UnitTestFixture, StagingStream_AtomicPairAllocation_OffsetTracking) {
     ctx->device.vkQueueWaitIdle(queue);
 }
 
-// Test downloadFromAddress with real data using VK_NV_copy_memory_indirect
-TEST_F(UnitTestFixture, StagingStream_DownloadFromAddress) {
+// Test download(DeviceSpan) with real data using VK_NV_copy_memory_indirect
+TEST_F(UnitTestFixture, StagingStream_Download_DeviceSpan) {
     // Check if VK_NV_copy_memory_indirect is supported
     if (!ctx->device.vkCmdCopyMemoryIndirectNV) {
         GTEST_SKIP() << "VK_NV_copy_memory_indirect not available";
@@ -2544,7 +2547,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadFromAddress) {
     vko::StagingStream streaming(queue, std::move(staging));
     
     // Upload test data
-    streaming.upload(buffer, testData, 0, dataSize);
+    streaming.upload(buffer, testData);
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
     
@@ -2553,8 +2556,8 @@ TEST_F(UnitTestFixture, StagingStream_DownloadFromAddress) {
         vko::DeviceAddress<int> deviceAddr(buffer, ctx->device);
         vko::DeviceSpan<const int> deviceSpan(
             vko::DeviceAddress<const int>(deviceAddr.raw()), buffer.size());
-        
-        auto future = vko::downloadFromAddress(streaming, ctx->device, deviceSpan);
+
+        auto future = vko::download(streaming, ctx->device, deviceSpan);
         streaming.submit();
         
         auto& result = future.get(ctx->device);
@@ -2574,8 +2577,8 @@ TEST_F(UnitTestFixture, StagingStream_DownloadFromAddress) {
         vko::DeviceSpan<const int> fullSpan(
             vko::DeviceAddress<const int>(addr.raw()), buffer.size());
         vko::DeviceSpan<const int> subSpan = fullSpan.subspan(offset, count);
-        
-        auto future = vko::downloadFromAddress(streaming, ctx->device, subSpan);
+
+        auto future = vko::download(streaming, ctx->device, subSpan);
         streaming.submit();
         
         auto& result = future.get(ctx->device);
@@ -2584,6 +2587,342 @@ TEST_F(UnitTestFixture, StagingStream_DownloadFromAddress) {
         for (size_t i = 0; i < count; ++i) {
             EXPECT_EQ(result[i], testData[offset + i]) << "Mismatch at index " << i;
         }
+    }
+}
+
+// Test upload(DeviceSpan) with callback using VK_NV_copy_memory_indirect
+TEST_F(UnitTestFixture, StagingStream_Upload_DeviceSpan_Callback) {
+    // Check if VK_NV_copy_memory_indirect is supported
+    if (!ctx->device.vkCmdCopyMemoryIndirectNV) {
+        GTEST_SKIP() << "VK_NV_copy_memory_indirect not available";
+    }
+
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+
+    constexpr size_t dataSize = 1000;
+    std::vector<int> testData(dataSize);
+    std::iota(testData.begin(), testData.end(), 42);
+
+    // Create device buffer with shader device address support
+    auto buffer =
+        vko::BoundBuffer<int>(ctx->device, dataSize,
+                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator, 1, 3, 16384,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    // Upload using callback overload
+    vko::DeviceAddress<int> deviceAddr(buffer, ctx->device);
+    vko::DeviceSpan<int>    deviceSpan(deviceAddr, buffer.size());
+
+    vko::upload<int>(streaming, ctx->device, deviceSpan, dataSize,
+                     [&](VkDeviceSize offset, std::span<int> mapped) {
+                         std::copy_n(testData.begin() + offset, mapped.size(), mapped.begin());
+                     });
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+
+    // Verify by downloading the data back
+    auto future = streaming.download(buffer, 0, dataSize);
+    streaming.submit();
+
+    auto& result = future.get(ctx->device);
+
+    ASSERT_EQ(result.size(), dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        EXPECT_EQ(result[i], testData[i]) << "Mismatch at index " << i;
+    }
+}
+
+// Test upload(DeviceSpan) with range overload using VK_NV_copy_memory_indirect
+TEST_F(UnitTestFixture, StagingStream_Upload_DeviceSpan_Range) {
+    // Check if VK_NV_copy_memory_indirect is supported
+    if (!ctx->device.vkCmdCopyMemoryIndirectNV) {
+        GTEST_SKIP() << "VK_NV_copy_memory_indirect not available";
+    }
+
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+
+    constexpr size_t dataSize = 500;
+    std::vector<int> testData(dataSize);
+    std::iota(testData.begin(), testData.end(), 100);
+
+    // Create device buffer with shader device address support
+    auto buffer =
+        vko::BoundBuffer<int>(ctx->device, dataSize,
+                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator, 1, 3, 16384,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    // Upload using range overload
+    vko::DeviceAddress<int> deviceAddr(buffer, ctx->device);
+    vko::DeviceSpan<int>    deviceSpan(deviceAddr, buffer.size());
+
+    vko::upload(streaming, ctx->device, deviceSpan, testData);
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+
+    // Verify by downloading the data back
+    auto future = streaming.download(buffer, 0, dataSize);
+    streaming.submit();
+
+    auto& result = future.get(ctx->device);
+
+    ASSERT_EQ(result.size(), dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        EXPECT_EQ(result[i], testData[i]) << "Mismatch at index " << i;
+    }
+}
+
+// Test upload() with range (not callback) to typed buffer
+TEST_F(UnitTestFixture, StagingStream_UploadRange) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto                     staging =
+        vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator, 1, 3, 16384);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    constexpr size_t dataSize = 300;
+    std::vector<int> testData(dataSize);
+    std::iota(testData.begin(), testData.end(), 42);
+
+    auto buffer = vko::BoundBuffer<int>(
+        ctx->device, dataSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    // Use free function with range
+    vko::upload(streaming, ctx->device, buffer, testData);
+    streaming.submit();
+
+    auto future = vko::download(streaming, ctx->device, buffer, VkDeviceSize{0}, dataSize);
+    streaming.submit();
+
+    auto& result = future.get(ctx->device);
+    ASSERT_EQ(result.size(), dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        EXPECT_EQ(result[i], testData[i]);
+    }
+}
+
+// Test upload() that creates a new buffer via callback
+TEST_F(UnitTestFixture, StagingStream_UploadCreateBuffer_Callback) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto                     staging =
+        vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator, 1, 3, 16384);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    constexpr size_t dataSize = 200;
+
+    // Create buffer and upload via callback in one call
+    auto buffer = vko::upload<int>(
+        streaming, ctx->device, ctx->allocator, dataSize,
+        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        [](VkDeviceSize offset, std::span<int> mapped) {
+            std::iota(mapped.begin(), mapped.end(), static_cast<int>(offset) + 100);
+        });
+    streaming.submit();
+
+    auto future = vko::download(streaming, ctx->device, buffer, VkDeviceSize{0}, dataSize);
+    streaming.submit();
+
+    auto& result = future.get(ctx->device);
+    ASSERT_EQ(result.size(), dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        EXPECT_EQ(result[i], static_cast<int>(i + 100));
+    }
+}
+
+// Test upload() that creates a new buffer from range
+TEST_F(UnitTestFixture, StagingStream_UploadCreateBuffer_Range) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto                     staging =
+        vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator, 1, 3, 16384);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    std::vector<float> testData = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+
+    // Create buffer and upload from range in one call
+    auto buffer = vko::upload(streaming, ctx->device, ctx->allocator, testData,
+                              VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    streaming.submit();
+
+    auto future = vko::download(streaming, ctx->device, buffer, VkDeviceSize{0}, testData.size());
+    streaming.submit();
+
+    auto& result = future.get(ctx->device);
+    ASSERT_EQ(result.size(), testData.size());
+    for (size_t i = 0; i < testData.size(); ++i) {
+        EXPECT_FLOAT_EQ(result[i], testData[i]);
+    }
+}
+
+// Test download() with transform from DeviceSpan
+// NOTE: Current implementation requires DstT == DeviceSpan element type
+TEST_F(UnitTestFixture, StagingStream_Download_DeviceSpan_Transform) {
+    if (!ctx->device.vkCmdCopyMemoryIndirectNV) {
+        GTEST_SKIP() << "VK_NV_copy_memory_indirect not available";
+    }
+
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto                     staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator, 1, 3, 16384,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    constexpr size_t dataSize = 100;
+    std::vector<int> testData(dataSize);
+    std::iota(testData.begin(), testData.end(), 10);
+
+    auto buffer =
+        vko::BoundBuffer<int>(ctx->device, dataSize,
+                              VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    vko::upload(streaming, ctx->device, buffer, testData);
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+
+    // Create DeviceSpan and download with transform
+    vko::DeviceAddress<int>    addr(buffer, ctx->device);
+    vko::DeviceSpan<const int> span(vko::DeviceAddress<const int>(addr.raw()), buffer.size());
+
+    // Transform: multiply each value by 3
+    auto future =
+        vko::download<int>(streaming, ctx->device, span,
+                           [](VkDeviceSize, std::span<const int> input, std::span<int> output) {
+                               for (size_t i = 0; i < input.size(); ++i) {
+                                   output[i] = input[i] * 3;
+                               }
+                           });
+    streaming.submit();
+
+    auto& result = future.get(ctx->device);
+    ASSERT_EQ(result.size(), dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        EXPECT_EQ(result[i], (static_cast<int>(i) + 10) * 3);
+    }
+}
+
+// Test downloadForEach() from DeviceSpan
+TEST_F(UnitTestFixture, StagingStream_DownloadForEach_DeviceSpan) {
+    if (!ctx->device.vkCmdCopyMemoryIndirectNV) {
+        GTEST_SKIP() << "VK_NV_copy_memory_indirect not available";
+    }
+
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto                     staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator, 1, 3, 16384,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    constexpr size_t dataSize = 150;
+    std::vector<int> testData(dataSize);
+    std::iota(testData.begin(), testData.end(), 1);
+
+    auto buffer =
+        vko::BoundBuffer<int>(ctx->device, dataSize,
+                              VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    vko::upload(streaming, ctx->device, buffer, testData);
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+
+    // Create DeviceSpan and downloadForEach
+    vko::DeviceAddress<int>    addr(buffer, ctx->device);
+    vko::DeviceSpan<const int> span(vko::DeviceAddress<const int>(addr.raw()), buffer.size());
+
+    int  count  = 0;
+    int  maxVal = 0;
+    auto handle = vko::downloadForEach<int>(
+        streaming, ctx->device, span, [&count, &maxVal](VkDeviceSize, std::span<const int> data) {
+            for (int val : data) {
+                count++;
+                maxVal = std::max(maxVal, val);
+            }
+        });
+    streaming.submit();
+    handle.wait(ctx->device);
+
+    EXPECT_EQ(count, static_cast<int>(dataSize));
+    EXPECT_EQ(maxVal, static_cast<int>(dataSize)); // max value is 150
+}
+
+// Test uploadBytes() with callback (raw VkBuffer escape hatch)
+TEST_F(UnitTestFixture, StagingStream_UploadBytes_Callback) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto                     staging =
+        vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator, 1, 3, 16384);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    constexpr size_t dataSize = 128;
+    auto             buffer   = vko::BoundBuffer<std::byte>(
+        ctx->device, dataSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    // Use uploadBytes free function with raw VkBuffer
+    vko::uploadBytes(streaming, ctx->device, static_cast<VkBuffer>(buffer), VkDeviceSize{0},
+                     dataSize, [](VkDeviceSize offset, std::span<std::byte> mapped) {
+                         for (size_t i = 0; i < mapped.size(); ++i) {
+                             mapped[i] = static_cast<std::byte>((offset + i) & 0xFF);
+                         }
+                     });
+    streaming.submit();
+
+    // Verify by downloading
+    auto future = vko::download(streaming, ctx->device, buffer, VkDeviceSize{0}, dataSize);
+    streaming.submit();
+
+    auto& result = future.get(ctx->device);
+    ASSERT_EQ(result.size(), dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        EXPECT_EQ(result[i], static_cast<std::byte>(i & 0xFF));
+    }
+}
+
+// Test uploadBytes() with range (raw VkBuffer escape hatch)
+TEST_F(UnitTestFixture, StagingStream_UploadBytes_Range) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto                     staging =
+        vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator, 1, 3, 16384);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    constexpr size_t       dataSize = 64;
+    std::vector<std::byte> testData(dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        testData[i] = static_cast<std::byte>(i * 2);
+    }
+
+    auto buffer = vko::BoundBuffer<std::byte>(
+        ctx->device, dataSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    // Use uploadBytes free function with byte range
+    vko::uploadBytes(streaming, ctx->device, static_cast<VkBuffer>(buffer), testData);
+    streaming.submit();
+
+    // Verify by downloading
+    auto future = vko::download(streaming, ctx->device, buffer, VkDeviceSize{0}, dataSize);
+    streaming.submit();
+
+    auto& result = future.get(ctx->device);
+    ASSERT_EQ(result.size(), dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        EXPECT_EQ(result[i], testData[i]);
     }
 }
 
