@@ -1,7 +1,6 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
-#include "timeline_queue.hpp"
 #include <cstdio>
 #include <functional>
 #include <stdexcept>
@@ -10,8 +9,8 @@
 #include <vko/adapters.hpp>
 #include <vko/allocator.hpp>
 #include <vko/bound_buffer.hpp>
-#include <vko/device_address.hpp>
 #include <vko/command_recording.hpp>
+#include <vko/device_address.hpp>
 #include <vko/handles.hpp>
 #include <vko/shortcuts.hpp>
 #include <vko/timeline_queue.hpp>
@@ -1571,15 +1570,10 @@ private:
 // to reduce staging memory usage.
 //
 // Design: Separates ownership from usage following std::atomic_ref pattern.
-// - StagingStreamRef: Lightweight view (reference_wrappers), trivial destructor
-// - StagingStream: Owns CyclingCommandBuffer + StagingAllocator (this class)
+// - StagingStreamRef: Lightweight view (reference_wrappers), contains all logic
+// - StagingStream: Owns CyclingCommandBuffer + StagingAllocator, delegates to internal ref
 // Benefits: Flexible sharing, multiple views can reference same resources,
 // supports dedicated staging (AllocateAlwaysSucceeds) without mid-operation submits.
-//
-// TODO: Consider implementing StagingStream on top of StagingStreamRef to avoid
-// code duplication. Options include creating a temporary StagingStreamRef in each
-// method call, or extracting shared logic into more free functions that both
-// classes can use (the more generic approach).
 template <class StagingAllocator>
 class StagingStream {
 public:
@@ -1587,201 +1581,75 @@ public:
     using Allocator         = typename StagingAllocator::Allocator;
 
     StagingStream(TimelineQueue& queue, StagingAllocator&& staging)
-        : 
-        m_commandBuffer(staging.device(), queue)
+        : m_commandBuffer(staging.device(), queue)
         , m_staging(std::move(staging))
-        {}
+        , m_ref(m_commandBuffer, m_staging) {}
 
+    // All operations delegate to the internal StagingStreamRef
     template <buffer DstBuffer, class Fn>
     void upload(const DstBuffer& dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
-        uploadWith(*this, m_staging.device(), dstBuffer, dstOffset, dstSize, std::forward<Fn>(fn));
+        m_ref.upload(dstBuffer, dstOffset, dstSize, std::forward<Fn>(fn));
     }
 
-    // Overload for raw VkBuffer (byte-oriented upload)
     template <class Fn>
     void upload(VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dstSize, Fn&& fn) {
-        uploadToRawBuffer(*this, m_staging.device(), dstBuffer, dstOffset, dstSize,
-                          std::forward<Fn>(fn));
+        m_ref.upload(dstBuffer, dstOffset, dstSize, std::forward<Fn>(fn));
     }
 
-    // TODO: should this return a future as well to be safer?
     template <std::ranges::input_range SrcRange, buffer DstBuffer>
     void upload(const DstBuffer& dstBuffer, SrcRange&& srcRange, VkDeviceSize dstOffset,
                 VkDeviceSize size) {
-        assert(size == static_cast<VkDeviceSize>(std::ranges::size(srcRange)));
-        uploadTo(*this, m_staging.device(), dstBuffer, std::forward<SrcRange>(srcRange), dstOffset);
+        m_ref.upload(dstBuffer, std::forward<SrcRange>(srcRange), dstOffset, size);
     }
 
-    // Extensibility primitive: chunked single+upTo allocation with callbacks
-    // Like upload(), loops calling fn() for each chunk until size exhausted
-    // Callback returns optional cleanup for this chunk (auto-registered)
-    template<class TSingle, class TUpTo, class Fn>
-        requires std::invocable<Fn,
-                               VkCommandBuffer,
-                               const BoundBuffer<TSingle, Allocator>&,
-                               const BoundBuffer<TUpTo, Allocator>&,
-                               VkDeviceSize>   // offset
+    template <class TSingle, class TUpTo, class Fn>
+        requires std::invocable<Fn, VkCommandBuffer, const BoundBuffer<TSingle, Allocator>&,
+                                const BoundBuffer<TUpTo, Allocator>&, VkDeviceSize>
     void withSingleAndStagingBuffer(VkDeviceSize totalSize, Fn&& fn) {
-        VkDeviceSize userOffset = 0;
-        while (totalSize > 0) {
-            auto [single, upTo] = allocateSingleAndUpTo<TSingle, TUpTo>(totalSize);
-            
-            // Invoke user callback - may return cleanup callback
-            auto maybeCallback = fn(commandBuffer(), single, upTo, userOffset);
-            
-            // Auto-register cleanup if returned
-            if (maybeCallback.has_value()) {
-                m_staging.registerBatchCallback(std::move(*maybeCallback));
-            }
-            
-            // upTo may be smaller than requested - loop until done
-            userOffset += upTo.size();
-            totalSize -= upTo.size();
-        }
+        m_ref.template withSingleAndStagingBuffer<TSingle, TUpTo>(totalSize, std::forward<Fn>(fn));
     }
 
-    // Extensibility primitive: chunked staging buffer allocation with callbacks
-    // Like upload(), loops calling fn() for each chunk until size exhausted
-    // Callback returns optional cleanup for this chunk (auto-registered)
     template <class T, class Fn>
-        requires std::invocable<Fn, VkCommandBuffer, const BoundBuffer<T, Allocator>&,
-                                VkDeviceSize> // offset
+        requires std::invocable<Fn, VkCommandBuffer, const BoundBuffer<T, Allocator>&, VkDeviceSize>
     void withStagingBuffer(VkDeviceSize totalSize, Fn&& fn) {
-        VkDeviceSize userOffset = 0;
-        while (totalSize > 0) {
-            auto& stagingBuf = allocateUpTo<T>(totalSize);
-
-            // Invoke user callback - may return cleanup callback
-            auto maybeCallback = fn(commandBuffer(), stagingBuf, userOffset);
-
-            // Auto-register cleanup if returned
-            if (maybeCallback.has_value()) {
-                m_staging.registerBatchCallback(std::move(*maybeCallback));
-            }
-
-            // stagingBuf may be smaller than requested - loop until done
-            userOffset += stagingBuf.size();
-            totalSize -= stagingBuf.size();
-        }
+        m_ref.template withStagingBuffer<T>(totalSize, std::forward<Fn>(fn));
     }
 
-    // Download to a vector via a transform function that operates in batches
-    // 
-    // IMPORTANT: User is responsible for ensuring appropriate memory barriers are in place
-    // between GPU writes to srcBuffer and the download operation. The staging buffers are
-    // mapped HOST_VISIBLE | HOST_COHERENT, so no explicit cache invalidation is needed for
-    // the staging memory itself, but srcBuffer must be properly synchronized.
-    //
-    // NOTE: callback may be called even if the return value is destroyed
     template <class DstT, buffer SrcBuffer, class Fn>
     DownloadTransformFuture<Fn, DstT, Allocator>
     downloadTransform(const SrcBuffer& srcBuffer, VkDeviceSize srcOffset, VkDeviceSize srcSize, Fn&& fn) {
-        return downloadTransformFrom<DstT>(*this, m_staging.device(), srcBuffer, srcOffset, srcSize,
-                                           std::forward<Fn>(fn));
+        return m_ref.template downloadTransform<DstT>(srcBuffer, srcOffset, srcSize,
+                                                      std::forward<Fn>(fn));
     }
 
-    // Regular download function with an identity transform to a vector
     template <buffer SrcBuffer>
     auto download(const SrcBuffer& srcBuffer, VkDeviceSize offset, VkDeviceSize size) {
-        return downloadFrom(*this, m_staging.device(), srcBuffer, offset, size);
+        return m_ref.download(srcBuffer, offset, size);
     }
 
-    // Call the given function on each batch of the download
     template <buffer SrcBuffer, class Fn>
     DownloadForEachHandle<Fn, typename SrcBuffer::ValueType, Allocator>
     downloadForEach(const SrcBuffer& srcBuffer, VkDeviceSize srcOffset, VkDeviceSize srcSize, Fn&& fn) {
-        return downloadForEachFrom(*this, m_staging.device(), srcBuffer, srcOffset, srcSize,
-                                   std::forward<Fn>(fn));
+        return m_ref.downloadForEach(srcBuffer, srcOffset, srcSize, std::forward<Fn>(fn));
     }
 
-    // Manual submission interface.
-    SemaphoreValue submit() {
-        std::array<VkSemaphoreSubmitInfo, 0> noWaits{};
-        std::array<VkSemaphoreSubmitInfo, 0> noSignals{};
-        return submit(noWaits, noSignals);
-    }
+    SemaphoreValue submit() { return m_ref.submit(); }
 
-    // TODO: to be really generic and match the Vulkan API, I think we want a "Submission" object
     template <typename WaitRange, typename SignalRange>
     SemaphoreValue submit(WaitRange&& waitInfos, SignalRange&& signalInfos,
                           VkPipelineStageFlags2 timelineSemaphoreStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT) {
-        SemaphoreValue semaphoreValue = m_commandBuffer.submit(
-            std::forward<WaitRange>(waitInfos), std::forward<SignalRange>(signalInfos),
-            timelineSemaphoreStageMask);
-        if (m_hasUnsubmittedAllocations) {
-            m_staging.endBatch(semaphoreValue);
-            m_hasUnsubmittedAllocations = false;
-        }
-        return semaphoreValue;
+        return m_ref.submit(std::forward<WaitRange>(waitInfos), std::forward<SignalRange>(signalInfos),
+                            timelineSemaphoreStageMask);
     }
 
-    // Get total allocated staging memory size in bytes
     VkDeviceSize size() const { return m_staging.size(); }
-    
-    // Get total staging memory capacity in bytes
     VkDeviceSize capacity() const { return m_staging.capacity(); }
-
     CyclingCommandBuffer<DeviceAndCommands>& commandBuffer() { return m_commandBuffer; }
-private:
-    
-    // Accessor for testing
-    StagingAllocator& staging() { return m_staging; }
-    const StagingAllocator& staging() const { return m_staging; }
 
+private:
     CyclingCommandBuffer<DeviceAndCommands>       m_commandBuffer;
     StagingAllocator                              m_staging;
-    bool                                          m_hasUnsubmittedAllocations = false;
-    
-    // Helper to allocate from staging or submit and retry once Guarantees
-    // return of valid buffer or throws on persistent failure, indicating a bug
-    // with the backing allocator.
-    template <class T>
-    BoundBuffer<T, Allocator>& allocateUpTo(VkDeviceSize size) {
-        while (true) {
-            auto* buf = m_staging.template allocateUpTo<T>(size);
-            if (buf) {
-                m_hasUnsubmittedAllocations = true;
-                return *buf;  // Success
-            }
-            
-            if constexpr (StagingAllocator::AllocateAlwaysSucceeds) {
-                // std::unreachable()
-                throw std::runtime_error("AllocateAlwaysSucceeds but allocation failed");
-            } else {
-                if (!m_hasUnsubmittedAllocations) {
-                    throw std::runtime_error("Staging allocation failed even after submit");
-                }
-
-                submit();
-                // Retry
-            }
-        }
-    }
-
-    // Helper matching allocateUpTo structure for atomic pair allocation
-    template<class TSingle, class TUpTo>
-    std::pair<BoundBuffer<TSingle, Allocator>&, BoundBuffer<TUpTo, Allocator>&>
-    allocateSingleAndUpTo(VkDeviceSize upToSize) {
-        while (true) {
-            auto result = m_staging.template allocateSingleAndUpTo<TSingle, TUpTo>(upToSize);
-            if (result) {
-                m_hasUnsubmittedAllocations = true;
-                return *result;  // Success
-            }
-            
-            if constexpr (StagingAllocator::AllocateAlwaysSucceeds) {
-                // std::unreachable()
-                throw std::runtime_error("AllocateAlwaysSucceeds but allocation failed");
-            } else {
-                if (!m_hasUnsubmittedAllocations) {
-                    throw std::runtime_error("Staging allocation failed even after submit");
-                }
-
-                submit();
-                // Retry
-            }
-        }
-    }
+    StagingStreamRef<StagingAllocator>            m_ref;  // Delegates all operations
 };
 
 // For raw VkBuffer uploads/downloads, use StagingStream::upload(VkBuffer, offset, size, fn)
