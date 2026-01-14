@@ -2587,6 +2587,102 @@ TEST_F(UnitTestFixture, StagingStream_DownloadFromAddress) {
     }
 }
 
+// Test uploadToAddress with callback using VK_NV_copy_memory_indirect
+TEST_F(UnitTestFixture, StagingStream_UploadToAddress_Callback) {
+    // Check if VK_NV_copy_memory_indirect is supported
+    if (!ctx->device.vkCmdCopyMemoryIndirectNV) {
+        GTEST_SKIP() << "VK_NV_copy_memory_indirect not available";
+    }
+
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+
+    constexpr size_t dataSize = 1000;
+    std::vector<int> testData(dataSize);
+    std::iota(testData.begin(), testData.end(), 42);
+
+    // Create device buffer with shader device address support
+    auto buffer =
+        vko::BoundBuffer<int>(ctx->device, dataSize,
+                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator, 1, 3, 16384,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    // Upload using callback overload
+    vko::DeviceAddress<int> deviceAddr(buffer, ctx->device);
+    vko::DeviceSpan<int>    deviceSpan(deviceAddr, buffer.size());
+
+    vko::uploadToAddress<int>(streaming, ctx->device, deviceSpan, dataSize,
+                              [&](VkDeviceSize offset, std::span<int> mapped) {
+                                  std::copy_n(testData.begin() + offset, mapped.size(),
+                                              mapped.begin());
+                              });
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+
+    // Verify by downloading the data back
+    auto future = streaming.download(buffer, 0, dataSize);
+    streaming.submit();
+
+    auto& result = future.get(ctx->device);
+
+    ASSERT_EQ(result.size(), dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        EXPECT_EQ(result[i], testData[i]) << "Mismatch at index " << i;
+    }
+}
+
+// Test uploadToAddress with range overload using VK_NV_copy_memory_indirect
+TEST_F(UnitTestFixture, StagingStream_UploadToAddress_Range) {
+    // Check if VK_NV_copy_memory_indirect is supported
+    if (!ctx->device.vkCmdCopyMemoryIndirectNV) {
+        GTEST_SKIP() << "VK_NV_copy_memory_indirect not available";
+    }
+
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+
+    constexpr size_t dataSize = 500;
+    std::vector<int> testData(dataSize);
+    std::iota(testData.begin(), testData.end(), 100);
+
+    // Create device buffer with shader device address support
+    auto buffer =
+        vko::BoundBuffer<int>(ctx->device, dataSize,
+                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator, 1, 3, 16384,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    // Upload using range overload
+    vko::DeviceAddress<int> deviceAddr(buffer, ctx->device);
+    vko::DeviceSpan<int>    deviceSpan(deviceAddr, buffer.size());
+
+    vko::uploadToAddress(streaming, ctx->device, deviceSpan, testData);
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+
+    // Verify by downloading the data back
+    auto future = streaming.download(buffer, 0, dataSize);
+    streaming.submit();
+
+    auto& result = future.get(ctx->device);
+
+    ASSERT_EQ(result.size(), dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        EXPECT_EQ(result[i], testData[i]) << "Mismatch at index " << i;
+    }
+}
+
 // Verify that cancellation works correctly in two scenarios:
 // 1. Legitimate cancellation - submit() called but streaming destroyed before future evaluated
 // 2. Missing submit() - user forgets to call submit(), should throw TimelineSubmitCancel
