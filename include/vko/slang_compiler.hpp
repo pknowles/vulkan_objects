@@ -118,8 +118,8 @@ public:
         m_size = components.size();
     }
     operator T*() const { return m_componentType.get(); }
-    T& operator*() const { return *m_componentType.get(); }
-    T* operator->() const { return m_componentType.get(); }
+    T&     operator*() const { return *m_componentType.get(); }
+    T*     operator->() const { return m_componentType.get(); }
     size_t size() const { return m_size; }
 
 private:

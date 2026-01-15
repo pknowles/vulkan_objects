@@ -190,10 +190,11 @@ public:
     using MapType        = Map;
 
     template <class GlobalFunctions, class InstanceAndCommands>
-    Allocator(const GlobalFunctions &globalFunctions, const InstanceAndCommands &instance,
+    Allocator(const GlobalFunctions& globalFunctions, const InstanceAndCommands& instance,
               VkPhysicalDevice physicalDevice, VkDevice device, uint32_t vulkanApiVersion,
               VkBuildAccelerationStructureFlagsKHR flags)
-        : Allocator(globalFunctions.vkGetInstanceProcAddr, instance.vkGetDeviceProcAddr, instance, physicalDevice, device, vulkanApiVersion, flags) {}
+        : Allocator(globalFunctions.vkGetInstanceProcAddr, instance.vkGetDeviceProcAddr, instance,
+                    physicalDevice, device, vulkanApiVersion, flags) {}
 
     Allocator(PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr,
               PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr, VkInstance instance,
@@ -201,24 +202,22 @@ public:
               VkBuildAccelerationStructureFlagsKHR flags)
         : Allocator(vkGetInstanceProcAddr, vkGetDeviceProcAddr,
                     VmaAllocatorCreateInfo{
-                        .flags = flags,
-                        .physicalDevice = physicalDevice,
-                        .device = device,
-                        .preferredLargeHeapBlockSize = 0,
-                        .pAllocationCallbacks = nullptr,
-                        .pDeviceMemoryCallbacks = nullptr,
-                        .pHeapSizeLimit = nullptr,
-                        .pVulkanFunctions = nullptr,
-                        .instance = instance,
-                        .vulkanApiVersion = vulkanApiVersion,
+                        .flags                          = flags,
+                        .physicalDevice                 = physicalDevice,
+                        .device                         = device,
+                        .preferredLargeHeapBlockSize    = 0,
+                        .pAllocationCallbacks           = nullptr,
+                        .pDeviceMemoryCallbacks         = nullptr,
+                        .pHeapSizeLimit                 = nullptr,
+                        .pVulkanFunctions               = nullptr,
+                        .instance                       = instance,
+                        .vulkanApiVersion               = vulkanApiVersion,
                         .pTypeExternalMemoryHandleTypes = nullptr,
-                    })
-    {
-    }
+                    }) {}
 
-    Allocator(PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr,
-              PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr, const VmaAllocatorCreateInfo &createInfo)
-    {
+    Allocator(PFN_vkGetInstanceProcAddr     vkGetInstanceProcAddr,
+              PFN_vkGetDeviceProcAddr       vkGetDeviceProcAddr,
+              const VmaAllocatorCreateInfo& createInfo) {
 
         if (createInfo.pVulkanFunctions)
             throw Exception("Custom VmaAllocatorCreateInfo::pVulkanFunctions not supported");

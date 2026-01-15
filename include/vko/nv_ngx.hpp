@@ -70,33 +70,28 @@ namespace ngx {
 
 // std::wstring_convert is deprecated, utf8 is the future and enums
 // won't have non-ascii characters anyway
-inline std::string wchar_to_ascii(const wchar_t* wstr)
-{
-  if(!wstr)
-    return {};
+inline std::string wchar_to_ascii(const wchar_t* wstr) {
+    if (!wstr)
+        return {};
 
-  std::string result;
-  for(; *wstr; ++wstr)
-  {
-    if(*wstr > 127)
-    {
-      throw std::runtime_error("Non-ASCII character encountered");
+    std::string result;
+    for (; *wstr; ++wstr) {
+        if (*wstr > 127) {
+            throw std::runtime_error("Non-ASCII character encountered");
+        }
+        result += static_cast<char>(*wstr);
     }
-    result += static_cast<char>(*wstr);
-  }
-  return result;
+    return result;
 }
 
 // Helper for converting string_view to wstring for NGX
-inline std::vector<const wchar_t*> makeWcharPtrs(const std::vector<std::wstring>& strings)
-{
-  std::vector<const wchar_t*> ptrs;
-  ptrs.reserve(strings.size());
-  for(const auto& str : strings)
-  {
-    ptrs.push_back(str.c_str());
-  }
-  return ptrs;
+inline std::vector<const wchar_t*> makeWcharPtrs(const std::vector<std::wstring>& strings) {
+    std::vector<const wchar_t*> ptrs;
+    ptrs.reserve(strings.size());
+    for (const auto& str : strings) {
+        ptrs.push_back(str.c_str());
+    }
+    return ptrs;
 }
 
 // Helper to set up NGX feature discovery with search paths
@@ -150,21 +145,16 @@ struct FeatureDiscovery {
 };
 
 // template <NVSDK_NGX_Result result>
-class ResultException : public std::runtime_error
-{
+class ResultException : public std::runtime_error {
 public:
-  ResultException(NVSDK_NGX_Result result)
-      : std::runtime_error("NGX error: " + wchar_to_ascii(GetNGXResultAsString(result)))
-  {
-  }
+    ResultException(NVSDK_NGX_Result result)
+        : std::runtime_error("NGX error: " + wchar_to_ascii(GetNGXResultAsString(result))) {}
 };
 
-inline void check(NVSDK_NGX_Result result)
-{
-  if(NVSDK_NGX_FAILED(result))
-  {
-    throw ResultException(result);
-  }
+inline void check(NVSDK_NGX_Result result) {
+    if (NVSDK_NGX_FAILED(result)) {
+        throw ResultException(result);
+    }
 }
 
 // Straight init wrapper and error handling
@@ -246,11 +236,12 @@ requiredDeviceExtensions(VkInstance instance, VkPhysicalDevice physicalDevice,
 }
 
 template <typename Callback>
-bool withRequiredInstanceExtensions(const NVSDK_NGX_FeatureDiscoveryInfo& featureDiscoveryInfo, Callback&& callback) {
-    uint32_t extensionCount = 0;
-    VkExtensionProperties* extensions = nullptr;
-    NVSDK_NGX_Result result = NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements(&featureDiscoveryInfo,
-                                                                                      &extensionCount, &extensions);
+bool withRequiredInstanceExtensions(const NVSDK_NGX_FeatureDiscoveryInfo& featureDiscoveryInfo,
+                                    Callback&&                            callback) {
+    uint32_t               extensionCount = 0;
+    VkExtensionProperties* extensions     = nullptr;
+    NVSDK_NGX_Result       result = NVSDK_NGX_VULKAN_GetFeatureInstanceExtensionRequirements(
+        &featureDiscoveryInfo, &extensionCount, &extensions);
     if (result == NVSDK_NGX_Result_Success) {
         std::span<const VkExtensionProperties> span{extensions, extensionCount};
         callback(span);
@@ -261,10 +252,11 @@ bool withRequiredInstanceExtensions(const NVSDK_NGX_FeatureDiscoveryInfo& featur
 
 template <typename Callback>
 bool withRequiredDeviceExtensions(VkInstance instance, VkPhysicalDevice physicalDevice,
-                                  const NVSDK_NGX_FeatureDiscoveryInfo& featureDiscoveryInfo, Callback&& callback) {
-    uint32_t extensionCount = 0;
-    VkExtensionProperties* extensions = nullptr;
-    NVSDK_NGX_Result result = NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements(
+                                  const NVSDK_NGX_FeatureDiscoveryInfo& featureDiscoveryInfo,
+                                  Callback&&                            callback) {
+    uint32_t               extensionCount = 0;
+    VkExtensionProperties* extensions     = nullptr;
+    NVSDK_NGX_Result       result         = NVSDK_NGX_VULKAN_GetFeatureDeviceExtensionRequirements(
         instance, physicalDevice, &featureDiscoveryInfo, &extensionCount, &extensions);
     if (result == NVSDK_NGX_Result_Success) {
         std::span<const VkExtensionProperties> span{extensions, extensionCount};

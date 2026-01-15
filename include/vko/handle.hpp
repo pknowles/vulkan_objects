@@ -7,8 +7,7 @@
 #include <vko/functions.hpp>
 #include <vulkan/vulkan_core.h>
 
-namespace vko
-{
+namespace vko {
 
 template <class T>
 concept instance_and_commands = std::constructible_from<VkInstance, T> && instance_commands<T>;
@@ -16,7 +15,8 @@ concept instance_and_commands = std::constructible_from<VkInstance, T> && instan
 template <class T>
 concept device_and_commands = std::constructible_from<VkDevice, T> && device_commands<T>;
 
-template<class Handle> struct handle_traits;
+template <class Handle>
+struct handle_traits;
 
 template <class T, class CreateFunc>
 struct CreateHandle;
@@ -25,7 +25,7 @@ struct CreateHandle;
 // reference to its allocator. std::function could work too, but I have a
 // premature optimization hunch this could be cheaper (naturally, untested).
 template <class T>
-struct DestroyFunc{
+struct DestroyFunc {
     // In most cases the parent is the first parameter of the destroy function
     using Parent = typename handle_traits<T>::destroy_first_param;
 
@@ -34,7 +34,7 @@ struct DestroyFunc{
     // DestroyFunc(const ParentAndCommands& vk)
     //     : DestroyFunc(vk, vk) {}
 
-    template<class CommandTable>
+    template <class CommandTable>
     DestroyFunc(const CommandTable& table, Parent parent)
         : destroy(handle_traits<T>::template destroy_command(table))
         , parent(parent) {}
@@ -84,10 +84,10 @@ public:
         other.m_handle = VK_NULL_HANDLE;
         return *this;
     }
-    operator T() const & { return m_handle; }
-    explicit operator bool() const & { return m_handle != VK_NULL_HANDLE; }
-    T        object() const & { return m_handle; } // useful to be explicit for type deduction
-    const T* ptr() const & { return &m_handle; }
+    operator T() const& { return m_handle; }
+    explicit operator bool() const& { return m_handle != VK_NULL_HANDLE; }
+    T        object() const& { return m_handle; } // useful to be explicit for type deduction
+    const T* ptr() const& { return &m_handle; }
 
 private:
     void destroy() {
@@ -118,16 +118,16 @@ public:
     Handle& operator=(const Handle& other) = delete;
     Handle& operator=(Handle&& other) {
         destroy();
-        m_destroy = other.m_destroy;
-        m_handle = other.m_handle;
+        m_destroy      = other.m_destroy;
+        m_handle       = other.m_handle;
         other.m_handle = VK_NULL_HANDLE;
         return *this;
     }
     operator T() const& { return m_handle; } // l-value only for safety
     // explicit operator bool() const & { return m_handle != VK_NULL_HANDLE; }
-    T          object() const { return m_handle; }                    // static_cast<T>() shortcut
-    const T*   ptr() const { return &m_handle; }                      // direct to vulkan pointer
-    bool engaged() const { return m_handle != VK_NULL_HANDLE; } // for moved-from objects
+    T        object() const { return m_handle; }                    // static_cast<T>() shortcut
+    const T* ptr() const { return &m_handle; }                      // direct to vulkan pointer
+    bool     engaged() const { return m_handle != VK_NULL_HANDLE; } // for moved-from objects
 
 private:
     void destroy() {
@@ -166,16 +166,16 @@ public:
     HandleVector& operator=(const HandleVector& other) = delete;
     HandleVector& operator=(HandleVector&& other) {
         destroy();
-        m_destroy       = std::move(other.m_destroy);
-        m_handles       = std::move(other.m_handles);
+        m_destroy = std::move(other.m_destroy);
+        m_handles = std::move(other.m_handles);
         return *this;
     }
-    auto& operator[](size_t i) const { return m_handles[i]; }
-    auto  begin() const { return m_handles.begin(); }
-    auto  end() const { return m_handles.end(); }
-    auto  data() const { return m_handles.data(); }
-    auto  size() const { return m_handles.size(); }
-    auto  empty() const { return m_handles.empty(); }
+    auto&    operator[](size_t i) const { return m_handles[i]; }
+    auto     begin() const { return m_handles.begin(); }
+    auto     end() const { return m_handles.end(); }
+    auto     data() const { return m_handles.data(); }
+    auto     size() const { return m_handles.size(); }
+    auto     empty() const { return m_handles.empty(); }
     explicit operator bool() const { return !empty(); }
 
 private:

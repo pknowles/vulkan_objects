@@ -4,8 +4,7 @@
 #include <span>
 #include <vko/gen_handles.hpp>
 
-namespace vko
-{
+namespace vko {
 
 // Special case handle for VkInstance
 class InstanceHandle {
@@ -43,7 +42,7 @@ public:
         other.m_handle = VK_NULL_HANDLE;
         return *this;
     }
-    operator VkInstance() const & { return m_handle; }
+    operator VkInstance() const& { return m_handle; }
     explicit          operator bool() const { return m_handle != VK_NULL_HANDLE; }
     VkInstance        object() const { return m_handle; }
     const VkInstance* ptr() const { return &m_handle; }
@@ -64,8 +63,8 @@ public:
     Instance(const GlobalCommands& vk, const VkInstanceCreateInfo& createInfo)
         : Instance(InstanceHandle(vk, createInfo), vk.vkGetInstanceProcAddr) {}
     Instance(InstanceHandle&& handle, PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr)
-        : InstanceHandle(std::move(handle)),
-          InstanceCommands(*this, vkGetInstanceProcAddr) {}
+        : InstanceHandle(std::move(handle))
+        , InstanceCommands(*this, vkGetInstanceProcAddr) {}
 };
 
 // Special case handle for VkDevice
@@ -105,7 +104,7 @@ public:
         other.m_handle = VK_NULL_HANDLE;
         return *this;
     }
-    operator VkDevice() const & { return m_handle; }
+    operator VkDevice() const& { return m_handle; }
     explicit        operator bool() const { return m_handle != VK_NULL_HANDLE; }
     VkDevice        object() const { return m_handle; }
     const VkDevice* ptr() const { return &m_handle; }
@@ -127,8 +126,8 @@ public:
            const VkDeviceCreateInfo& createInfo)
         : Device(DeviceHandle(vk, physicalDevice, createInfo), vk.vkGetDeviceProcAddr) {}
     Device(DeviceHandle&& handle, PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr)
-        : DeviceHandle(std::move(handle)),
-          DeviceCommands(*this, vkGetDeviceProcAddr) {}
+        : DeviceHandle(std::move(handle))
+        , DeviceCommands(*this, vkGetDeviceProcAddr) {}
 };
 
 template <>
@@ -190,15 +189,15 @@ public:
                                .level              = level,
                                .commandBufferCount = 1,
                            }) {}
-    operator VkCommandBuffer() const & { 
+    operator VkCommandBuffer() const& {
         if (m_commandBuffers.empty()) {
             return VK_NULL_HANDLE;
         }
         return m_commandBuffers[0];
     }
-    //explicit               operator bool() const { return static_cast<bool>(m_commandBuffers); }
+    // explicit               operator bool() const { return static_cast<bool>(m_commandBuffers); }
     const VkCommandBuffer* ptr() const { return &m_commandBuffers[0]; }
-    bool engaged() const { return !m_commandBuffers.empty(); }
+    bool                   engaged() const { return !m_commandBuffers.empty(); }
 
 private:
     CommandBuffers m_commandBuffers;
@@ -384,7 +383,7 @@ public:
     ComputePipeline(const DeviceCommands& vk, VkDevice device,
                     const VkComputePipelineCreateInfo& createInfo)
         : m_pipelines(vk, device, std::span{&createInfo, 1}) {}
-    operator VkPipeline() const & { return m_pipelines[0]; }
+    operator VkPipeline() const& { return m_pipelines[0]; }
     const VkPipeline* ptr() const { return &m_pipelines[0]; }
 
 private:
@@ -403,7 +402,7 @@ public:
     GraphicsPipeline(const DeviceCommands& vk, VkDevice device,
                      const VkGraphicsPipelineCreateInfo& createInfo)
         : m_pipelines(vk, device, std::span{&createInfo, 1}) {}
-    operator VkPipeline() const & { return m_pipelines[0]; }
+    operator VkPipeline() const& { return m_pipelines[0]; }
     const VkPipeline* ptr() const { return &m_pipelines[0]; }
 
 private:
@@ -423,7 +422,7 @@ public:
     RayTracingPipelineKHR(const DeviceCommands& vk, VkDevice device,
                           const VkRayTracingPipelineCreateInfoKHR& createInfo)
         : m_pipelines(vk, device, std::span{&createInfo, 1}) {}
-    operator VkPipeline() const & { return m_pipelines[0]; }
+    operator VkPipeline() const& { return m_pipelines[0]; }
     const VkPipeline* ptr() const { return &m_pipelines[0]; }
 
 private:
@@ -491,7 +490,7 @@ public:
                                           .descriptorPool     = descriptorPool,
                                           .descriptorSetCount = 1,
                                           .pSetLayouts        = &setLayout}) {}
-    operator VkDescriptorSet() const & { return m_descriptorSets[0]; }
+    operator VkDescriptorSet() const& { return m_descriptorSets[0]; }
     const VkDescriptorSet* ptr() const { return &m_descriptorSets[0]; }
 
 private:

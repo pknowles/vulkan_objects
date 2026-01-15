@@ -18,11 +18,9 @@
     #include <string.h>
 #endif
 
-namespace vko
-{
+namespace vko {
 
-struct FindVulkanImpl
-{
+struct FindVulkanImpl {
     FindVulkanImpl() {
 #if defined(VVL_DEVELOP_PATH)
     #if _WIN32
@@ -49,34 +47,33 @@ struct FindVulkanImpl
 #endif
         std::string loaded;
         std::string errors;
-        for(auto lib : libs)
-        {
+        for (auto lib : libs) {
             try {
                 m_vulkan = DynamicLibrary(lib);
-                loaded = lib;
+                loaded   = lib;
                 break;
-            } catch(Exception& e) {
+            } catch (Exception& e) {
                 errors += e.what();
                 continue;
             }
         }
-        if (!m_vulkan)
-        {
+        if (!m_vulkan) {
             std::string msg = "Could not find Vulkan library. Tried ";
             msg += libs[0];
-            for(auto lib : libs | std::views::drop(1))
+            for (auto lib : libs | std::views::drop(1))
                 msg += std::string(", ") + lib;
             throw Exception(msg + ":\n" + errors);
         }
         m_loader = m_vulkan->get<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
-        if(!m_loader)
+        if (!m_loader)
             throw Exception("vkGetInstanceProcAddr in " + loaded + " was null:\n" + errors);
     }
     std::optional<DynamicLibrary> m_vulkan;
-    PFN_vkGetInstanceProcAddr m_loader;
+    PFN_vkGetInstanceProcAddr     m_loader;
 };
 
-VulkanLibrary::VulkanLibrary() : m_impl(std::make_unique<FindVulkanImpl>()) {}
+VulkanLibrary::VulkanLibrary()
+    : m_impl(std::make_unique<FindVulkanImpl>()) {}
 VulkanLibrary::~VulkanLibrary() {}
 PFN_vkGetInstanceProcAddr VulkanLibrary::loader() const { return m_impl->m_loader; }
 

@@ -46,8 +46,9 @@ public:
         const VkPipeline& pipeline, size_t groupCount)
         : m_handleSize(rayTracingPipelineProperties.shaderGroupHandleSize) {
         m_handles.resize(m_handleSize * groupCount);
-        check(device.vkGetRayTracingShaderGroupHandlesKHR(device, pipeline, 0, static_cast<uint32_t>(groupCount),
-                                                          static_cast<uint32_t>(m_handles.size()), m_handles.data()));
+        check(device.vkGetRayTracingShaderGroupHandlesKHR(
+            device, pipeline, 0, static_cast<uint32_t>(groupCount),
+            static_cast<uint32_t>(m_handles.size()), m_handles.data()));
     }
 
     std::span<const std::byte> operator[](size_t index) const {

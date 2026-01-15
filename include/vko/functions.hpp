@@ -1,11 +1,10 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
-#include <vko/gen_functions.hpp>
 #include <memory>
+#include <vko/gen_functions.hpp>
 
-namespace vko
-{
+namespace vko {
 
 // Concept for a global function pointer table. Only does a single test for performance
 // reasons.
@@ -28,8 +27,7 @@ concept device_commands = requires(const T& vk) {
     { vk.vkGetDeviceQueue } -> std::same_as<const PFN_vkGetDeviceQueue&>;
 };
 
-struct VulkanLibrary
-{
+struct VulkanLibrary {
 public:
     VulkanLibrary();
     ~VulkanLibrary();

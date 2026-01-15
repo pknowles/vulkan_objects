@@ -2,10 +2,10 @@
 
 #include <algorithm>
 #include <array>
-#include <test_context_fixtures.hpp>
 #include <debugbreak.h>
 #include <gtest/gtest.h>
 #include <iostream>
+#include <test_context_fixtures.hpp>
 #include <type_traits>
 #include <vko/acceleration_structures.hpp>
 #include <vko/adapters.hpp>
@@ -30,8 +30,7 @@
 
 VkBool32 debugMessageCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severityBits,
                               VkDebugUtilsMessageTypeFlagsEXT,
-                              const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-                              void*) {
+                              const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void*) {
     std::cout << pCallbackData->pMessage << std::endl;
     VkFlags breakOnSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
@@ -42,10 +41,10 @@ VkBool32 debugMessageCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severityBit
 }
 
 TEST(Integration, InitHappyPath) {
-    vko::VulkanLibrary              library;
-    vko::GlobalCommands             globalCommands(library.loader());
-    vko::Instance                   instance(globalCommands, TestInstanceCreateInfo());
-    vko::GlobalDebugMessenger       debugMessenger(instance, debugMessageCallback);
+    vko::VulkanLibrary        library;
+    vko::GlobalCommands       globalCommands(library.loader());
+    vko::Instance             instance(globalCommands, TestInstanceCreateInfo());
+    vko::GlobalDebugMessenger debugMessenger(instance, debugMessageCallback);
 
     // Pick a VkPhysicalDevice
     std::vector<VkPhysicalDevice> physicalDevices =
@@ -76,9 +75,9 @@ TEST(Integration, InitHappyPath) {
 
     // Create the first non-instance/device object
     VkCommandPoolCreateInfo commandPoolCreateInfo{
-        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
+        .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .pNext            = nullptr,
+        .flags            = 0,
         .queueFamilyIndex = queueFamilyIndex,
     };
     vko::CommandPool commandPool(device, commandPoolCreateInfo);
@@ -98,7 +97,7 @@ TEST(Integration, WindowSystemIntegration) {
                                    }),
               instanceLayers.end());
     vko::glfw::PlatformSupport platformSupport(instanceExtensions);
-    vko::glfw::ScopedInit glfwInit;
+    vko::glfw::ScopedInit      glfwInit;
     vko::Instance              instance(globalCommands, WindowInstanceCreateInfo(platformSupport));
     vko::SimpleDebugMessenger  debugMessenger(instance, debugMessageCallback);
 
@@ -107,8 +106,8 @@ TEST(Integration, WindowSystemIntegration) {
     auto physicalDeviceIt =
         std::ranges::find_if(physicalDevices, [&](VkPhysicalDevice physicalDevice) -> bool {
             uint32_t queueFamilyIndex = 0; // TODO: search more than just the first
-            return vko::glfw::physicalDevicePresentationSupport(instance, platformSupport, physicalDevice,
-                                                                queueFamilyIndex);
+            return vko::glfw::physicalDevicePresentationSupport(instance, platformSupport,
+                                                                physicalDevice, queueFamilyIndex);
         });
     ASSERT_NE(physicalDeviceIt, physicalDevices.end());
     VkPhysicalDevice physicalDevice = *physicalDeviceIt;
@@ -137,16 +136,16 @@ TEST(Integration, WindowSystemIntegration) {
 
     // Create the first non-instance/device object
     VkCommandPoolCreateInfo commandPoolCreateInfo{
-        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
+        .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .pNext            = nullptr,
+        .flags            = 0,
         .queueFamilyIndex = queueFamilyIndex,
     };
     vko::CommandPool commandPool(device, commandPoolCreateInfo);
 
-    vko::glfw::Window     window  = vko::glfw::makeWindow(800, 600, "Vulkan Window");
-    vko::SurfaceKHR       surface = vko::glfw::makeSurface(instance, platformSupport, window.get());
-    auto                  surfaceFormats =
+    vko::glfw::Window window  = vko::glfw::makeWindow(800, 600, "Vulkan Window");
+    vko::SurfaceKHR   surface = vko::glfw::makeSurface(instance, platformSupport, window.get());
+    auto              surfaceFormats =
         vko::toVector(instance.vkGetPhysicalDeviceSurfaceFormatsKHR, physicalDevice, surface);
     auto surfaceFormatIt =
         std::ranges::find_if(surfaceFormats, [](const VkSurfaceFormatKHR& format) {
@@ -167,8 +166,8 @@ TEST(Integration, WindowSystemIntegration) {
     ASSERT_NE(surfacePresentModeIt, std::end(preferredPresentMode));
     VkPresentModeKHR surfacePresentMode = *surfacePresentModeIt;
 
-    vko::vma::Allocator  allocator(globalCommands, instance, physicalDevice, device,
-                                   VK_API_VERSION_1_4, 0);
+    vko::vma::Allocator        allocator(globalCommands, instance, physicalDevice, device,
+                                         VK_API_VERSION_1_4, 0);
     VkExtent3D                 imageExtent = {800U, 600U, 1U};
     vko::BoundBuffer<uint32_t> imageData(
         device, imageExtent.width * imageExtent.height, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -405,7 +404,7 @@ TEST(Integration, HelloTriangleRayTracing) {
                                    }),
               instanceLayers.end());
     vko::glfw::PlatformSupport platformSupport(instanceExtensions);
-    vko::glfw::ScopedInit glfwInit;
+    vko::glfw::ScopedInit      glfwInit;
     vko::Instance              instance(globalCommands, WindowInstanceCreateInfo(platformSupport));
     vko::SimpleDebugMessenger  debugMessenger(instance, debugMessageCallback);
 
@@ -414,8 +413,8 @@ TEST(Integration, HelloTriangleRayTracing) {
     auto physicalDeviceIt =
         std::ranges::find_if(physicalDevices, [&](VkPhysicalDevice physicalDevice) -> bool {
             uint32_t queueFamilyIndex = 0; // TODO: search more than just the first?
-            return vko::glfw::physicalDevicePresentationSupport(instance, platformSupport, physicalDevice,
-                                                                queueFamilyIndex);
+            return vko::glfw::physicalDevicePresentationSupport(instance, platformSupport,
+                                                                physicalDevice, queueFamilyIndex);
         });
     ASSERT_NE(physicalDeviceIt, physicalDevices.end());
     VkPhysicalDevice physicalDevice = *physicalDeviceIt;
@@ -444,9 +443,9 @@ TEST(Integration, HelloTriangleRayTracing) {
 
     // Create the first non-instance/device object
     VkCommandPoolCreateInfo commandPoolCreateInfo{
-        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
+        .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .pNext            = nullptr,
+        .flags            = 0,
         .queueFamilyIndex = queueFamilyIndex,
     };
     vko::CommandPool commandPool(device, commandPoolCreateInfo);
@@ -474,44 +473,44 @@ TEST(Integration, HelloTriangleRayTracing) {
     ASSERT_NE(surfacePresentModeIt, std::end(preferredPresentMode));
     VkPresentModeKHR surfacePresentMode = *surfacePresentModeIt;
 
-    vko::vma::Allocator  allocator(globalCommands, instance, physicalDevice, device,
-                                   VK_API_VERSION_1_4,
-                                   VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT);
-    VkExtent3D           imageExtent = {800U, 600U, 1U};
-    vko::BoundImage      image(device,
-                               VkImageCreateInfo{.sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                                                 .pNext       = nullptr,
-                                                 .flags       = 0,
-                                                 .imageType   = VK_IMAGE_TYPE_2D,
-                                                 .format      = VK_FORMAT_B8G8R8A8_UNORM,
-                                                 .extent      = imageExtent,
-                                                 .mipLevels   = 1,
-                                                 .arrayLayers = 1,
-                                                 .samples     = VK_SAMPLE_COUNT_1_BIT,
-                                                 .tiling      = VK_IMAGE_TILING_OPTIMAL,
-                                                 .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+    vko::vma::Allocator allocator(globalCommands, instance, physicalDevice, device,
+                                  VK_API_VERSION_1_4,
+                                  VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT);
+    VkExtent3D          imageExtent = {800U, 600U, 1U};
+    vko::BoundImage     image(device,
+                              VkImageCreateInfo{.sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                                .pNext       = nullptr,
+                                                .flags       = 0,
+                                                .imageType   = VK_IMAGE_TYPE_2D,
+                                                .format      = VK_FORMAT_B8G8R8A8_UNORM,
+                                                .extent      = imageExtent,
+                                                .mipLevels   = 1,
+                                                .arrayLayers = 1,
+                                                .samples     = VK_SAMPLE_COUNT_1_BIT,
+                                                .tiling      = VK_IMAGE_TILING_OPTIMAL,
+                                                .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                                      VK_IMAGE_USAGE_STORAGE_BIT,
-                                                 .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
-                                                 .queueFamilyIndexCount = 0,
-                                                 .pQueueFamilyIndices   = nullptr,
-                                                 .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED},
-                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator);
-    vko::ImageView       imageView(device, VkImageViewCreateInfo{
-                                               .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                                               .pNext    = nullptr,
-                                               .flags    = 0,
-                                               .image    = image,
-                                               .viewType = VK_IMAGE_VIEW_TYPE_2D,
-                                               .format   = VK_FORMAT_B8G8R8A8_UNORM,
-                                               .components = VkComponentMapping{},
-                                               .subresourceRange =
+                                                .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
+                                                .queueFamilyIndexCount = 0,
+                                                .pQueueFamilyIndices   = nullptr,
+                                                .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED},
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, allocator);
+    vko::ImageView      imageView(device, VkImageViewCreateInfo{
+                                              .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                              .pNext    = nullptr,
+                                              .flags    = 0,
+                                              .image    = image,
+                                              .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                              .format   = VK_FORMAT_B8G8R8A8_UNORM,
+                                              .components = VkComponentMapping{},
+                                              .subresourceRange =
                                              VkImageSubresourceRange{
-                                                       .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                                                       .baseMipLevel   = 0,
-                                                       .levelCount     = 1,
-                                                       .baseArrayLayer = 0,
-                                                       .layerCount     = 1,
+                                                      .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                                                      .baseMipLevel   = 0,
+                                                      .levelCount     = 1,
+                                                      .baseArrayLayer = 0,
+                                                      .layerCount     = 1,
                                              },
                                      });
     {
@@ -553,7 +552,7 @@ TEST(Integration, HelloTriangleRayTracing) {
                                   VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_DATA_ACCESS_KHR);
     vko::as::Sizes                 blasSizes(device, blasInput);
     vko::as::AccelerationStructure blas(device, blasInput.type, *blasSizes, 0, allocator);
-    VkTransformMatrixKHR identity{.matrix = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
+    VkTransformMatrixKHR           identity{.matrix = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
     vko::DeviceBuffer<VkAccelerationStructureInstanceKHR> instances =
         uploadImmediate<VkAccelerationStructureInstanceKHR>(
             allocator, commandPool, queue, device,
@@ -609,8 +608,8 @@ TEST(Integration, HelloTriangleRayTracing) {
                                           .searchPathCount = SlangInt(std::size(searchPaths)),
 
                                 });
-    vko::slang::Module       raytraceModule(session, "raytrace");
-    ::slang::IComponentType* raytraceEntrypoints[] = {
+    vko::slang::Module        raytraceModule(session, "raytrace");
+    ::slang::IComponentType*  raytraceEntrypoints[] = {
         vko::slang::EntryPoint(raytraceModule, "rayGenMain"),
         vko::slang::EntryPoint(raytraceModule, "anyHitMain"),
         vko::slang::EntryPoint(raytraceModule, "closestHitMain"),

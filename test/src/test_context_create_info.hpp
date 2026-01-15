@@ -12,14 +12,14 @@
 // app-specific struct
 struct TestInstanceCreateInfo {
     static constexpr const char* requiredExtensions[] = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
-    VkApplicationInfo applicationInfo{
-        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        .pNext = nullptr,
-        .pApplicationName = "vulkan_objects test application",
-        .applicationVersion = 0,
-        .pEngineName = nullptr,
-        .engineVersion = 0,
-        .apiVersion = VK_API_VERSION_1_4,
+    VkApplicationInfo            applicationInfo{
+                   .sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                   .pNext              = nullptr,
+                   .pApplicationName   = "vulkan_objects test application",
+                   .applicationVersion = 0,
+                   .pEngineName        = nullptr,
+                   .engineVersion      = 0,
+                   .apiVersion         = VK_API_VERSION_1_4,
     };
     VkInstanceCreateInfo instanceCreateInfo{
         .sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
@@ -32,8 +32,8 @@ struct TestInstanceCreateInfo {
         .ppEnabledExtensionNames = requiredExtensions,
     };
     operator VkInstanceCreateInfo&() { return instanceCreateInfo; }
-    TestInstanceCreateInfo() = default;
-    TestInstanceCreateInfo(const TestInstanceCreateInfo& other) = delete;
+    TestInstanceCreateInfo()                                              = default;
+    TestInstanceCreateInfo(const TestInstanceCreateInfo& other)           = delete;
     TestInstanceCreateInfo operator=(const TestInstanceCreateInfo& other) = delete;
 };
 
@@ -86,40 +86,39 @@ struct TestDeviceCreateInfo {
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
     TestDeviceFeatures                   features;
     VkDeviceCreateInfo                   deviceCreateInfo;
-    
+
     template <std::ranges::range QueueFamilyIndices>
-    TestDeviceCreateInfo(const QueueFamilyIndices& queueFamilyIndices,
+    TestDeviceCreateInfo(const QueueFamilyIndices&    queueFamilyIndices,
                          std::span<const char* const> optionalExtensions = {})
         : deviceExtensions([&optionalExtensions]() {
-            std::vector<const char*> exts{VK_KHR_SWAPCHAIN_EXTENSION_NAME, 
+            std::vector<const char*> exts{VK_KHR_SWAPCHAIN_EXTENSION_NAME,
                                           VK_EXT_SHADER_OBJECT_EXTENSION_NAME};
             exts.insert(exts.end(), optionalExtensions.begin(), optionalExtensions.end());
             return exts;
         }())
         , queueCreateInfos(makeQueueCreateInfos(queueFamilyIndices))
-        , deviceCreateInfo{
-            .sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            .pNext                   = features.pNext(),
-            .flags                   = 0,
-            .queueCreateInfoCount    = uint32_t(queueCreateInfos.size()),
-            .pQueueCreateInfos       = queueCreateInfos.data(),
-            .enabledLayerCount       = 0,
-            .ppEnabledLayerNames     = nullptr,
-            .enabledExtensionCount   = uint32_t(deviceExtensions.size()),
-            .ppEnabledExtensionNames = deviceExtensions.data(),
-            .pEnabledFeatures        = nullptr
-        } {}
-    
-    TestDeviceCreateInfo(uint32_t queueFamilyIndex,
+        , deviceCreateInfo{.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                           .pNext                   = features.pNext(),
+                           .flags                   = 0,
+                           .queueCreateInfoCount    = uint32_t(queueCreateInfos.size()),
+                           .pQueueCreateInfos       = queueCreateInfos.data(),
+                           .enabledLayerCount       = 0,
+                           .ppEnabledLayerNames     = nullptr,
+                           .enabledExtensionCount   = uint32_t(deviceExtensions.size()),
+                           .ppEnabledExtensionNames = deviceExtensions.data(),
+                           .pEnabledFeatures        = nullptr} {}
+
+    TestDeviceCreateInfo(uint32_t                     queueFamilyIndex,
                          std::span<const char* const> optionalExtensions = {})
         : TestDeviceCreateInfo(std::array{queueFamilyIndex}, optionalExtensions) {}
-    
+
     TestDeviceCreateInfo(uint32_t queueFamilyIndex1, uint32_t queueFamilyIndex2,
                          std::span<const char* const> optionalExtensions = {})
-        : TestDeviceCreateInfo(std::array{queueFamilyIndex1, queueFamilyIndex2}, optionalExtensions) {}
-    
+        : TestDeviceCreateInfo(std::array{queueFamilyIndex1, queueFamilyIndex2},
+                               optionalExtensions) {}
+
     operator VkDeviceCreateInfo&() { return deviceCreateInfo; }
-    TestDeviceCreateInfo(const TestDeviceCreateInfo& other) = delete;
+    TestDeviceCreateInfo(const TestDeviceCreateInfo& other)           = delete;
     TestDeviceCreateInfo operator=(const TestDeviceCreateInfo& other) = delete;
 
 private:
@@ -128,14 +127,13 @@ private:
         std::vector<VkDeviceQueueCreateInfo> infos;
         infos.reserve(std::ranges::size(indices));
         for (uint32_t familyIndex : indices) {
-            infos.push_back(VkDeviceQueueCreateInfo{
-                .sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                .pNext            = nullptr,
-                .flags            = 0,
-                .queueFamilyIndex = familyIndex,
-                .queueCount       = 1,
-                .pQueuePriorities = &queuePriority
-            });
+            infos.push_back(
+                VkDeviceQueueCreateInfo{.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                        .pNext = nullptr,
+                                        .flags = 0,
+                                        .queueFamilyIndex = familyIndex,
+                                        .queueCount       = 1,
+                                        .pQueuePriorities = &queuePriority});
         }
         return infos;
     }
@@ -149,9 +147,9 @@ inline bool queueSuitable(const VkQueueFamilyProperties& properties) {
 
 inline bool physicalDeviceSuitable(const vko::Instance& instance, VkPhysicalDevice physicalDevice) {
     // Check device has required features
-    TestDeviceFeatures hasFeatures; // Reuse the required features pNext chain for querying
-    VkPhysicalDeviceFeatures2 features2{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                                        .pNext = hasFeatures.pNext(),
+    TestDeviceFeatures        hasFeatures; // Reuse the required features pNext chain for querying
+    VkPhysicalDeviceFeatures2 features2{.sType    = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                                        .pNext    = hasFeatures.pNext(),
                                         .features = {}};
     instance.vkGetPhysicalDeviceFeatures2(physicalDevice, &features2);
     if (features2.features.shaderInt64 != VK_TRUE)
@@ -182,9 +180,9 @@ inline bool physicalDeviceSuitable(const vko::Instance& instance, VkPhysicalDevi
 };
 
 struct WindowInstanceCreateInfo {
-    std::vector<const char*>   requiredLayers;
-    std::array<const char*, 3> requiredExtensions;
-    VkApplicationInfo          applicationInfo;
+    std::vector<const char*>     requiredLayers;
+    std::array<const char*, 3>   requiredExtensions;
+    VkApplicationInfo            applicationInfo;
     const VkBool32               verboseValue = true;
     const VkLayerSettingEXT      layerSetting = {"VK_LAYER_KHRONOS_validation", "validate_sync",
                                                  VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &verboseValue};
@@ -212,7 +210,7 @@ struct WindowInstanceCreateInfo {
                              .enabledExtensionCount   = uint32_t(requiredExtensions.size()),
                              .ppEnabledExtensionNames = requiredExtensions.data()} {}
     operator VkInstanceCreateInfo&() { return instanceCreateInfo; }
-    WindowInstanceCreateInfo(const WindowInstanceCreateInfo& other) = delete;
+    WindowInstanceCreateInfo(const WindowInstanceCreateInfo& other)           = delete;
     WindowInstanceCreateInfo operator=(const WindowInstanceCreateInfo& other) = delete;
 };
 
@@ -225,8 +223,8 @@ struct RayTracingDeviceCreateInfo {
         VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
         VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME,
     });
-    float                                   queuePriority    = 1.0f;
-    VkDeviceQueueCreateInfo                 queueCreateInfo;
+    float                                       queuePriority    = 1.0f;
+    VkDeviceQueueCreateInfo                     queueCreateInfo;
     VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeature = {
         .sType               = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
         .pNext               = nullptr,
@@ -295,6 +293,6 @@ struct RayTracingDeviceCreateInfo {
                            .ppEnabledExtensionNames = deviceExtensions.data(),
                            .pEnabledFeatures        = nullptr} {}
     operator VkDeviceCreateInfo&() { return deviceCreateInfo; }
-    RayTracingDeviceCreateInfo(const RayTracingDeviceCreateInfo& other) = delete;
+    RayTracingDeviceCreateInfo(const RayTracingDeviceCreateInfo& other)           = delete;
     RayTracingDeviceCreateInfo operator=(const RayTracingDeviceCreateInfo& other) = delete;
 };

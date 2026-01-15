@@ -12,64 +12,63 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_TimestampProfiling) {
     // Verify timestamps are supported
     VkPhysicalDeviceProperties props;
     ctx->instance.vkGetPhysicalDeviceProperties(ctx->physicalDevice, &props);
-    ASSERT_TRUE(props.limits.timestampComputeAndGraphics) 
+    ASSERT_TRUE(props.limits.timestampComputeAndGraphics)
         << "Timestamps not supported on this device";
-    ASSERT_GT(props.limits.timestampPeriod, 0.0f)
-        << "Invalid timestampPeriod";
+    ASSERT_GT(props.limits.timestampPeriod, 0.0f) << "Invalid timestampPeriod";
 
     // Create a timeline queue and command pool for submissions
     vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
-    vko::CommandPool commandPool = ctx->createCommandPool();
+    vko::CommandPool         commandPool = ctx->createCommandPool();
 
     // Create timestamp query pool (uint64_t results)
     vko::RecyclingQueryPool<uint64_t> queries(ctx->device, VK_QUERY_TYPE_TIMESTAMP,
-                                               /*queriesPerPool=*/256,
-                                               /*minPools=*/2,
-                                               /*maxPools=*/5);
+                                              /*queriesPerPool=*/256,
+                                              /*minPools=*/2,
+                                              /*maxPools=*/5);
 
-    EXPECT_EQ(queries.poolCount(), 2u);  // Pre-allocated minimum pools
+    EXPECT_EQ(queries.poolCount(), 2u); // Pre-allocated minimum pools
     EXPECT_EQ(queries.queriesPerPool(), 256u);
     EXPECT_EQ(queries.capacity(), 2u * 256u);
 
     // Simulate a frame: record timestamps for begin/end
-    auto recording = ctx->beginRecording(commandPool);
-    VkCommandBuffer cmd = recording;
+    auto            recording = ctx->beginRecording(commandPool);
+    VkCommandBuffer cmd       = recording;
 
     // Allocate queries - type-safe Query<uint64_t>
     auto queryBegin = queries.allocate();
-    auto queryEnd = queries.allocate();
+    auto queryEnd   = queries.allocate();
 
     // Write timestamps using the helper function
-    auto futureBegin = vko::cmdWriteTimestamp(ctx->device, cmd, queryBegin,
-                                               VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                                               queue.nextSubmitSemaphore());
+    auto futureBegin =
+        vko::cmdWriteTimestamp(ctx->device, cmd, queryBegin, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                               queue.nextSubmitSemaphore());
 
     // ... render commands would go here ...
 
-    auto futureEnd = vko::cmdWriteTimestamp(ctx->device, cmd, queryEnd,
-                                             VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-                                             queue.nextSubmitSemaphore());
+    auto futureEnd =
+        vko::cmdWriteTimestamp(ctx->device, cmd, queryEnd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                               queue.nextSubmitSemaphore());
 
     // End command buffer and submit
     VkCommandBuffer cmdBuffer = recording.end();
-    queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{},
-                 cmdBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
+                 VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
     // Mark queries as recyclable once GPU is done (use semaphore from one of the futures)
     queries.endBatch(futureBegin.semaphore());
 
     // Get results - blocks until GPU completes
     uint64_t timestampBegin = futureBegin.get(ctx->device);
-    uint64_t timestampEnd = futureEnd.get(ctx->device);
+    uint64_t timestampEnd   = futureEnd.get(ctx->device);
 
     // Verify timestamps are reasonable
     EXPECT_GT(timestampEnd, timestampBegin);
     uint64_t elapsed = timestampEnd - timestampBegin;
-    
+
     // Convert to nanoseconds using timestampPeriod
     double elapsedNs = elapsed * props.limits.timestampPeriod;
     EXPECT_GT(elapsedNs, 0.0);
-    EXPECT_LT(elapsedNs, 1e9);  // Should be less than 1 second
+    EXPECT_LT(elapsedNs, 1e9); // Should be less than 1 second
 
     // Verify type safety - ResultType should be uint64_t
     static_assert(std::same_as<decltype(queries)::ResultType, uint64_t>);
@@ -87,13 +86,13 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_TimestampProfiling) {
 TEST_F(UnitTestFixture, RecyclingQueryPool_OcclusionQuery) {
     // Create a timeline queue and command pool
     vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
-    vko::CommandPool commandPool = ctx->createCommandPool();
+    vko::CommandPool         commandPool = ctx->createCommandPool();
 
     // Create occlusion query pool (can use uint32_t for sample counts)
     vko::RecyclingQueryPool<uint64_t> queries(ctx->device, VK_QUERY_TYPE_OCCLUSION,
-                                               /*queriesPerPool=*/128,
-                                               /*minPools=*/1,
-                                               /*maxPools=*/3);
+                                              /*queriesPerPool=*/128,
+                                              /*minPools=*/1,
+                                              /*maxPools=*/3);
 
     EXPECT_EQ(queries.poolCount(), 1u);
     EXPECT_EQ(queries.capacity(), 128u);
@@ -116,8 +115,8 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_OcclusionQuery) {
 
     // Submit and mark queries recyclable
     VkCommandBuffer cmdBuffer = recording.end();
-    queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{},
-                 cmdBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
+                 VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     queries.endBatch(future.semaphore());
 
     // Try non-blocking read first
@@ -147,35 +146,33 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_MultiFrameRecycling) {
         << "Timestamps not supported on this device";
 
     vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
-    vko::CommandPool commandPool = ctx->createCommandPool();
+    vko::CommandPool         commandPool = ctx->createCommandPool();
 
     // Small pool to force recycling
     vko::RecyclingQueryPool<uint64_t> queries(ctx->device, VK_QUERY_TYPE_TIMESTAMP,
-                                               /*queriesPerPool=*/4,  // Small!
-                                               /*minPools=*/1,
-                                               /*maxPools=*/2);
+                                              /*queriesPerPool=*/4, // Small!
+                                              /*minPools=*/1,
+                                              /*maxPools=*/2);
 
     size_t initialPoolCount = queries.poolCount();
 
     // Simulate 3 frames
     for (int frame = 0; frame < 3; ++frame) {
-        auto recording = ctx->beginRecording(commandPool);
-        VkCommandBuffer cmd = recording;
+        auto            recording = ctx->beginRecording(commandPool);
+        VkCommandBuffer cmd       = recording;
 
         // Allocate 2 queries per frame
         auto q1 = queries.allocate();
         auto q2 = queries.allocate();
 
-        auto f1 = vko::cmdWriteTimestamp(ctx->device, cmd, q1,
-                              VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                              queue.nextSubmitSemaphore());
-        vko::cmdWriteTimestamp(ctx->device, cmd, q2,
-                              VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
-                              queue.nextSubmitSemaphore());
+        auto f1 = vko::cmdWriteTimestamp(ctx->device, cmd, q1, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+                                         queue.nextSubmitSemaphore());
+        vko::cmdWriteTimestamp(ctx->device, cmd, q2, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+                               queue.nextSubmitSemaphore());
 
         VkCommandBuffer cmdBuffer = recording.end();
-        queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{},
-                     cmdBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+        queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
+                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
         queries.endBatch(f1.semaphore());
     }
@@ -197,13 +194,13 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_PoolExpansion) {
         << "Timestamps not supported on this device";
 
     vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
-    vko::CommandPool commandPool = ctx->createCommandPool();
+    vko::CommandPool         commandPool = ctx->createCommandPool();
 
     // Very small pool to test expansion
     vko::RecyclingQueryPool<uint64_t> queries(ctx->device, VK_QUERY_TYPE_TIMESTAMP,
-                                               /*queriesPerPool=*/2,  // Tiny!
-                                               /*minPools=*/1,
-                                               /*maxPools=*/3);
+                                              /*queriesPerPool=*/2, // Tiny!
+                                              /*minPools=*/1,
+                                              /*maxPools=*/3);
 
     EXPECT_EQ(queries.poolCount(), 1u);
 
@@ -211,23 +208,23 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_PoolExpansion) {
 
     // Allocate more queries than fit in one pool
     std::vector<vko::Query<uint64_t>> allocatedQueries;
-    for (int i = 0; i < 5; ++i) {  // More than 2 queries per pool
+    for (int i = 0; i < 5; ++i) { // More than 2 queries per pool
         allocatedQueries.push_back(queries.allocate());
     }
-    
+
     // Write a timestamp so we have a semaphore to use for endBatch
-    auto timestampFuture = vko::cmdWriteTimestamp(ctx->device, recording, allocatedQueries[0],
-                                                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                                                   queue.nextSubmitSemaphore());
+    auto timestampFuture =
+        vko::cmdWriteTimestamp(ctx->device, recording, allocatedQueries[0],
+                               VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, queue.nextSubmitSemaphore());
 
     // Should have expanded to more pools
     EXPECT_GT(queries.poolCount(), 1u);
-    EXPECT_LE(queries.poolCount(), 3u);  // Should not exceed maxPools
+    EXPECT_LE(queries.poolCount(), 3u); // Should not exceed maxPools
 
     // Cleanup
     VkCommandBuffer cmdBuffer = recording.end();
-    queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{},
-                 cmdBuffer, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
+                 VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     queries.endBatch(timestampFuture.semaphore());
     queries.wait();
     ctx->device.vkQueueWaitIdle(queue);
@@ -284,4 +281,3 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_PoolExpansion) {
 //   • Test destroying pool with pending queries
 //   • Test query result reading with mismatched type size
 //
-

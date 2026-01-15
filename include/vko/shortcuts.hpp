@@ -17,17 +17,17 @@ inline VkImageAspectFlags guessAspect(VkFormat format) {
     case VK_FORMAT_D32_SFLOAT:
     case VK_FORMAT_X8_D24_UNORM_PACK32:
         return VK_IMAGE_ASPECT_DEPTH_BIT;
-    
+
     // Stencil-only formats
     case VK_FORMAT_S8_UINT:
         return VK_IMAGE_ASPECT_STENCIL_BIT;
-    
+
     // Combined depth-stencil formats (return both aspects)
     case VK_FORMAT_D16_UNORM_S8_UINT:
     case VK_FORMAT_D24_UNORM_S8_UINT:
     case VK_FORMAT_D32_SFLOAT_S8_UINT:
         return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-    
+
     // All other formats are color
     default:
         return VK_IMAGE_ASPECT_COLOR_BIT;
@@ -134,18 +134,18 @@ public:
     DebugMessenger(const InstanceAndCommands& vk, Fn&& callback)
         : m_callback(std::forward<Fn>(callback))
         , m_messenger(vk, VkDebugUtilsMessengerCreateInfoEXT{
-                            .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-                            .pNext = nullptr,
-                            .flags = 0,
-                            .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-                                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
-                                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                                               VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
-                            .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-                                           VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-                                           VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-                            .pfnUserCallback = debugMessageCallback,
-                            .pUserData       = &m_callback}) {}
+                              .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+                              .pNext = nullptr,
+                              .flags = 0,
+                              .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+                                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                                 VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+                              .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                                             VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                                             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+                              .pfnUserCallback = debugMessageCallback,
+                              .pUserData       = &m_callback}) {}
 
     // Disable copying since we store a pointer to a member. We could implement
     // copying, but would have to store a pointer to InstanceAndCommands just
@@ -225,11 +225,11 @@ struct ViewedImage {
         : image(device, device, imageCreateInfo, allocationCreateInfo, allocator)
         , view(device, device,
                VkImageViewCreateInfo{
-                   .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                   .pNext    = nullptr,
-                   .flags    = 0,
-                   .image    = image,
-                   .viewType = VK_IMAGE_VIEW_TYPE_2D, // TODO: compute from createInfo.imageType
+                   .sType      = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                   .pNext      = nullptr,
+                   .flags      = 0,
+                   .image      = image,
+                   .viewType   = VK_IMAGE_VIEW_TYPE_2D, // TODO: compute from createInfo.imageType
                    .format     = imageCreateInfo.format,
                    .components = VkComponentMapping{},
                    .subresourceRange =
@@ -274,7 +274,7 @@ ViewedImage<Allocator> makeImage(const DeviceAndCommands& device, VkExtent3D ima
 }
 
 // Remember to enable VK_EXT_DEBUG_UTILS_EXTENSION_NAME
-template<device_and_commands Device, class Handle>
+template <device_and_commands Device, class Handle>
 void setName(const Device& device, Handle handle, const std::string& name) {
     VkDebugUtilsObjectNameInfoEXT objectNameInfo{
         .sType        = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,

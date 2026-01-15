@@ -23,8 +23,8 @@ concept query_result_type = std::same_as<T, uint32_t> || std::same_as<T, uint64_
 template <query_result_type T = uint64_t>
 struct Query {
     using ResultType = T;
-    
-    const VkQueryPool pool = VK_NULL_HANDLE;
+
+    const VkQueryPool pool  = VK_NULL_HANDLE;
     const uint32_t    index = 0;
 };
 
@@ -46,10 +46,10 @@ public:
         m_semaphore.wait(device);
         T result;
         // TODO: Ideally, semaphore wait should be sufficient without WAIT_BIT.
-        // Investigate if additional synchronization (barrier/event) can eliminate the need for WAIT_BIT.
-        check(device.vkGetQueryPoolResults(device, m_query.pool, m_query.index, 1,
-                                          sizeof(T), &result, sizeof(T),
-                                          m_flags | VK_QUERY_RESULT_WAIT_BIT));
+        // Investigate if additional synchronization (barrier/event) can eliminate the need for
+        // WAIT_BIT.
+        check(device.vkGetQueryPoolResults(device, m_query.pool, m_query.index, 1, sizeof(T),
+                                           &result, sizeof(T), m_flags | VK_QUERY_RESULT_WAIT_BIT));
         return result;
     }
 
@@ -59,9 +59,9 @@ public:
         if (!m_semaphore.isSignaled(device)) {
             return std::nullopt;
         }
-        T result;
-        VkResult r = device.vkGetQueryPoolResults(device, m_query.pool, m_query.index, 1,
-                                                  sizeof(T), &result, sizeof(T), m_flags);
+        T        result;
+        VkResult r = device.vkGetQueryPoolResults(device, m_query.pool, m_query.index, 1, sizeof(T),
+                                                  &result, sizeof(T), m_flags);
         if (r == VK_NOT_READY) {
             return std::nullopt;
         }
@@ -72,7 +72,7 @@ public:
     // Access to the underlying semaphore for advanced synchronization.
     // Use this for custom wait timeouts, composing with other semaphores, etc.
     const SemaphoreValue& semaphore() const { return m_semaphore; }
-    const Query<T>& query() const { return m_query; }
+    const Query<T>&       query() const { return m_query; }
 
 private:
     Query<T>           m_query;
@@ -84,8 +84,9 @@ private:
 // The future will wait on the semaphore before fetching results.
 template <device_and_commands DeviceAndCommands>
 QueryResultFuture<uint64_t> cmdWriteTimestamp(const DeviceAndCommands& device, VkCommandBuffer cmd,
-                                               const Query<uint64_t>& query, VkPipelineStageFlags2 stage,
-                                               SemaphoreValue semaphore) {
+                                              const Query<uint64_t>& query,
+                                              VkPipelineStageFlags2  stage,
+                                              SemaphoreValue         semaphore) {
     device.vkCmdWriteTimestamp2(cmd, stage, query.pool, query.index);
     return QueryResultFuture<uint64_t>(query, std::move(semaphore));
 }
@@ -98,23 +99,21 @@ public:
     using ResultType = T;
 
     template <device_and_commands DeviceAndCommands>
-    ScopedQuery(const DeviceAndCommands& device, VkCommandBuffer cmd,
-                const Query<T>& query, VkQueryControlFlags flags = 0)
+    ScopedQuery(const DeviceAndCommands& device, VkCommandBuffer cmd, const Query<T>& query,
+                VkQueryControlFlags flags = 0)
         : m_vkCmdEndQuery(device.vkCmdEndQuery)
         , m_cmd(cmd)
         , m_query(query) {
         device.vkCmdBeginQuery(cmd, query.pool, query.index, flags);
     }
 
-    ~ScopedQuery() {
-        m_vkCmdEndQuery(m_cmd, m_query.pool, m_query.index);
-    }
+    ~ScopedQuery() { m_vkCmdEndQuery(m_cmd, m_query.pool, m_query.index); }
 
     // Non-copyable, non-movable
-    ScopedQuery(const ScopedQuery&) = delete;
+    ScopedQuery(const ScopedQuery&)            = delete;
     ScopedQuery& operator=(const ScopedQuery&) = delete;
-    ScopedQuery(ScopedQuery&&) = delete;
-    ScopedQuery& operator=(ScopedQuery&&) = delete;
+    ScopedQuery(ScopedQuery&&)                 = delete;
+    ScopedQuery& operator=(ScopedQuery&&)      = delete;
 
     const Query<T>& query() const { return m_query; }
 
@@ -156,16 +155,13 @@ private:
 template <query_result_type T = uint64_t, device_and_commands DeviceAndCommandsType = Device>
 class RecyclingQueryPool {
 public:
-    using ResultType = T;
+    using ResultType        = T;
     using DeviceAndCommands = DeviceAndCommandsType;
 
-    RecyclingQueryPool(
-        const DeviceAndCommands& device,
-        VkQueryType              queryType,
-        uint32_t                 queriesPerPool = 256,
-        size_t                   minPools       = 3,
-        std::optional<size_t>    maxPools       = 5, // std::nullopt for unlimited
-        VkQueryPipelineStatisticFlags pipelineStatistics = 0)
+    RecyclingQueryPool(const DeviceAndCommands& device, VkQueryType queryType,
+                       uint32_t queriesPerPool = 256, size_t minPools = 3,
+                       std::optional<size_t>         maxPools = 5, // std::nullopt for unlimited
+                       VkQueryPipelineStatisticFlags pipelineStatistics = 0)
         : m_device(device)
         , m_queryType(queryType)
         , m_queriesPerPool(queriesPerPool)
@@ -228,7 +224,7 @@ public:
         // Only move batch to m_inUse if it has pools (RAII: no empty batches)
         if (!m_current.pools.empty()) {
             m_inUse.push_back(std::move(m_current), reuseSemaphore);
-            m_current = {};
+            m_current         = {};
             m_currentPoolUsed = 0;
         }
     }
@@ -268,11 +264,11 @@ private:
             .pipelineStatistics = m_pipelineStatistics,
         };
         QueryPool pool = QueryPool(m_device.get(), createInfo);
-        
+
         // Reset new pool from host (queries start in undefined state)
         // vkResetQueryPool is core Vulkan 1.2+, no creation flag needed
         m_device.get().vkResetQueryPool(m_device.get(), pool, 0, m_queriesPerPool);
-        
+
         return pool;
     }
 
@@ -323,7 +319,7 @@ private:
         assert(!batch.pools.empty());
 
         VkQueryPool pool = batch.pools.back();
-        
+
         // Reset from host (core Vulkan 1.2+, pools created with HOST_RESET_BIT)
         m_device.get().vkResetQueryPool(m_device.get(), pool, 0, m_queriesPerPool);
 
@@ -349,9 +345,9 @@ private:
     std::reference_wrapper<const DeviceAndCommands> m_device;
     VkQueryType                                     m_queryType;
     uint32_t                                        m_queriesPerPool;
-    size_t                                          m_maxPools = 0;
-    size_t                                          m_minPools = 0;
-    size_t                                          m_totalPoolCount = 0;
+    size_t                                          m_maxPools           = 0;
+    size_t                                          m_minPools           = 0;
+    size_t                                          m_totalPoolCount     = 0;
     VkQueryPipelineStatisticFlags                   m_pipelineStatistics = 0;
 
     PoolBatch                  m_current;

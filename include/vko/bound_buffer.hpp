@@ -24,11 +24,11 @@ public:
     BufferMapping(const Allocation& allocation, VkDeviceSize elementCount)
         : m_map(allocation.map())
         , m_size(elementCount) {}
-    T*     begin() const { return reinterpret_cast<T*>(m_map.data()); }
-    T*     end() const { return reinterpret_cast<T*>(m_map.data()) + m_size; }
-    T*     data() const { return reinterpret_cast<T*>(m_map.data()); }
-    size_t size() const { return m_size; }
-    T&     operator[](size_t index) const { return data()[index]; }
+    T*           begin() const { return reinterpret_cast<T*>(m_map.data()); }
+    T*           end() const { return reinterpret_cast<T*>(m_map.data()) + m_size; }
+    T*           data() const { return reinterpret_cast<T*>(m_map.data()); }
+    size_t       size() const { return m_size; }
+    T&           operator[](size_t index) const { return data()[index]; }
     std::span<T> span() const { return std::span{data(), size()}; }
 
 private:
@@ -50,9 +50,9 @@ inline constexpr VkBufferUsageFlags debugUsageFlags() {
 template <class T, class Allocator = vma::Allocator>
 class BoundBuffer {
 public:
-    using ValueType = T;
+    using ValueType     = T;
     using AllocatorType = Allocator;
-    using Allocation = typename Allocator::AllocationType;
+    using Allocation    = typename Allocator::AllocationType;
 
     template <device_and_commands DeviceAndCommands, class AllocationCreateInfo>
     BoundBuffer(const DeviceAndCommands& device, VkDeviceSize elementCount,
@@ -111,7 +111,7 @@ private:
 template <class T, class Allocator = vma::Allocator>
 class DeviceBuffer {
 public:
-    using ValueType = typename BoundBuffer<T, Allocator>::ValueType;
+    using ValueType     = typename BoundBuffer<T, Allocator>::ValueType;
     using AllocatorType = typename BoundBuffer<T, Allocator>::AllocatorType;
 
     template <device_and_commands DeviceAndCommands, class AllocationCreateInfo>

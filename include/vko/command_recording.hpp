@@ -50,12 +50,12 @@ public:
         , vkEndCommandBuffer(vk.vkEndCommandBuffer) {
         check(vk.vkBeginCommandBuffer(m_commandBuffer, &beginInfo));
     }
-    operator VkCommandBuffer() const & { return m_commandBuffer; }
-    //explicit operator bool() const & { return static_cast<bool>(m_commandBuffer); }
-    bool engaged() const { return m_commandBuffer.engaged(); }
+    operator VkCommandBuffer() const& { return m_commandBuffer; }
+    // explicit operator bool() const & { return static_cast<bool>(m_commandBuffer); }
+    bool            engaged() const { return m_commandBuffer.engaged(); }
     CommandBuffer&& end() {
-        if(engaged())
-          check(vkEndCommandBuffer(m_commandBuffer));
+        if (engaged())
+            check(vkEndCommandBuffer(m_commandBuffer));
         return std::move(m_commandBuffer);
     }
 
@@ -126,7 +126,7 @@ private:
 struct TimelineCommandBuffer {
     simple::RecordingCommandBuffer cmd;
     SubmitPromise                  promise;
-    
+
     // Implicit conversion to VkCommandBuffer for convenience
     operator VkCommandBuffer() const { return cmd; }
 };

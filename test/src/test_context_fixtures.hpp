@@ -22,10 +22,9 @@ bool physicalDeviceSuitable(const vko::Instance& instance, VkPhysicalDevice phys
 bool queueSuitable(const VkQueueFamilyProperties& properties);
 
 // Helper to find a queue family with specific flags
-inline std::optional<uint32_t> findQueueFamily(
-    const std::vector<VkQueueFamilyProperties>& props, 
-    VkQueueFlags requiredFlags,
-    std::optional<uint32_t> excludeIndex = std::nullopt) {
+inline std::optional<uint32_t>
+findQueueFamily(const std::vector<VkQueueFamilyProperties>& props, VkQueueFlags requiredFlags,
+                std::optional<uint32_t> excludeIndex = std::nullopt) {
     for (size_t i = 0; i < props.size(); ++i) {
         if (excludeIndex.has_value() && i == excludeIndex.value())
             continue;
@@ -43,12 +42,12 @@ struct Context {
 #if VULKAN_OBJECTS_HAS_VVL
     vko::DebugMessenger debugMessenger;
 #endif
-    VkPhysicalDevice           physicalDevice    = VK_NULL_HANDLE;
-    uint32_t                   queueFamilyIndex  = 0;
-    std::optional<uint32_t>    queueFamilyIndex2;
-    std::vector<const char*>   optionalExtensions;
-    vko::Device                device;
-    vko::vma::Allocator        allocator;
+    VkPhysicalDevice         physicalDevice   = VK_NULL_HANDLE;
+    uint32_t                 queueFamilyIndex = 0;
+    std::optional<uint32_t>  queueFamilyIndex2;
+    std::vector<const char*> optionalExtensions;
+    vko::Device              device;
+    vko::vma::Allocator      allocator;
 
     Context()
         : library()
@@ -79,31 +78,35 @@ struct Context {
             }
             return *it;
         }())
-        , queueFamilyIndex(findQueueFamily(
-            vko::toVector(instance.vkGetPhysicalDeviceQueueFamilyProperties, physicalDevice),
-            VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT).value())
+        , queueFamilyIndex(
+              findQueueFamily(
+                  vko::toVector(instance.vkGetPhysicalDeviceQueueFamilyProperties, physicalDevice),
+                  VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)
+                  .value())
         , queueFamilyIndex2(findQueueFamily(
-            vko::toVector(instance.vkGetPhysicalDeviceQueueFamilyProperties, physicalDevice),
-            VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT,
-            queueFamilyIndex))
+              vko::toVector(instance.vkGetPhysicalDeviceQueueFamilyProperties, physicalDevice),
+              VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT, queueFamilyIndex))
         // Detect and enable optional vendor-specific extensions if available
         // Note: a real app would prioritize the physical device supporting desired extensions
         , optionalExtensions([this]() {
             std::vector<const char*> extensions;
-            auto availableExts = vko::toVector(instance.vkEnumerateDeviceExtensionProperties, 
-                                              physicalDevice, nullptr);
+            auto availableExts = vko::toVector(instance.vkEnumerateDeviceExtensionProperties,
+                                               physicalDevice, nullptr);
             if (std::ranges::any_of(availableExts, [](const VkExtensionProperties& p) {
-                return std::string_view(p.extensionName) == VK_NV_COPY_MEMORY_INDIRECT_EXTENSION_NAME;
-            })) {
+                    return std::string_view(p.extensionName) ==
+                           VK_NV_COPY_MEMORY_INDIRECT_EXTENSION_NAME;
+                })) {
                 extensions.push_back(VK_NV_COPY_MEMORY_INDIRECT_EXTENSION_NAME);
             }
             return extensions;
         }())
         , device(instance, physicalDevice,
                  queueFamilyIndex2.has_value()
-                     ? TestDeviceCreateInfo(queueFamilyIndex, queueFamilyIndex2.value(), optionalExtensions)
+                     ? TestDeviceCreateInfo(queueFamilyIndex, queueFamilyIndex2.value(),
+                                            optionalExtensions)
                      : TestDeviceCreateInfo(queueFamilyIndex, optionalExtensions))
-        , allocator(globalCommands, instance, physicalDevice, device, VK_API_VERSION_1_4, 0) {}
+        , allocator(globalCommands, instance, physicalDevice, device, VK_API_VERSION_1_4, 0) {
+    }
 
     // Helper to create a command pool for testing
     vko::CommandPool createCommandPool() {

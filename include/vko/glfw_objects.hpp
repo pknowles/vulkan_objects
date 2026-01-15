@@ -4,16 +4,16 @@
 // TODO: Move to cmake. It's bad practice to define configuration macros in a
 // header
 #if defined(VK_USE_PLATFORM_METAL_EXT) || defined(VK_USE_PLATFORM_MACOS_MVK)
-#define GLFW_EXPOSE_NATIVE_COCOA // ??
+    #define GLFW_EXPOSE_NATIVE_COCOA // ??
 #endif
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
-#define GLFW_EXPOSE_NATIVE_WAYLAND
+    #define GLFW_EXPOSE_NATIVE_WAYLAND
 #endif
 #ifdef VK_USE_PLATFORM_WIN32_KHR
-#define GLFW_EXPOSE_NATIVE_WIN32
+    #define GLFW_EXPOSE_NATIVE_WIN32
 #endif
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
-#define GLFW_EXPOSE_NATIVE_X11
+    #define GLFW_EXPOSE_NATIVE_X11
 #endif
 
 // NOTE: including glfw3native.h leaks the various native header includes -
@@ -48,9 +48,9 @@ namespace glfw {
 // NOTE: these are defined in vulkan_objects and are NOT currently part of
 // GLFW.. but IMO they should be. See: https://github.com/glfw/glfw/issues/1061
 #if defined(VK_USE_PLATFORM_XCB_KHR)
-xcb_visualid_t glfwGetXCBVisualID();
+xcb_visualid_t    glfwGetXCBVisualID();
 xcb_connection_t* glfwGetXCBConnection();
-xcb_window_t glfwGetXCBWindow(GLFWwindow* window);
+xcb_window_t      glfwGetXCBWindow(GLFWwindow* window);
 #endif
 
 inline const char* errorToString(int errorCode) {
@@ -84,7 +84,8 @@ inline Exception makeLastErrorException(std::string msg) {
 }
 
 #define CHECK_GLFW_EQ(result, expected) check<expected>::equal(result, #result, #expected)
-#define CHECK_GLFW_NE(result, notexpected) check<notexpected>::notequal(result, #result, #notexpected)
+#define CHECK_GLFW_NE(result, notexpected)                                                         \
+    check<notexpected>::notequal(result, #result, #notexpected)
 template <auto Compare>
 struct check {
     using Result = decltype(Compare);
@@ -104,8 +105,9 @@ struct check {
 
 class ScopedInit {
 public:
-    ScopedInit() : ScopedInit(GLFW_ANY_PLATFORM) {}
-    
+    ScopedInit()
+        : ScopedInit(GLFW_ANY_PLATFORM) {}
+
     ScopedInit(int platform) {
         glfwInitHint(GLFW_PLATFORM, platform);
         if (glfwInit() != GLFW_TRUE) {
@@ -113,7 +115,7 @@ public:
         }
     }
     ~ScopedInit() { glfwTerminate(); }
-    ScopedInit(const ScopedInit& other) = delete;
+    ScopedInit(const ScopedInit& other)           = delete;
     ScopedInit operator=(const ScopedInit& other) = delete;
 };
 
@@ -210,12 +212,13 @@ inline bool physicalDevicePresentationSupport([[maybe_unused]] InstanceCommands&
     switch (platform) {
 #if VK_KHR_win32_surface
     case GLFW_PLATFORM_WIN32:
-        return vk.vkGetPhysicalDeviceWin32PresentationSupportKHR(physicalDevice, queueFamilyIndex) ==
-               VK_TRUE;
+        return vk.vkGetPhysicalDeviceWin32PresentationSupportKHR(physicalDevice,
+                                                                 queueFamilyIndex) == VK_TRUE;
 #endif
 #if VK_KHR_wayland_surface
     case GLFW_PLATFORM_WAYLAND:
-        return vk.vkGetPhysicalDeviceWaylandPresentationSupportKHR(physicalDevice, queueFamilyIndex, glfwGetWaylandDisplay()) == VK_TRUE;
+        return vk.vkGetPhysicalDeviceWaylandPresentationSupportKHR(
+                   physicalDevice, queueFamilyIndex, glfwGetWaylandDisplay()) == VK_TRUE;
 #endif
 #if VK_KHR_xcb_surface || VK_KHR_xlib_surface
     case GLFW_PLATFORM_X11:
@@ -231,10 +234,10 @@ inline bool physicalDevicePresentationSupport([[maybe_unused]] InstanceCommands&
             Display* display = glfwGetX11Display();
             if (!display)
                 throw makeLastErrorException("glfwGetX11Display failed");
-            int      screen = DefaultScreen(display);
+            int      screen   = DefaultScreen(display);
             VisualID visualID = XVisualIDFromVisual(DefaultVisual(display, screen));
-            return vk.vkGetPhysicalDeviceXlibPresentationSupportKHR(physicalDevice, queueFamilyIndex,
-                                                                 display, visualID) == VK_TRUE;
+            return vk.vkGetPhysicalDeviceXlibPresentationSupportKHR(
+                       physicalDevice, queueFamilyIndex, display, visualID) == VK_TRUE;
         }
     #endif
 #endif
@@ -261,7 +264,7 @@ using Window = std::unique_ptr<GLFWwindow, WindowDeleter>;
 inline Window makeWindow(int width, int height, const char* title, GLFWmonitor* monitor = nullptr,
                          GLFWwindow* share = nullptr) {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);  // Aware of DPI scaling
+    glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE); // Aware of DPI scaling
     GLFWwindow* window = glfwCreateWindow(width, height, title, monitor, share);
     if (!window) {
         throw Exception("glfwCreateWindow failed");

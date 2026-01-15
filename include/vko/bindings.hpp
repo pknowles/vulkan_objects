@@ -14,13 +14,12 @@ struct BindingsAndFlags {
     std::vector<VkDescriptorBindingFlags>     flags;
 };
 
-inline BindingsAndFlags makeBindings(std::initializer_list<std::pair<VkDescriptorSetLayoutBinding, VkDescriptorBindingFlags>> init)
-{
+inline BindingsAndFlags makeBindings(
+    std::initializer_list<std::pair<VkDescriptorSetLayoutBinding, VkDescriptorBindingFlags>> init) {
     BindingsAndFlags result;
     result.bindings.reserve(init.size());
     result.flags.reserve(init.size());
-    for(auto [binding, flags] : init)
-    {
+    for (auto [binding, flags] : init) {
         result.bindings.push_back(binding);
         result.flags.push_back(flags);
     }

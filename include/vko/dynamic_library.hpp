@@ -1,12 +1,12 @@
 // Copyright (c) 2024-2025 Pyarelal Knowles, MIT License
 #pragma once
 
-#include <vko/exceptions.hpp>
 #include <filesystem>
+#include <vko/exceptions.hpp>
 
 #ifdef _WIN32
 
-#include <windows.h>
+    #include <windows.h>
 
 namespace vko {
 
@@ -37,7 +37,7 @@ public:
 
 class DynamicLibrary {
 public:
-    DynamicLibrary() = delete;
+    DynamicLibrary()                            = delete;
     DynamicLibrary(const DynamicLibrary& other) = delete;
     DynamicLibrary(DynamicLibrary&& other) noexcept
         : m_module(other.m_module) {
@@ -53,7 +53,7 @@ public:
     DynamicLibrary& operator=(DynamicLibrary&& other) noexcept {
         if (m_module)
             FreeLibrary(m_module);
-        m_module = other.m_module;
+        m_module       = other.m_module;
         other.m_module = nullptr;
         return *this;
     }
@@ -80,11 +80,10 @@ private:
 
 #else
 
-#include <string.h>
-#include <dlfcn.h>
+    #include <dlfcn.h>
+    #include <string.h>
 
-namespace vko
-{
+namespace vko {
 
 class LastError : public Exception {
 public:
@@ -94,7 +93,7 @@ public:
 
 class DynamicLibrary {
 public:
-    DynamicLibrary() = delete;
+    DynamicLibrary()                            = delete;
     DynamicLibrary(const DynamicLibrary& other) = delete;
     DynamicLibrary(DynamicLibrary&& other) noexcept
         : m_handle(other.m_handle) {
@@ -109,13 +108,11 @@ public:
     DynamicLibrary& operator=(const DynamicLibrary& other) = delete;
     DynamicLibrary& operator=(DynamicLibrary&& other) noexcept {
         destroy();
-        m_handle = other.m_handle;
+        m_handle       = other.m_handle;
         other.m_handle = nullptr;
         return *this;
     }
-    ~DynamicLibrary() {
-        destroy();
-    }
+    ~DynamicLibrary() { destroy(); }
     operator void*() const { return m_handle; }
 
     template <typename FuncType>
@@ -128,10 +125,8 @@ public:
     }
 
 private:
-    void destroy()
-    {
-        if (m_handle)
-        {
+    void destroy() {
+        if (m_handle) {
             ::dlclose(m_handle);
         }
     }
