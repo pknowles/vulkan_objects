@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <future>
 #include <gtest/gtest.h>
 #include <numeric>
@@ -2786,7 +2787,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadForEach_DeviceSpan) {
 
     int  count  = 0;
     int  maxVal = 0;
-    auto handle = vko::downloadForEach<int>(
+    auto handle = vko::downloadForEach<const int>(
         streaming, ctx->device, span, [&count, &maxVal](VkDeviceSize, std::span<const int> data) {
             for (int val : data) {
                 count++;
@@ -2800,8 +2801,8 @@ TEST_F(UnitTestFixture, StagingStream_DownloadForEach_DeviceSpan) {
     EXPECT_EQ(maxVal, static_cast<int>(dataSize)); // max value is 150
 }
 
-// Test uploadBytes() with callback (raw VkBuffer escape hatch)
-TEST_F(UnitTestFixture, StagingStream_UploadBytes_Callback) {
+// Test upload() with BufferSpan and callback
+TEST_F(UnitTestFixture, StagingStream_UploadBufferSpan_Callback) {
     vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto                     staging =
         vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator, 1, 3, 16384);
@@ -2812,13 +2813,14 @@ TEST_F(UnitTestFixture, StagingStream_UploadBytes_Callback) {
         ctx->device, dataSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
-    // Use uploadBytes free function with raw VkBuffer
-    vko::uploadBytes(streaming, ctx->device, static_cast<VkBuffer>(buffer), VkDeviceSize{0},
-                     dataSize, [](VkDeviceSize offset, std::span<std::byte> mapped) {
-                         for (size_t i = 0; i < mapped.size(); ++i) {
-                             mapped[i] = static_cast<std::byte>((offset + i) & 0xFF);
-                         }
-                     });
+    // Use upload free function with BufferSpan
+    vko::BufferSpan<std::byte> bufSpan(buffer);
+    vko::upload(streaming, ctx->device, bufSpan,
+                [](VkDeviceSize offset, std::span<std::byte> mapped) {
+                    for (size_t i = 0; i < mapped.size(); ++i) {
+                        mapped[i] = static_cast<std::byte>((offset + i) & 0xFF);
+                    }
+                });
     streaming.submit();
 
     // Verify by downloading
@@ -2832,8 +2834,8 @@ TEST_F(UnitTestFixture, StagingStream_UploadBytes_Callback) {
     }
 }
 
-// Test uploadBytes() with range (raw VkBuffer escape hatch)
-TEST_F(UnitTestFixture, StagingStream_UploadBytes_Range) {
+// Test upload() with BufferSpan and range
+TEST_F(UnitTestFixture, StagingStream_UploadBufferSpan_Range) {
     vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
     auto                     staging =
         vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator, 1, 3, 16384);
@@ -2849,8 +2851,9 @@ TEST_F(UnitTestFixture, StagingStream_UploadBytes_Range) {
         ctx->device, dataSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
-    // Use uploadBytes free function with byte range
-    vko::uploadBytes(streaming, ctx->device, static_cast<VkBuffer>(buffer), testData);
+    // Use upload free function with BufferSpan and range
+    vko::BufferSpan<std::byte> bufSpan(buffer);
+    vko::upload(streaming, ctx->device, bufSpan, testData);
     streaming.submit();
 
     // Verify by downloading
@@ -2941,7 +2944,7 @@ TEST_F(UnitTestFixture, StagingStream_DestructorWaitsForInFlightWork) {
     // Allocator type used by RecyclingStagingPool
     using Alloc = vko::vma::Allocator;
     // Exact future type returned by downloadTransform when passed an lvalue callable
-    using Future = vko::DownloadTransformFuture<Fn, int, Alloc>;
+    using Future = vko::DownloadTransformFuture<Fn, int, int, Alloc>;
 
     // Store futures to create overlapping GPU work
     std::vector<Future> futures;
@@ -3078,4 +3081,161 @@ TEST_F(UnitTestFixture, StagingStreamRef_SharedResources) {
 
     // Wait for all GPU work to complete before test cleanup
     ctx->device.vkQueueWaitIdle(queue);
+}
+
+// Use-case: BufferSpan with suballocation offset (e.g., accessing packed structs)
+// Tests download() with BufferSpan using byte offset
+TEST_F(UnitTestFixture, StagingStream_DownloadBufferSpanWithOffset) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator,
+                                                               /*minPools=*/2, /*maxPools=*/4,
+                                                               /*poolSize=*/1 << 16);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    // Create buffer with header + data
+    constexpr size_t headerSize = 16;   // bytes
+    constexpr size_t dataSize   = 1000; // floats
+    constexpr size_t totalSize  = headerSize + dataSize * sizeof(float);
+
+    std::vector<float> sourceData(dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        sourceData[i] = static_cast<float>(i) * 2.5f;
+    }
+
+    auto buffer = vko::BoundBuffer<std::byte>(
+        ctx->device, totalSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    // Upload header (zeros) + float data using BufferSpan
+    vko::BufferSpan<std::byte> bufSpan(buffer);
+    vko::upload(streaming, ctx->device, bufSpan,
+                [&sourceData, headerSize](VkDeviceSize offset, std::span<std::byte> mapped) {
+                    if (offset < headerSize) {
+                        // Header region - write zeros
+                        size_t headerBytes = std::min(mapped.size(), headerSize - offset);
+                        std::memset(mapped.data(), 0, headerBytes);
+                        if (mapped.size() > headerBytes) {
+                            // Remainder is data
+                            std::memcpy(mapped.data() + headerBytes,
+                                        reinterpret_cast<const std::byte*>(sourceData.data()),
+                                        mapped.size() - headerBytes);
+                        }
+                    } else {
+                        // Data region
+                        size_t dataOffset = offset - headerSize;
+                        std::memcpy(mapped.data(),
+                                    reinterpret_cast<const std::byte*>(sourceData.data()) +
+                                        dataOffset,
+                                    mapped.size());
+                    }
+                });
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+
+    // Download just the data region using BufferSpan with byte offset
+    vko::BufferAddress<const float> dataAddr(static_cast<VkBuffer>(buffer), headerSize);
+    vko::BufferSpan<const float>    dataSpan(dataAddr, dataSize);
+    auto                            future = vko::download(streaming, ctx->device, dataSpan);
+    streaming.submit();
+
+    auto& result = future.get(ctx->device);
+    ASSERT_EQ(result.size(), dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        EXPECT_FLOAT_EQ(result[i], sourceData[i]) << "Mismatch at index " << i;
+    }
+}
+
+// Use-case: Type conversion with transform (e.g., format conversion or scaling)
+// Tests download<DstT> with actual type conversion and transformation
+TEST_F(UnitTestFixture, StagingStream_DownloadWithActualTypeConversion) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator,
+                                                               /*minPools=*/2, /*maxPools=*/4,
+                                                               /*poolSize=*/1 << 16);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    // Create buffer with int32 data
+    constexpr size_t     dataSize = 500;
+    std::vector<int32_t> sourceData(dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        sourceData[i] = static_cast<int32_t>(i * 100);
+    }
+
+    auto buffer = vko::BoundBuffer<int32_t>(
+        ctx->device, dataSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    streaming.upload(buffer, sourceData);
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+
+    // Download with type conversion: int32_t → float (with scaling)
+    auto future = vko::download<float>(
+        streaming, ctx->device, buffer, VkDeviceSize{0}, dataSize,
+        [](VkDeviceSize, std::span<const int32_t> input, std::span<float> output) {
+            // Convert int32_t to float with scaling
+            for (size_t i = 0; i < input.size(); ++i) {
+                output[i] = static_cast<float>(input[i]) / 100.0f;
+            }
+        });
+    streaming.submit();
+
+    auto& result = future.get(ctx->device);
+    ASSERT_EQ(result.size(), dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        EXPECT_FLOAT_EQ(result[i], static_cast<float>(i)) << "Mismatch at index " << i;
+    }
+}
+
+// Use-case: Type conversion with DeviceAddress (e.g., format conversion on GPU-visible memory)
+// Tests download from DeviceAddress with type conversion
+TEST_F(UnitTestFixture, StagingStream_DownloadDeviceAddressWithTypeConversion) {
+    if (!ctx->device.vkCmdCopyMemoryIndirectNV) {
+        GTEST_SKIP() << "VK_NV_copy_memory_indirect not available";
+    }
+
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto                     staging = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator, /*minPools=*/2, /*maxPools=*/4, /*poolSize=*/1 << 16,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    // Create buffer with uint32_t data
+    constexpr size_t      dataSize = 300;
+    std::vector<uint32_t> sourceData(dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        sourceData[i] = static_cast<uint32_t>(i + 1000);
+    }
+
+    auto buffer = vko::BoundBuffer<uint32_t>(ctx->device, dataSize,
+                                             VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    streaming.upload(buffer, sourceData);
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+
+    // Create DeviceSpan and download with type conversion: uint32_t → int64_t
+    vko::DeviceAddress<uint32_t>    addr(buffer, ctx->device);
+    vko::DeviceSpan<const uint32_t> span(vko::DeviceAddress<const uint32_t>(addr.raw()),
+                                         buffer.size());
+
+    auto future = vko::download<int64_t>(
+        streaming, ctx->device, span,
+        [](VkDeviceSize, std::span<const uint32_t> input, std::span<int64_t> output) {
+            // Convert uint32_t to int64_t with offset
+            for (size_t i = 0; i < input.size(); ++i) {
+                output[i] = static_cast<int64_t>(input[i]) - 1000;
+            }
+        });
+    streaming.submit();
+
+    auto& result = future.get(ctx->device);
+    ASSERT_EQ(result.size(), dataSize);
+    for (size_t i = 0; i < dataSize; ++i) {
+        EXPECT_EQ(result[i], static_cast<int64_t>(i)) << "Mismatch at index " << i;
+    }
 }

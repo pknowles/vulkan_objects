@@ -8,16 +8,19 @@
 
 namespace vko {
 
+// TODO: concepts are under-constrained
 template <class T>
-concept allocation_mapping = requires(T t) {
+concept allocation_mapping = requires(const T t) {
     { t.data() } -> std::same_as<void*>;
     { t.invalidate(VkDeviceSize{}, VkDeviceSize{}) } -> std::same_as<void>;
     { t.flush(VkDeviceSize{}, VkDeviceSize{}) } -> std::same_as<void>;
 };
 
 template <class T>
-concept allocation = requires(T t) {
-    { t.map() } -> allocation_mapping;
+concept allocation = requires(const T t) {
+    typename T::MapType;
+    requires allocation_mapping<typename T::MapType>;
+    { t.map() } -> std::same_as<typename T::MapType>;
 };
 
 template <class T>
@@ -33,6 +36,7 @@ namespace vma {
 
 class Map {
 public:
+    Map() = delete;
     Map(VmaAllocator allocator, VmaAllocation allocation)
         : m_allocator(allocator)
         , m_allocation(allocation) {
@@ -71,13 +75,14 @@ private:
     }
     VmaAllocator  m_allocator  = nullptr; // non-owning
     VmaAllocation m_allocation = nullptr; // non-owning
-    void*         m_data;
+    void*         m_data       = nullptr;
 };
 static_assert(allocation_mapping<Map>);
 
 class Allocation {
 public:
-    Allocation() = delete;
+    using MapType = Map;
+    Allocation()  = delete;
     Allocation(VmaAllocator allocator, VmaAllocation&& allocation,
                const VmaAllocationInfo&) noexcept
         : m_allocator(allocator)

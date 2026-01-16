@@ -17,11 +17,11 @@ concept buffer = requires(T t) {
 template <class T, class Allocator>
 class BufferMapping {
 public:
-    using AllocatorType = Allocator;
-    using Allocation    = typename Allocator::AllocationType;
-    using Map           = typename Allocator::MapType;
-    using ValueType     = T;
-    BufferMapping(const Allocation& allocation, VkDeviceSize elementCount)
+    using AllocatorType  = Allocator;
+    using AllocationType = typename Allocator::AllocationType;
+    using MapType        = typename Allocator::MapType;
+    using ValueType      = T;
+    BufferMapping(const AllocationType& allocation, VkDeviceSize elementCount)
         : m_map(allocation.map())
         , m_size(elementCount) {}
     T*           begin() const { return reinterpret_cast<T*>(m_map.data()); }
@@ -32,7 +32,7 @@ public:
     std::span<T> span() const { return std::span{data(), size()}; }
 
 private:
-    Map          m_map;
+    MapType      m_map;
     VkDeviceSize m_size;
 };
 
@@ -50,9 +50,12 @@ inline constexpr VkBufferUsageFlags debugUsageFlags() {
 template <class T, class Allocator = vma::Allocator>
 class BoundBuffer {
 public:
-    using ValueType     = T;
-    using AllocatorType = Allocator;
-    using Allocation    = typename Allocator::AllocationType;
+    // Note: with C++ concepts, ValueType is often dropped in favor of a
+    // buffer_value_t concept, but buffers are special since T is purely
+    // metadata and not easily deducible.
+    using ValueType      = T;
+    using AllocatorType  = Allocator;
+    using AllocationType = typename Allocator::AllocationType;
 
     template <device_and_commands DeviceAndCommands, class AllocationCreateInfo>
     BoundBuffer(const DeviceAndCommands& device, VkDeviceSize elementCount,
@@ -101,9 +104,9 @@ private:
         assert(size > 0);
         return size;
     }
-    VkDeviceSize m_size;
-    Buffer       m_buffer;
-    Allocation   m_allocation;
+    VkDeviceSize   m_size;
+    Buffer         m_buffer;
+    AllocationType m_allocation;
 };
 
 // Wrapper to cache the device address. Assumes VK_KHR_buffer_device_address is
