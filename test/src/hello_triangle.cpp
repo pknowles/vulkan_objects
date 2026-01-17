@@ -102,7 +102,7 @@ TEST(Integration, WindowSystemIntegration) {
     vko::glfw::PlatformSupport platformSupport(instanceExtensions);
     vko::glfw::ScopedInit      glfwInit;
     vko::Instance              instance(globalCommands, WindowInstanceCreateInfo(platformSupport));
-    vko::SimpleDebugMessenger  debugMessenger(instance, debugMessageCallback);
+    vko::GlobalDebugMessenger  debugMessenger(instance, debugMessageCallback);
 
     std::vector<VkPhysicalDevice> physicalDevices =
         vko::toVector(instance.vkEnumeratePhysicalDevices, instance);
@@ -128,8 +128,11 @@ TEST(Integration, WindowSystemIntegration) {
     ASSERT_NE(queuePropertiesIt, queueProperties.end());
     uint32_t queueFamilyIndex = uint32_t(std::distance(queueProperties.begin(), queuePropertiesIt));
 
-    // Create a VkDevice
-    vko::Device device(instance, physicalDevice, TestDeviceCreateInfo(queueFamilyIndex));
+    // Create a VkDevice (with swapchain extension for this windowed test)
+    static constexpr const char* swapchainExt[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                                                   VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME};
+    vko::Device                  device(instance, physicalDevice,
+                                        TestDeviceCreateInfo(queueFamilyIndex, swapchainExt));
 
     // vko::simple::SerialTimelineQueue queue(device, queueFamilyIndex, 0);
     VkQueue queue = vko::get(device.vkGetDeviceQueue, device, queueFamilyIndex, 0);
@@ -160,7 +163,6 @@ TEST(Integration, WindowSystemIntegration) {
     auto               surfacePresentModes =
         vko::toVector(instance.vkGetPhysicalDeviceSurfacePresentModesKHR, physicalDevice, surface);
     constexpr VkPresentModeKHR preferredPresentMode[] = {VK_PRESENT_MODE_MAILBOX_KHR,
-                                                         VK_PRESENT_MODE_FIFO_LATEST_READY_EXT,
                                                          VK_PRESENT_MODE_FIFO_KHR};
     auto                       surfacePresentModeIt   = std::ranges::find_if(
         preferredPresentMode, [&surfacePresentModes](const VkPresentModeKHR& mode) {
@@ -241,7 +243,7 @@ TEST(Integration, WindowSystemIntegration) {
                     .format  = SLANG_SPIRV,
                     .profile = globalSession->findProfile("spirv_1_6"),
     }};
-    const char*               searchPaths[] = {"test/shaders"};
+    const char*               searchPaths[] = {"test/shaders", "vulkan_objects/test/shaders"};
     vko::slang::Session       session(globalSession,
                                       slang::SessionDesc{
                                           .targets         = targets,
@@ -265,7 +267,7 @@ TEST(Integration, WindowSystemIntegration) {
               .pNext                  = nullptr,
               .flags                  = 0,
               .stage                  = VK_SHADER_STAGE_VERTEX_BIT,
-              .nextStage              = 0,
+              .nextStage              = VK_SHADER_STAGE_FRAGMENT_BIT,
               .codeType               = VK_SHADER_CODE_TYPE_SPIRV_EXT,
               .codeSize               = uint32_t(vsCode.size()),
               .pCode                  = vsCode.data(),
@@ -349,7 +351,7 @@ TEST(Integration, WindowSystemIntegration) {
                 .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .pNext              = nullptr,
                 .imageView          = swapchain.imageViews[imageIndex],
-                .imageLayout        = VK_IMAGE_LAYOUT_GENERAL,
+                .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 .resolveMode        = VK_RESOLVE_MODE_NONE,
                 .resolveImageView   = VK_NULL_HANDLE,
                 .resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -409,7 +411,7 @@ TEST(Integration, HelloTriangleRayTracing) {
     vko::glfw::PlatformSupport platformSupport(instanceExtensions);
     vko::glfw::ScopedInit      glfwInit;
     vko::Instance              instance(globalCommands, WindowInstanceCreateInfo(platformSupport));
-    vko::SimpleDebugMessenger  debugMessenger(instance, debugMessageCallback);
+    vko::GlobalDebugMessenger  debugMessenger(instance, debugMessageCallback);
 
     std::vector<VkPhysicalDevice> physicalDevices =
         vko::toVector(instance.vkEnumeratePhysicalDevices, instance);
@@ -467,7 +469,6 @@ TEST(Integration, HelloTriangleRayTracing) {
     auto               surfacePresentModes =
         vko::toVector(instance.vkGetPhysicalDeviceSurfacePresentModesKHR, physicalDevice, surface);
     constexpr VkPresentModeKHR preferredPresentMode[] = {VK_PRESENT_MODE_MAILBOX_KHR,
-                                                         VK_PRESENT_MODE_FIFO_LATEST_READY_EXT,
                                                          VK_PRESENT_MODE_FIFO_KHR};
     auto                       surfacePresentModeIt   = std::ranges::find_if(
         preferredPresentMode, [&surfacePresentModes](const VkPresentModeKHR& mode) {
@@ -602,7 +603,7 @@ TEST(Integration, HelloTriangleRayTracing) {
                     .format  = SLANG_SPIRV,
                     .profile = globalSession->findProfile("spirv_1_6"),
     }};
-    const char*               searchPaths[] = {"test/shaders"};
+    const char*               searchPaths[] = {"test/shaders", "vulkan_objects/test/shaders"};
     vko::slang::Session       session(globalSession,
                                       slang::SessionDesc{
                                           .targets         = targets,
@@ -751,7 +752,7 @@ TEST(Integration, HelloTriangleRayTracing) {
                                  });
         }
 
-        swapchain.present(device, queue, imageIndex, renderingFinished);
+        swapchain.present(device, queue, imageIndex, renderingFinished, nullptr);
         device.vkQueueWaitIdle(queue);
         break;
     }

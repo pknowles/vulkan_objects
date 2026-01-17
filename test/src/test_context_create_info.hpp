@@ -5,33 +5,55 @@
 #include <array>
 #include <string_view>
 #include <vko/adapters.hpp>
+#include <vko/gen_structures.hpp>
 #include <vko/handles.hpp>
+#include <vko/structs.hpp>
 #include <vulkan/vulkan_core.h>
 
 #if VULKAN_OBJECTS_HAS_GLFW
     #include <vko/glfw_objects.hpp>
 #endif
 
+// Purely to save a few designated initializer lines. Have you seen how big
+// VkPhysicalDeviceVulkan12Features is? And yes, the missing field initializers
+// warning is intentionally on.
+template <class T, class Fn>
+T makeFeatures(void* pNext, Fn&& fn) {
+    T t{}; // All fields to false
+    t.sType = vko::struct_traits<T>::sType;
+    t.pNext = pNext;
+    fn(t); // User lambda to switch some back on
+    return t;
+}
+
 // Dangerous internal pointers encapsulated in a non-copyable non-movable
 // app-specific struct
 struct TestInstanceCreateInfo {
     static constexpr const char* requiredExtensions[] = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
-    VkApplicationInfo            applicationInfo{
-                   .sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-                   .pNext              = nullptr,
-                   .pApplicationName   = "vulkan_objects test application",
-                   .applicationVersion = 0,
-                   .pEngineName        = nullptr,
-                   .engineVersion      = 0,
-                   .apiVersion         = VK_API_VERSION_1_4,
+#if VULKAN_OBJECTS_HAS_VVL
+    static constexpr const char* requiredLayers[] = {"VK_LAYER_KHRONOS_validation"};
+#endif
+    VkApplicationInfo applicationInfo{
+        .sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pNext              = nullptr,
+        .pApplicationName   = "vulkan_objects test application",
+        .applicationVersion = 0,
+        .pEngineName        = nullptr,
+        .engineVersion      = 0,
+        .apiVersion         = VK_API_VERSION_1_4,
     };
     VkInstanceCreateInfo instanceCreateInfo{
-        .sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pNext                   = nullptr,
-        .flags                   = 0,
-        .pApplicationInfo        = &applicationInfo,
-        .enabledLayerCount       = 0,
-        .ppEnabledLayerNames     = nullptr,
+        .sType            = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pNext            = nullptr,
+        .flags            = 0,
+        .pApplicationInfo = &applicationInfo,
+#if VULKAN_OBJECTS_HAS_VVL
+        .enabledLayerCount   = uint32_t(std::size(requiredLayers)),
+        .ppEnabledLayerNames = requiredLayers,
+#else
+        .enabledLayerCount   = 0,
+        .ppEnabledLayerNames = nullptr,
+#endif
         .enabledExtensionCount   = uint32_t(std::size(requiredExtensions)),
         .ppEnabledExtensionNames = requiredExtensions,
     };
@@ -44,30 +66,26 @@ struct TestInstanceCreateInfo {
 // Combined vulkan features struct initialized with required flags set.
 // Non-copyable so the pNext chain remains valid.
 struct TestDeviceFeatures {
-    VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeature = {
-        .sType        = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
-        .pNext        = nullptr,
-        .shaderObject = VK_TRUE,
-    };
-    VkPhysicalDeviceVulkan13Features vulkan13Feature = {
-        .sType              = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-        .pNext              = &shaderObjectFeature,
-        .robustImageAccess  = VK_FALSE,
-        .inlineUniformBlock = VK_FALSE,
-        .descriptorBindingInlineUniformBlockUpdateAfterBind = VK_FALSE,
-        .pipelineCreationCacheControl                       = VK_FALSE,
-        .privateData                                        = VK_FALSE,
-        .shaderDemoteToHelperInvocation                     = VK_FALSE,
-        .shaderTerminateInvocation                          = VK_FALSE,
-        .subgroupSizeControl                                = VK_FALSE,
-        .computeFullSubgroups                               = VK_FALSE,
-        .synchronization2                                   = VK_FALSE,
-        .textureCompressionASTC_HDR                         = VK_FALSE,
-        .shaderZeroInitializeWorkgroupMemory                = VK_FALSE,
-        .dynamicRendering        = VK_TRUE, // yay no default initializers
-        .shaderIntegerDotProduct = VK_FALSE,
-        .maintenance4            = VK_FALSE,
-    };
+    VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeature =
+        makeFeatures<VkPhysicalDeviceShaderObjectFeaturesEXT>(
+            nullptr, [](auto& f) { f.shaderObject = VK_TRUE; });
+    VkPhysicalDeviceVulkan11Features vulkan11Feature =
+        makeFeatures<VkPhysicalDeviceVulkan11Features>(
+            &shaderObjectFeature, [](auto& f) { f.shaderDrawParameters = VK_TRUE; });
+    VkPhysicalDeviceVulkan12Features vulkan12Feature =
+        makeFeatures<VkPhysicalDeviceVulkan12Features>(&vulkan11Feature, [](auto& f) {
+            f.timelineSemaphore   = VK_TRUE;
+            f.bufferDeviceAddress = VK_TRUE;
+            f.hostQueryReset      = VK_TRUE;
+        });
+    VkPhysicalDeviceVulkan13Features vulkan13Feature =
+        makeFeatures<VkPhysicalDeviceVulkan13Features>(&vulkan12Feature, [](auto& f) {
+            f.synchronization2 = VK_TRUE;
+            f.dynamicRendering = VK_TRUE;
+        });
+    VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT swapchainMaintenance1Feature =
+        makeFeatures<VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT>(
+            &vulkan13Feature, [](auto& f) { f.swapchainMaintenance1 = VK_TRUE; });
     bool hasAll(const TestDeviceFeatures& required) {
         // For demonstration. Ideally this code would be generated for vulkan
         // feature structs
@@ -81,7 +99,7 @@ struct TestDeviceFeatures {
     TestDeviceFeatures()                                          = default;
     TestDeviceFeatures(const TestDeviceFeatures& other)           = delete;
     TestDeviceFeatures operator=(const TestDeviceFeatures& other) = delete;
-    void*              pNext() { return &vulkan13Feature; }
+    void*              pNext() { return &swapchainMaintenance1Feature; }
 };
 
 struct TestDeviceCreateInfo {
@@ -95,8 +113,7 @@ struct TestDeviceCreateInfo {
     TestDeviceCreateInfo(const QueueFamilyIndices&    queueFamilyIndices,
                          std::span<const char* const> optionalExtensions = {})
         : deviceExtensions([&optionalExtensions]() {
-            std::vector<const char*> exts{VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-                                          VK_EXT_SHADER_OBJECT_EXTENSION_NAME};
+            std::vector<const char*> exts{VK_EXT_SHADER_OBJECT_EXTENSION_NAME};
             exts.insert(exts.end(), optionalExtensions.begin(), optionalExtensions.end());
             return exts;
         }())
@@ -187,7 +204,7 @@ inline bool physicalDeviceSuitable(const vko::Instance& instance, VkPhysicalDevi
 
 struct WindowInstanceCreateInfo {
     std::vector<const char*>     requiredLayers;
-    std::array<const char*, 3>   requiredExtensions;
+    std::array<const char*, 5>   requiredExtensions;
     VkApplicationInfo            applicationInfo;
     const VkBool32               verboseValue = true;
     const VkLayerSettingEXT      layerSetting = {"VK_LAYER_KHRONOS_validation", "validate_sync",
@@ -199,7 +216,9 @@ struct WindowInstanceCreateInfo {
         : requiredLayers{"VK_LAYER_KHRONOS_validation"} // only when !defined(NDEBUG) in a real app
         , requiredExtensions{VK_KHR_SURFACE_EXTENSION_NAME,
                              vko::glfw::platformSurfaceExtension(support),
-                             VK_EXT_DEBUG_UTILS_EXTENSION_NAME}
+                             VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+                             VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
+                             VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME}
         , applicationInfo{.sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
                           .pNext              = nullptr,
                           .pApplicationName   = "vulkan_objects test application",
@@ -223,6 +242,7 @@ struct WindowInstanceCreateInfo {
 struct RayTracingDeviceCreateInfo {
     static constexpr auto                       deviceExtensions = std::to_array({
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
         VK_EXT_SHADER_OBJECT_EXTENSION_NAME,
         VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
         VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
@@ -280,6 +300,11 @@ struct RayTracingDeviceCreateInfo {
         .shaderIntegerDotProduct = VK_FALSE,
         .maintenance4            = VK_FALSE,
     };
+    VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT swapchainMaintenance1Feature = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT,
+        .pNext = &vulkan13Feature,
+        .swapchainMaintenance1 = VK_TRUE,
+    };
     VkDeviceCreateInfo deviceCreateInfo;
     RayTracingDeviceCreateInfo(uint32_t queueFamilyIndex)
         : queueCreateInfo{.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -289,7 +314,7 @@ struct RayTracingDeviceCreateInfo {
                           .queueCount       = 1,
                           .pQueuePriorities = &queuePriority}
         , deviceCreateInfo{.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-                           .pNext                   = &vulkan13Feature,
+                           .pNext                   = &swapchainMaintenance1Feature,
                            .flags                   = 0,
                            .queueCreateInfoCount    = 1U,
                            .pQueueCreateInfos       = &queueCreateInfo,

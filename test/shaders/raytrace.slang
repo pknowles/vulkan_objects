@@ -9,10 +9,14 @@ struct PushConstants {
 [[vk::push_constant]]
 PushConstants pc;
 
+[[vk::binding(0, 0)]]
+RaytracingAccelerationStructure scene;
+
+[[vk::binding(1, 0)]]
+RWTexture2D<float4> storageImage;
+
 [shader("raygeneration")]
-void rayGenMain(
-    RaytracingAccelerationStructure scene : register(t0, space0),
-    RWTexture2D<float4> storageImage : register(u0, space1)) {
+void rayGenMain() {
     Payload payload;
     payload.color = float3(0, 0, 0);
 

@@ -29,7 +29,7 @@ add_dependencies(vulkan_objects vulkan_objects_generated)
 set(VULKAN_OBJECTS_SPEC_OVERRIDE "" CACHE FILEPATH "Override path to own vk.xml. Ignores VULKAN_OBJECTS_SPEC_TAG")
 set(VULKAN_OBJECTS_SPEC_TAG "v1.4.335" CACHE STRING "GIT tag from https://github.com/KhronosGroup/Vulkan-Headers/tags")
 set(VULKAN_OBJECTS_VMA_TAG "v3.3.0" CACHE STRING "GIT tag from https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/tags")
-set(VULKAN_OBJECTS_SLANG_TAG "v2025.6.3" CACHE STRING "GIT tag from https://github.com/shader-slang/slang/tags")
+set(VULKAN_OBJECTS_SLANG_TAG "v2026.1" CACHE STRING "GIT tag from https://github.com/shader-slang/slang/tags")
 set(VULKAN_OBJECTS_SHADERC_TAG "v2025.5" CACHE STRING "GIT tag from https://github.com/google/shaderc/tags")
 set(VULKAN_OBJECTS_SPIRV_HEADERS_TAG "vulkan-sdk-1.4.335.0" CACHE STRING "GIT tag from https://github.com/KhronosGroup/SPIRV-Headers/tags")
 set(VULKAN_OBJECTS_SPIRV_TOOLS_TAG "v2025.4" CACHE STRING "GIT tag from https://github.com/KhronosGroup/SPIRV-Tools/tags")
@@ -114,7 +114,7 @@ endforeach()
 # VVL and Shaderc share SPIRV-Tools, SPIRV-Headers and glslang, fetched here to
 # avoid duplication.
 
-if (VULKAN_OBJECTS_FETCH_VVL OR VULKAN_OBJECTS_FETCH_SHADERC)
+if (VULKAN_OBJECTS_FETCH_VVL OR VULKAN_OBJECTS_FETCH_SLANG OR VULKAN_OBJECTS_FETCH_SHADERC)
   include(FetchContent)
   
   if (NOT TARGET SPIRV-Tools)
@@ -124,6 +124,7 @@ if (VULKAN_OBJECTS_FETCH_VVL OR VULKAN_OBJECTS_FETCH_SHADERC)
       GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Headers.git
       GIT_TAG ${VULKAN_OBJECTS_SPIRV_HEADERS_TAG}
       GIT_SHALLOW TRUE
+      OVERRIDE_FIND_PACKAGE
     )
     
     # SPIRV-Tools: SPIR-V binary manipulation and validation  
@@ -132,6 +133,7 @@ if (VULKAN_OBJECTS_FETCH_VVL OR VULKAN_OBJECTS_FETCH_SHADERC)
       GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Tools.git
       GIT_TAG ${VULKAN_OBJECTS_SPIRV_TOOLS_TAG}
       GIT_SHALLOW TRUE
+      OVERRIDE_FIND_PACKAGE
     )
     
     set(SPIRV_HEADERS_SKIP_EXAMPLES ON CACHE BOOL "" FORCE)
@@ -147,12 +149,14 @@ if (VULKAN_OBJECTS_FETCH_VVL OR VULKAN_OBJECTS_FETCH_SHADERC)
       GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
       GIT_TAG ${VULKAN_OBJECTS_GLSLANG_TAG}
       GIT_SHALLOW TRUE
+      OVERRIDE_FIND_PACKAGE
     )
     set(ENABLE_SPVREMAPPER OFF CACHE BOOL "" FORCE)
     set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "" FORCE)
     set(ENABLE_GLSLANG_JS OFF CACHE BOOL "" FORCE)
     set(ENABLE_CTEST OFF CACHE BOOL "" FORCE)
     set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
+    set(ALLOW_EXTERNAL_SPIRV_TOOLS ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(glslang)
   endif()
 endif()
@@ -214,26 +218,79 @@ if(VULKAN_OBJECTS_FETCH_VMA)
 endif()
 
 if(VULKAN_OBJECTS_FETCH_SLANG)
+  # Reuse SPIRV-Tools, SPIRV-Headers from the shared section above. Try to fetch
+  # only the submodules slang actually needs (skip spirv-* that we already
+  # provide, glslang, imgui, glm, etc.). This should avoid wasting people's
+  # quotas and time. Otherwise it's a very slow 1GB+ bunch of clones.
   include(FetchContent)
   FetchContent_Declare(
     slang
     GIT_REPOSITORY https://github.com/shader-slang/slang.git
     GIT_TAG ${VULKAN_OBJECTS_SLANG_TAG}
     GIT_SHALLOW TRUE
+
+    # Deny-list attempt (doesn't work)
+    #GIT_CONFIG
+    #  "submodule.external/spirv-tools.active=false"
+    #  "submodule.external/spirv-headers.active=false"
+    #  "submodule.external/glslang.active=false"
+    #  "submodule.external/imgui.active=false"
+    #  "submodule.external/glm.active=false"
+    #  "submodule.external/slang-rhi.active=false"
+    #  "submodule.external/vulkan.active=false"
+    #  "submodule.external/tinyobjloader.active=false"
+    #  "submodule.external/metal-cpp.active=false"
+    #  "submodule.external/WindowsToolchain.active=false"
+    #  "submodule.external/slang-binaries.active=false"
+
+    # Alternative difficult-to-maintain allow-list
+    # TODO: request a SLANG_ENABLE_FIDDLE to avoid external/lua?
+    GIT_SUBMODULES external/unordered_dense external/miniz external/lz4 external/lua
   )
   set(SLANG_USE_SYSTEM_VULKAN_HEADERS ON CACHE BOOL "" FORCE)
+  set(SLANG_USE_SYSTEM_SPIRV_HEADERS ON CACHE BOOL "" FORCE)
+  set(SLANG_USE_SYSTEM_SPIRV_TOOLS ON CACHE BOOL "" FORCE)
+  set(SLANG_USE_SYSTEM_GLSLANG ON CACHE BOOL "" FORCE)
+  set(SLANG_SPIRV_HEADERS_INCLUDE_DIR "${spirv-headers_SOURCE_DIR}/include" CACHE PATH "" FORCE)
   set(SLANG_ENABLE_DXIL OFF CACHE BOOL "" FORCE)
   set(SLANG_ENABLE_SLANGD OFF CACHE BOOL "" FORCE)
-  set(SLANG_ENABLE_SLANGC OFF CACHE BOOL "" FORCE)
+
+  # slang needs a compiler to build its 'standard modules'
+  set(SLANG_ENABLE_SLANGC ON CACHE BOOL "" FORCE)
+  if(NOT SLANG_ENABLE_SLANGC)
+    set(SLANG_GENERATORS_PATH "${CMAKE_BINARY_DIR}/generators/Debug/bin" CACHE PATH "" FORCE)
+  endif()
+
   set(SLANG_ENABLE_SLANGRT OFF CACHE BOOL "" FORCE)
-  set(SLANG_ENABLE_SLANG_GLSLANG OFF CACHE BOOL "" FORCE)
+  set(SLANG_ENABLE_SLANG_GLSLANG ON CACHE BOOL "" FORCE)
   set(SLANG_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
   set(SLANG_ENABLE_GFX OFF CACHE BOOL "" FORCE)
   set(SLANG_ENABLE_REPLAYER OFF CACHE BOOL "" FORCE)
   set(SLANG_ENABLE_SLANG_RHI OFF CACHE BOOL "" FORCE)
   set(SLANG_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(SLANG_ENABLE_SPLIT_DEBUG_INFO OFF CACHE BOOL "" FORCE)
-  FetchContent_MakeAvailable(slang)
+  set(SLANG_SLANG_LLVM_FLAVOR DISABLE CACHE STRING "" FORCE) # only needed for host code gen
+
+  option(SLANG_GLSLANG_ALIAS_WORKAROUND "Workaround for slang's broken alias that conflicts with FetchContent targets" ON)
+  if(SLANG_GLSLANG_ALIAS_WORKAROUND)
+    message(STATUS "Applying slang glslang alias workaround")
+    FetchContent_GetProperties(slang)
+    if(NOT slang_POPULATED)
+      FetchContent_Populate(slang)
+      # Fix slang's broken alias that conflicts with FetchContent targets
+      file(READ "${slang_SOURCE_DIR}/CMakeLists.txt" _slang_cmake)
+      string(REPLACE 
+        "add_library(glslang ALIAS glslang::glslang)"
+        "if(NOT TARGET glslang)\n        add_library(glslang ALIAS glslang::glslang)\n    endif()"
+        _slang_cmake "${_slang_cmake}")
+      file(WRITE "${slang_SOURCE_DIR}/CMakeLists.txt" "${_slang_cmake}")
+      add_subdirectory("${slang_SOURCE_DIR}" "${slang_BINARY_DIR}")
+    endif()
+  else()
+    FetchContent_MakeAvailable(slang)
+  endif()
+  target_compile_options(slang PRIVATE -Wno-overloaded-virtual) # ideally upstreamed
+  target_compile_options(core PRIVATE -Wno-overloaded-virtual) # not "slang-core" but just "core"
   target_link_libraries(vulkan_objects PUBLIC slang)
 endif()
 
