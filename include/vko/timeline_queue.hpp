@@ -177,7 +177,7 @@ public:
 
     // Checks the semaphore value status, but not its signalled status. This is
     // typically used to check if a TimelineQueue submission has been made.
-    bool hasValue() const {
+    [[nodiscard]] bool hasValue() const {
         if (m_signalledCache)
             return true;
         try {
@@ -189,13 +189,13 @@ public:
 
     // Checks the semaphore signalled status.
     template <vko::device_and_commands DeviceAndCommands>
-    bool isSignaled(DeviceAndCommands& device) const {
+    [[nodiscard]] bool isSignaled(DeviceAndCommands& device) const {
         return waitFor(device, std::chrono::seconds(0));
     }
 
     // Alias for isSignaled() - checks if semaphore is ready (signaled).
     template <vko::device_and_commands DeviceAndCommands>
-    bool ready(DeviceAndCommands& device) const {
+    [[nodiscard]] bool ready(DeviceAndCommands& device) const {
         return isSignaled(device);
     }
 
@@ -216,7 +216,11 @@ public:
 
     // Direct access to the semaphore value. Use with caution as it's not common
     // you'd want this. May be used to copy a value to a SubmitPromise.
-    uint64_t value() const { return m_value.get(); }
+    [[nodiscard]] uint64_t value() const { return m_value.get(); }
+
+    // Raw access to the semaphore. You probably want waitSemaphoreInfo()
+    // instead.
+    [[nodiscard]] VkSemaphore semaphore() const { return m_semaphore; }
 
 private:
     // TODO: there's an argument for making this a
@@ -540,6 +544,13 @@ public:
         }
     }
 
+    template <class Fn>
+    void visitAll(Fn&& callback) const {
+        for (const auto& entry : m_entries) {
+            callback(entry.value, entry.semaphore);
+        }
+    }
+
     size_t size() const { return m_entries.size(); }
     bool   empty() const { return m_entries.empty(); }
 
@@ -645,18 +656,14 @@ struct SubmitPromise {
         other.m_hasValue = false;
     }
     SubmitPromise& operator=(SubmitPromise&& other) noexcept {
-        if (m_hasValue)
-            m_promiseValue.set_exception(std::make_exception_ptr(TimelineSubmitCancel()));
+        free();
         m_promiseValue   = std::move(other.m_promiseValue);
         m_signalFuture   = std::move(other.m_signalFuture);
         m_hasValue       = other.m_hasValue;
         other.m_hasValue = false;
         return *this;
     }
-    ~SubmitPromise() {
-        if (m_hasValue)
-            m_promiseValue.set_exception(std::make_exception_ptr(TimelineSubmitCancel()));
-    }
+    ~SubmitPromise() { free(); }
     void setValue(uint64_t value) {
         m_promiseValue.set_value(value);
         m_hasValue = false;
@@ -665,6 +672,12 @@ struct SubmitPromise {
     SemaphoreValue futureValue() const { return m_signalFuture; }
 
 private:
+    void free() {
+        if (m_hasValue) {
+            m_promiseValue.set_exception(std::make_exception_ptr(TimelineSubmitCancel()));
+        }
+    }
+
     std::promise<uint64_t> m_promiseValue;
     SemaphoreValue         m_signalFuture;
     bool                   m_hasValue = true;
@@ -788,6 +801,52 @@ private:
     TimelineSemaphore m_semaphore;
     uint64_t          m_nextValue   = 0;
     uint32_t          m_deviceIndex = 0;
+};
+
+// Trivial wrapper that locks the queue for submissions.
+template <class Queue = TimelineQueue>
+class LockingQueue {
+public:
+    using QueueType = Queue;
+    LockingQueue(Queue&& queue)
+        : m_queue(std::move(queue)) {}
+
+    SubmitPromise  submitPromise() const { return m_queue.submitPromise(); }
+    SemaphoreValue nextSubmitSemaphore() const
+        requires requires(const Queue& q) {
+            { q.nextSubmitSemaphore() } -> std::same_as<SemaphoreValue>;
+        }
+    {
+        return m_queue.nextSubmitSemaphore();
+    }
+
+    template <class... Args>
+    void submit(Args&&... args) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_queue.submit(std::forward<Args>(args)...);
+    }
+
+    // other queues don't have a wait(); should this?
+    template <device_and_commands DeviceAndCommands>
+    void wait(DeviceAndCommands& device) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        device.vkQueueWaitIdle(m_queue);
+    }
+
+    template <class Fn>
+    void locked(Fn&& fn) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        fn(m_queue);
+    }
+
+    [[nodiscard]] uint32_t familyIndex() const { return m_queue.familyIndex(); }
+    [[nodiscard]] uint32_t deviceIndex() const { return m_queue.deviceIndex(); }
+    operator VkQueue() const { return m_queue; }
+    const VkQueue* ptr() const { return m_queue.ptr(); }
+
+private:
+    Queue      m_queue;
+    std::mutex m_mutex;
 };
 
 // WARNING: this is a big footgun as it hides the internal submit promise

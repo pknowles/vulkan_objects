@@ -58,7 +58,10 @@ struct Context {
                          [](VkDebugUtilsMessageSeverityFlagBitsEXT severityBits,
                             VkDebugUtilsMessageTypeFlagsEXT,
                             const VkDebugUtilsMessengerCallbackDataEXT& callbackData) -> bool {
-                             std::cout << callbackData.pMessage << std::endl;
+                             // Skip messages with ID 0 (noisy loader/layer info messages)
+                             if (callbackData.messageIdNumber != 0) {
+                                 std::cout << callbackData.pMessage << std::endl;
+                             }
                              VkFlags breakOnSeverity =
                                  VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
                                  VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
@@ -105,7 +108,8 @@ struct Context {
                      ? TestDeviceCreateInfo(queueFamilyIndex, queueFamilyIndex2.value(),
                                             optionalExtensions)
                      : TestDeviceCreateInfo(queueFamilyIndex, optionalExtensions))
-        , allocator(globalCommands, instance, physicalDevice, device, VK_API_VERSION_1_4, 0) {
+        , allocator(globalCommands, instance, physicalDevice, device, VK_API_VERSION_1_4,
+                    VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT) {
     }
 
     // Helper to create a command pool for testing

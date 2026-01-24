@@ -172,6 +172,25 @@ queue.submit(device, waitInfos, commandBuffer, submitPromises, timelineSemaphore
 bool signalled = nextSubmitSemaphoreValue.ready();
 nextSubmitSemaphoreValue.waitFor(device, std::chrono::seconds(123));
 
+// Command Recording
+vko::ImmediateCommandBuffer cmd(device, pool, queue);  // RAII: records in scope, submits+waits on destruction. Convenient but not async/stalls GPU.
+vko::CyclingCommandBuffer cmd(device, queue); // vko::CommandBuffer allocator from an internal vko::CommandPool; submit() to a non-owning vko::TimelineQueue reference
+
+// Staging Memory, composable, hard to misuse, see staging_memory.hpp
+using StagingStream = vko::StagingStream<vko::vma::RecyclingStagingPool>;
+StagingStream stream(...);
+vko::DeviceBuffer<int> buf = vko::upload(stream, device, allocator, std::array<int>{1, 2, 3}, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+// vko::cmdMemoryBarrier() and use buf somewhere
+stream.submit();
+
+// Queries and Profiling, see query_pool.hpp
+vko::RecyclingQueryPool queries;
+vko::ScopedQuery // RAII begin/end query
+auto future = vko::cmdWriteTimestamp(cmd, queries.allocate())
+queries.endBatch(submitPromise.futureValue()) // recycling is blocked without
+queue.submit(submitPromise, cmd)
+uint64_t timestamp = future.get();
+
 // Swapchain, optional GLFW utils
 vko::glfw::physicalDevicePresentationSupport()
 vko::glfw::platformSurfaceExtension()

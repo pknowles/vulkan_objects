@@ -9,6 +9,11 @@
 
 namespace vko {
 
+template <class T>
+concept buffer = requires(T t) {
+    { static_cast<VkBuffer>(t) } -> std::convertible_to<VkBuffer>;
+} && std::is_trivially_destructible_v<typename T::ValueType>;
+
 template <class Container>
 using container_view_t =
     std::conditional_t<std::is_const_v<std::remove_reference<Container>>,
@@ -339,5 +344,22 @@ DeviceAddress<T> translateOffset(DeviceAddress<T> offsetAddress, DeviceAddress<T
     return translateOffset(offsetAddress, deviceBase.raw());
 }
 #endif
+
+// Type-safe and bounds-checked vkCmdCopyBuffer using BufferSpan.
+// Usage: copyBuffer(device, cmd, BufferSpan(srcBuf).subspan(10, 5),
+//                                BufferSpan(dstBuf).subspan(20, 5));
+template <device_and_commands DeviceAndCommands, class SrcT, class DstT>
+    requires std::is_trivially_assignable_v<DstT&, SrcT>
+void copyBuffer(const DeviceAndCommands& device, VkCommandBuffer cmd, const BufferSpan<SrcT>& src,
+                const BufferSpan<DstT>& dst) {
+    if (src.size() != dst.size())
+        throw std::out_of_range("source and destination buffer spans must have the same size");
+    if (src.size() == 0)
+        return;
+
+    VkBufferCopy region{
+        .srcOffset = src.offset(), .dstOffset = dst.offset(), .size = src.sizeBytes()};
+    device.vkCmdCopyBuffer(cmd, src.buffer(), dst.buffer(), 1, &region);
+}
 
 } // namespace vko

@@ -13,7 +13,7 @@
 //   upload<T>(stream, device, alloc, size, usage, fn)    - creates buffer via callback
 //   upload(stream, device, allocator, range, usage)      - creates buffer from range
 //
-// Download overloads:
+// Download overloads (all return futures):
 //   download(stream, device, buffer, offset, size)       - identity to vector
 //   download<DstT>(stream, device, buffer, off, sz, fn)  - transform to vector
 //   download(stream, device, BufferSpan<T>)              - identity from buffer span
@@ -23,6 +23,26 @@
 //   downloadForEach(stream, device, buffer, off, sz, fn) - streaming callback
 //   downloadForEach(stream, device, BufferSpan<T>, fn)   - streaming from buffer span
 //   downloadForEach(stream, device, DeviceSpan, fn)      - streaming from address
+//
+// NOTE: must call stream.submit() before future.get()/wait()!
+//
+// Beware *ForEach() variants: The callback is stored on a shared state object
+// between BOTH the returned handle and the stream. If you discard the returned
+// future handle, the callback still gets called but this is only guaranteed
+// after stream.wait(). Even if the GPU operations are complete, the callback
+// will not be called until an explicit poll(), wait(), or the staging stream
+// tries to recycle the staging allocation.
+//
+// auto future = vko::download(stream, device, BufferSpan(buffer), [](VkDeviceSize chunkOffset,
+// std::span<const T> data) {
+//     ... do something with your data
+// });
+// future.wait(device);              // BUG: deadlock as no submit was called
+// auto semaphore = stream.submit(); // begin transfer work
+// semaphore.wait(device);           // does not call callback
+// stream.poll();                    // OK: non-blocking, calls callback because we waited on the semaphore
+// stream.wait();                    // OK: waits and calls callback, if not already called
+// future.wait(device);              // OK: waits and calls callback, if not already called
 
 #include <cstdio>
 #include <functional>
@@ -93,6 +113,11 @@ concept staging_allocator =
         {
             t.template allocateUpTo<int>(size)
         } -> std::same_as<BoundBuffer<int, typename T::Allocator>*>;
+        // Atomically allocate a single element + up-to buffer pair
+        {
+            t.template allocateSingleAndUpTo<int, int>(size)
+        } -> std::same_as<std::optional<std::pair<BoundBuffer<int, typename T::Allocator>&,
+                                                  BoundBuffer<int, typename T::Allocator>&>>>;
         // Register a callback for the current batch
         { t.registerBatchCallback(destruct) } -> std::same_as<void>;
         // Provide a ready-semaphore for all buffers allocated since the last
@@ -104,6 +129,10 @@ concept staging_allocator =
         // Total allocated staging memory (including recyclable/idle memory)
         { t.capacity() } -> std::same_as<VkDeviceSize>;
         { t.device() } -> std::same_as<const typename T::DeviceAndCommands&>;
+        // Non-blocking: process callbacks for batches that are already complete
+        { t.poll() } -> std::same_as<void>;
+        // Blocking: wait for all batches to complete and invoke their callbacks
+        { t.wait() } -> std::same_as<void>;
     };
 
 // Staging buffer allocator that allocates individual staging buffers and
@@ -189,6 +218,32 @@ public:
         return ptr;
     }
 
+    // Atomically allocate one single element + up-to buffer
+    // Always succeeds for DedicatedStagingPool (creates new dedicated allocations)
+    template <class TSingle, class TUpTo>
+    std::optional<std::pair<BoundBuffer<TSingle, Allocator>&, BoundBuffer<TUpTo, Allocator>&>>
+    allocateSingleAndUpTo(VkDeviceSize upToSize) {
+        // Allocate single element buffer
+        auto [singleAny, singlePtr] = makeUniqueAny<vko::BoundBuffer<TSingle, Allocator>>(
+            m_device.get(), 1, m_bufferUsageFlags,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            m_allocator.get());
+        m_current.size += singlePtr->sizeBytes();
+        m_totalSize += singlePtr->sizeBytes();
+        m_current.buffers.emplace_back(std::move(singleAny));
+
+        // Allocate up-to buffer (full size, since DedicatedStagingPool always allocates full)
+        auto [upToAny, upToPtr] = makeUniqueAny<vko::BoundBuffer<TUpTo, Allocator>>(
+            m_device.get(), upToSize, m_bufferUsageFlags,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            m_allocator.get());
+        m_current.size += upToPtr->sizeBytes();
+        m_totalSize += upToPtr->sizeBytes();
+        m_current.buffers.emplace_back(std::move(upToAny));
+
+        return std::pair{std::ref(*singlePtr), std::ref(*upToPtr)};
+    }
+
     // Register a callback for the current batch
     void registerBatchCallback(std::function<void(bool)> callback) {
         m_current.destroyCallbacks.emplace_back(std::move(callback));
@@ -200,8 +255,11 @@ public:
         m_current = {};
     }
 
+    // Non-blocking: process callbacks for batches that are already complete
+    void poll() { checkAndInvokeCompletedCallbacks(); }
+
+    // Blocking: wait for all batches to complete and invoke their callbacks
     void wait() {
-        // Wait for all and invoke callbacks
         m_released.waitAndConsume(m_device.get(), [this](Batch& batch) {
             for (auto& callback : batch.destroyCallbacks) {
                 callback(true);
@@ -213,6 +271,14 @@ public:
     VkDeviceSize size() const { return m_totalSize; }
     VkDeviceSize capacity() const { return size(); } // Same as size for DedicatedStagingPool
     const DeviceAndCommands& device() const { return m_device.get(); }
+    size_t                   unsubmittedTransfers() const { return m_current.buffers.size(); }
+    size_t                   pendingTransfers() const {
+        size_t result = m_released.size();
+        m_released.visitAll([&result](const Batch& batch, const SemaphoreValue&) {
+            result += batch.buffers.size();
+        });
+        return result;
+    }
 
 private:
     void checkAndInvokeCompletedCallbacks() {
@@ -263,12 +329,20 @@ constexpr VkDeviceSize align_up(VkDeviceSize value, VkDeviceSize alignment) {
     return (value + alignment - 1) & ~(alignment - 1);
 }
 
+// Align a value down to the nearest multiple of alignment
+constexpr VkDeviceSize align_down(VkDeviceSize value, VkDeviceSize alignment) {
+    return value & ~(alignment - 1);
+}
+
 // Staging buffer allocator that provides temporary buffers from cyclical memory
 // pools. The caller must call endBatch() with a SemaphoreValue that will
 // be signaled when the buffers are no longer in use so that their pool can be
 // reused. Use this when you have many small transfers to make on a regular
 // basis to avoid frequent allocations/deallocations.
-template <device_and_commands DeviceAndCommandsType>
+// TODO: would we ever want to allow staging buffers to be recycled after
+// waiting on a semaphore? Like a swapchain where the GPU can just keep
+// transferring.
+template <device_and_commands DeviceAndCommandsType = vko::Device>
 class RecyclingStagingPool {
 public:
     using DeviceAndCommands                      = DeviceAndCommandsType;
@@ -393,16 +467,16 @@ public:
     // Mark all buffers in the 'current' pools as free to be recycled once the
     // reuseSemaphore is signaled
     void endBatch(SemaphoreValue reuseSemaphore) {
-        // Only move batch to m_inUse if it has pools (RAII: no empty batches)
-        if (!m_current.pools.empty()) {
-            m_inUse.push_back(std::move(m_current), reuseSemaphore);
-            m_current = {};
-        }
+        m_inUse.push_back(std::move(m_current), reuseSemaphore);
+        m_current = {};
         assert(m_current.buffers.empty());
         assert(m_current.destroyCallbacks.empty());
     }
 
-    // Wait for all batches to finish
+    // Non-blocking: process callbacks for batches that are already complete
+    void poll() { invokeReadyCallbacks(); }
+
+    // Blocking: wait for all batches to complete and invoke their callbacks
     void wait() {
         // Wait for all batches
         m_inUse.wait(m_device.get());
@@ -412,7 +486,7 @@ public:
         m_inUse.visitAll(
             [this](PoolBatch& batch, SemaphoreValue&) { destroyBuffers(batch, true); });
 
-        // Free only exess pools in m_inUse
+        // Free only excess pools in m_inUse
         freeExcessPools();
     }
 
@@ -423,6 +497,15 @@ public:
     // Size of a single pool. Best to submit and endBatch() before size()
     // reaches this value.
     VkDeviceSize poolSize() const { return m_poolSize; }
+
+    size_t unsubmittedTransfers() const { return m_current.buffers.size(); }
+    size_t pendingTransfers() const {
+        size_t result = 0;
+        m_inUse.visitAll([&result](const PoolBatch& batch, const SemaphoreValue&) {
+            result += batch.buffers.size();
+        });
+        return result;
+    }
 
 private:
     struct PoolBatch {
@@ -491,7 +574,7 @@ private:
 
         VmaPoolCreateInfo poolCreateInfo = {
             .memoryTypeIndex        = memTypeIndex,
-            .flags                  = 0,
+            .flags                  = VMA_POOL_CREATE_LINEAR_ALGORITHM_BIT,
             .blockSize              = m_poolSize,
             .minBlockCount          = 1,
             .maxBlockCount          = 1,
@@ -518,7 +601,10 @@ private:
                 VkDeviceSize alignedOffset = align_up(m_currentPoolUsedBytes, m_alignment);
                 VkDeviceSize availableBytes =
                     alignedOffset < m_poolSize ? m_poolSize - alignedOffset : 0;
-                VkDeviceSize trySize = availableBytes / static_cast<VkDeviceSize>(sizeof(T));
+                // Vulkan rounds allocation size up to alignment, so we can only use
+                // a multiple of alignment bytes from the pool
+                VkDeviceSize usableBytes = align_down(availableBytes, m_alignment);
+                VkDeviceSize trySize     = usableBytes / static_cast<VkDeviceSize>(sizeof(T));
 
                 if (trySize > 0) {
                     trySize = std::min(size, trySize);
@@ -568,49 +654,41 @@ private:
 
                 // Check if pool is already full after alignment
                 if (alignedOffset >= m_poolSize) {
-                    std::printf("makeTmpBufferPair attempt %d: poolSize=%llu, alignedOffset=%llu - "
-                                "POOL FULL, continuing\n",
-                                attempt, (unsigned long long)m_poolSize,
-                                (unsigned long long)alignedOffset);
                     continue; // Pool is full after alignment
                 }
 
-                VkDeviceSize available    = m_poolSize - alignedOffset;
-                VkDeviceSize singleBytes  = align_up(sizeof(TSingle), m_alignment);
-                VkDeviceSize minUpToBytes = align_up(sizeof(TUpTo), m_alignment);
+                // Vulkan rounds allocation size up to alignment, so usable space
+                // must be a multiple of alignment
+                VkDeviceSize usable = align_down(m_poolSize - alignedOffset, m_alignment);
 
-                if (available >= singleBytes + minUpToBytes) {
-                    try {
-                        auto singleBuffer           = allocateFromCurrentPool<TSingle>(1);
-                        auto [singleAny, singlePtr] = toUniqueAnyWithPtr(std::move(singleBuffer));
-                        m_current.buffers.emplace_back(std::move(singleAny));
+                // Space needed for 1 single element (what Vulkan will actually require)
+                VkDeviceSize singleReqSize = align_up(sizeof(TSingle), m_alignment);
+                if (usable < singleReqSize)
+                    continue;
 
-                        VkDeviceSize alignedOffsetAfterSingle =
-                            align_up(m_currentPoolUsedBytes, m_alignment);
-                        if (alignedOffsetAfterSingle >= m_poolSize) {
-                            continue;
-                        }
+                // Predict remaining space after single allocation
+                VkDeviceSize afterSingle = usable - singleReqSize;
+                VkDeviceSize upToElems   = std::min(upToSize, afterSingle / sizeof(TUpTo));
+                if (upToElems == 0)
+                    continue;
 
-                        VkDeviceSize remaining = m_poolSize - alignedOffsetAfterSingle;
-                        VkDeviceSize upToElems = std::min(upToSize, remaining / sizeof(TUpTo));
+                try {
+                    auto singleBuffer           = allocateFromCurrentPool<TSingle>(1);
+                    auto [singleAny, singlePtr] = toUniqueAnyWithPtr(std::move(singleBuffer));
+                    m_current.buffers.emplace_back(std::move(singleAny));
 
-                        if (upToElems == 0) {
-                            continue;
-                        }
+                    auto upToBuffer         = allocateFromCurrentPool<TUpTo>(upToElems);
+                    auto [upToAny, upToPtr] = toUniqueAnyWithPtr(std::move(upToBuffer));
+                    m_current.buffers.emplace_back(std::move(upToAny));
 
-                        auto upToBuffer         = allocateFromCurrentPool<TUpTo>(upToElems);
-                        auto [upToAny, upToPtr] = toUniqueAnyWithPtr(std::move(upToBuffer));
-                        m_current.buffers.emplace_back(std::move(upToAny));
-
-                        return std::pair{std::ref(*singlePtr), std::ref(*upToPtr)};
-                    } catch (const ResultException<VK_ERROR_OUT_OF_DEVICE_MEMORY>&) {
-                        // Our prediction was wrong - mark pool as full and try with fresh pool
-                        m_currentPoolUsedBytes = m_poolSize;
-                        if (attempt == 1) {
-                            throw; // Already tried with fresh pool, propagate error
-                        }
-                        // Continue to attempt 1 which will get a fresh pool
+                    return std::pair{std::ref(*singlePtr), std::ref(*upToPtr)};
+                } catch (const ResultException<VK_ERROR_OUT_OF_DEVICE_MEMORY>&) {
+                    // Our prediction was wrong - mark pool as full and try with fresh pool
+                    m_currentPoolUsedBytes = m_poolSize;
+                    if (attempt == 1) {
+                        throw; // Already tried with fresh pool, propagate error
                     }
+                    // Continue to attempt 1 which will get a fresh pool
                 }
             }
         }
@@ -994,10 +1072,13 @@ using DownloadForEachHandle = DownloadFuture<Fn, T, T, Allocator, false>;
 // Note: A CyclingCommandBufferRef version could be created to allow sharing
 // a CommandPool across multiple command buffer instances, following the same
 // pattern as StagingStreamRef/StagingStream.
-template <device_and_commands DeviceAndCommands>
+template <device_and_commands DeviceAndCommands, class Queue = TimelineQueue>
 class CyclingCommandBuffer {
 public:
-    CyclingCommandBuffer(const DeviceAndCommands& device, TimelineQueue& queue)
+    using DeviceAndCommandsType = DeviceAndCommands;
+    using QueueType             = Queue;
+
+    CyclingCommandBuffer(const DeviceAndCommands& device, Queue& queue)
         : m_device(device)
         , m_queue(queue)
         , m_commandPool(device, VkCommandPoolCreateInfo{
@@ -1022,14 +1103,13 @@ public:
     ~CyclingCommandBuffer() { std::ignore = tryWait(); }
 
     // Manual submission interface.
-    SemaphoreValue submit() {
-        std::array<VkSemaphoreSubmitInfo, 0> noWaits{};
-        std::array<VkSemaphoreSubmitInfo, 0> noSignals{};
-        return submit(noWaits, noSignals);
+    SemaphoreValue submit(VkPipelineStageFlags2 timelineSemaphoreStageMask) {
+        return submit({}, {}, timelineSemaphoreStageMask);
     }
 
     // TODO: to be really generic and match the Vulkan API, I think we want a "Submission" object
-    template <typename WaitRange, typename SignalRange>
+    template <class WaitRange   = std::initializer_list<VkSemaphoreSubmitInfo>,
+              class SignalRange = std::initializer_list<VkSemaphoreSubmitInfo>>
     SemaphoreValue submit(WaitRange&& waitInfos, SignalRange&& signalInfos,
                           VkPipelineStageFlags2 timelineSemaphoreStageMask) {
         if (!m_current) {
@@ -1050,6 +1130,10 @@ public:
 
         m_inFlightCmds.push_back({std::move(cmd), result});
         return result;
+    }
+
+    void submitAndWait(VkPipelineStageFlags2 timelineSemaphoreStageMask) {
+        submit(timelineSemaphoreStageMask).wait(m_device.get());
     }
 
     // TODO: maybe limit access via a callback? LLMs love to store the result
@@ -1128,7 +1212,7 @@ private:
     }
 
     std::reference_wrapper<const DeviceAndCommands> m_device;
-    std::reference_wrapper<TimelineQueue>           m_queue;
+    std::reference_wrapper<Queue>                   m_queue;
     CommandPool                                     m_commandPool;
     std::deque<InFlightCmd>                         m_inFlightCmds;
     std::optional<TimelineCommandBuffer>            m_current;
@@ -1155,6 +1239,10 @@ concept staging_stream = requires(T& t, VkDeviceSize size) {
     };
     { t.commandBuffer() };
     { t.submit() };
+    // Non-blocking: process callbacks for batches that are already complete
+    { t.poll() } -> std::same_as<void>;
+    // Blocking: wait for all submitted batches to complete and invoke their callbacks
+    { t.wait() } -> std::same_as<void>;
 };
 
 // Upload to a BufferSpan with a callback
@@ -1168,12 +1256,8 @@ void upload(StreamType& stream, const DeviceAndCommands& device, BufferSpan<T> d
                 VkDeviceSize{0}](VkCommandBuffer cmd, auto& stagingBuf,
                                  VkDeviceSize) mutable -> std::optional<std::function<void(bool)>> {
             fn(userOffset, stagingBuf.map().span());
-            VkBufferCopy copyRegion{
-                .srcOffset = 0,
-                .dstOffset = dst.offset() + userOffset * sizeof(T),
-                .size      = stagingBuf.sizeBytes(),
-            };
-            device.vkCmdCopyBuffer(cmd, stagingBuf, dst.buffer(), 1, &copyRegion);
+            copyBuffer(device, cmd, BufferSpan(stagingBuf),
+                       dst.subspan(userOffset, stagingBuf.size()));
             userOffset += stagingBuf.size();
             return std::nullopt;
         });
@@ -1207,8 +1291,8 @@ void upload(StreamType& stream, const DeviceAndCommands& device, const DstBuffer
                 VkDeviceSize{0}](VkCommandBuffer cmd, auto& stagingBuf,
                                  VkDeviceSize) mutable -> std::optional<std::function<void(bool)>> {
             fn(userOffset, stagingBuf.map().span());
-            copyBuffer<DeviceAndCommands, std::remove_reference_t<decltype(stagingBuf)>, DstBuffer>(
-                device, cmd, stagingBuf, 0, dstBuffer, dstOffset + userOffset, stagingBuf.size());
+            copyBuffer(device, cmd, BufferSpan(stagingBuf),
+                       BufferSpan(dstBuffer).subspan(dstOffset + userOffset, stagingBuf.size()));
             userOffset += stagingBuf.size();
             return std::nullopt;
         });
@@ -1244,8 +1328,9 @@ auto download(StreamType& stream, const DeviceAndCommands& device, const SrcBuff
         [&, userOffset =
                 VkDeviceSize{0}](VkCommandBuffer cmd, auto& stagingBuf,
                                  VkDeviceSize) mutable -> std::optional<std::function<void(bool)>> {
-            copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(stagingBuf)>>(
-                device, cmd, srcBuffer, srcOffset + userOffset, stagingBuf, 0, stagingBuf.size());
+            copyBuffer(device, cmd,
+                       BufferSpan(srcBuffer).subspan(srcOffset + userOffset, stagingBuf.size()),
+                       BufferSpan(stagingBuf));
             auto callback = builder.addSubrange(userOffset, stagingBuf.map());
             userOffset += stagingBuf.size();
             return callback;
@@ -1286,8 +1371,9 @@ auto downloadForEach(StreamType& stream, const DeviceAndCommands& device,
         [&, userOffset =
                 VkDeviceSize{0}](VkCommandBuffer cmd, auto& stagingBuf,
                                  VkDeviceSize) mutable -> std::optional<std::function<void(bool)>> {
-            copyBuffer<DeviceAndCommands, SrcBuffer, std::remove_reference_t<decltype(stagingBuf)>>(
-                device, cmd, srcBuffer, srcOffset + userOffset, stagingBuf, 0, stagingBuf.size());
+            copyBuffer(device, cmd,
+                       BufferSpan(srcBuffer).subspan(srcOffset + userOffset, stagingBuf.size()),
+                       BufferSpan(stagingBuf));
             auto callback = builder.addSubrange(userOffset, stagingBuf.map());
             userOffset += stagingBuf.size();
             return callback;
@@ -1315,12 +1401,8 @@ auto download(StreamType& stream, const DeviceAndCommands& device, BufferSpan<Sr
         [&, userOffset =
                 VkDeviceSize{0}](VkCommandBuffer cmd, auto& stagingBuf,
                                  VkDeviceSize) mutable -> std::optional<std::function<void(bool)>> {
-            VkBufferCopy copyRegion{
-                .srcOffset = src.offset() + userOffset * sizeof(SrcT),
-                .dstOffset = 0,
-                .size      = stagingBuf.sizeBytes(),
-            };
-            device.vkCmdCopyBuffer(cmd, src.buffer(), stagingBuf, 1, &copyRegion);
+            copyBuffer(device, cmd, src.subspan(userOffset, stagingBuf.size()),
+                       BufferSpan(stagingBuf));
             auto callback = builder.addSubrange(userOffset, stagingBuf.map());
             userOffset += stagingBuf.size();
             return callback;
@@ -1359,12 +1441,8 @@ auto downloadForEach(StreamType& stream, const DeviceAndCommands& device, Buffer
         [&, userOffset =
                 VkDeviceSize{0}](VkCommandBuffer cmd, auto& stagingBuf,
                                  VkDeviceSize) mutable -> std::optional<std::function<void(bool)>> {
-            VkBufferCopy copyRegion{
-                .srcOffset = src.offset() + userOffset * sizeof(T),
-                .dstOffset = 0,
-                .size      = stagingBuf.sizeBytes(),
-            };
-            device.vkCmdCopyBuffer(cmd, src.buffer(), stagingBuf, 1, &copyRegion);
+            copyBuffer(device, cmd, src.subspan(userOffset, stagingBuf.size()),
+                       BufferSpan(stagingBuf));
             auto callback = builder.addSubrange(userOffset, stagingBuf.map());
             userOffset += stagingBuf.size();
             return callback;
@@ -1554,14 +1632,15 @@ auto downloadForEach(StreamType& stream, const DeviceAndCommands& device, Device
 // but with trivial destructor and no ownership responsibilities. Multiple
 // StagingStreamRef instances can reference the same underlying resources.
 // Follows the std::atomic_ref pattern.
-template <class StagingAllocator>
+template <class StagingAllocator,
+          class CommandBuffer = CyclingCommandBuffer<typename StagingAllocator::DeviceAndCommands>>
 class StagingStreamRef {
 public:
     using DeviceAndCommands = typename StagingAllocator::DeviceAndCommands;
     using Allocator         = typename StagingAllocator::Allocator;
+    using CommandBufferType = CommandBuffer;
 
-    StagingStreamRef(CyclingCommandBuffer<DeviceAndCommands>& commandBuffer,
-                     StagingAllocator&                        staging)
+    StagingStreamRef(CommandBuffer& commandBuffer, StagingAllocator& staging)
         : m_commandBuffer(commandBuffer)
         , m_staging(staging) {}
 
@@ -1687,7 +1766,16 @@ public:
     // Get total staging memory capacity in bytes
     VkDeviceSize capacity() const { return m_staging.get().capacity(); }
 
-    CyclingCommandBuffer<DeviceAndCommands>& commandBuffer() { return m_commandBuffer.get(); }
+    size_t unsubmittedTransfers() const { return m_staging.get().unsubmittedTransfers(); }
+    size_t pendingTransfers() const { return m_staging.get().pendingTransfers(); }
+
+    // Non-blocking: process callbacks for batches that are already complete
+    void poll() { m_staging.get().poll(); }
+
+    // Blocking: wait for all submitted batches to complete and invoke their callbacks
+    void wait() { m_staging.get().wait(); }
+
+    CommandBuffer& commandBuffer() { return m_commandBuffer.get(); }
 
 private:
     // Helper to allocate from staging or submit and retry once. Guarantees
@@ -1741,9 +1829,9 @@ private:
         }
     }
 
-    std::reference_wrapper<CyclingCommandBuffer<DeviceAndCommands>> m_commandBuffer;
-    std::reference_wrapper<StagingAllocator>                        m_staging;
-    bool m_hasUnsubmittedAllocations = false;
+    std::reference_wrapper<CommandBuffer>    m_commandBuffer;
+    std::reference_wrapper<StagingAllocator> m_staging;
+    bool                                     m_hasUnsubmittedAllocations = false;
 };
 
 // Staging wrapper that also holds a queue and command buffer for
@@ -1823,6 +1911,12 @@ public:
     VkDeviceSize                             size() const { return m_staging.size(); }
     VkDeviceSize                             capacity() const { return m_staging.capacity(); }
     CyclingCommandBuffer<DeviceAndCommands>& commandBuffer() { return m_commandBuffer; }
+
+    // Non-blocking: process callbacks for batches that are already complete
+    void poll() { m_ref.poll(); }
+
+    // Blocking: wait for all submitted batches to complete and invoke their callbacks
+    void wait() { m_ref.wait(); }
 
 private:
     CyclingCommandBuffer<DeviceAndCommands> m_commandBuffer;
