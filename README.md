@@ -37,7 +37,9 @@ vko::Image image((vko::DeviceCommands&)device, (VkDevice)device, VkImageCreateIn
 vko::SurfaceKHR surface = vko::glfw::makeSurface(...);
 ```
 
-For more example code, see [test/src/test.cpp](test/src/test.cpp). It includes ray tracing✨!
+For more example code, see
+[test/src/hello_triangle.cpp](test/src/hello_triangle.cpp). It includes ray
+tracing✨!
 
 The aims are:
 
@@ -53,8 +55,8 @@ The aims are:
    If it's truly needed there is always `std::optional` and `std::unique_ptr`.
    Safety first, RAII by default, that you can override in specific places.
 
-2. Objects are general, have minimal dependencies and don't suck you into an
-   ecosystem
+2. Objects are general, composable, have minimal dependencies and don't suck you
+   into an ecosystem
 
    For example, it's common to pass around an everything "context" object
    containing the VkDevice, maybe an allocator or queues. This is convenient,
@@ -67,8 +69,9 @@ The aims are:
 
    Shortcuts are added but special cases should be easy to override and write
    without shortcuts. This is done by layering utilities on top. Higher level
-   objects can be replaced without losing much. No all-or-nothing monolith
-   objects.
+   objects can be replaced without losing much. E.g. users can compose their own
+   higher level objects from intermediate ones in this library. No
+   all-or-nothing monolith objects.
 
    A difficulty is that function tables from the included loader need to be
    passed around to make vulkan API calls. To facilitate using your own function
@@ -124,9 +127,114 @@ The aims are:
    and
    [vulkan_raii.hpp](https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/vk_raii_ProgrammingGuide.md)
    that do this. They're heavyweight in terms of line count. No really, 15MB+ of
-   pure header files. They also mix in helpers, which are great, but there's no
-   layering to pick just what you want to use. Admittedly, it's nice to type `.`
-   and have your IDE auto-complete methods.
+   pure generated header files. They also mix in helpers, which are great, but
+   there's no layering to pick just what you want to use. Admittedly, it's nice
+   to type `.` and have your IDE auto-complete methods.
+
+## Quick Reference
+
+See [`hello_triangle.cpp`](test/src/hello_triangle.cpp) for usage.
+
+Remember, everything is composable. You can create objects quickly from raw
+vulkan types. You aren't forced into using anything. If it doesn't quite fit
+your use-case, check the implementation and compose your own. Some templated
+utilities may even work with your own types.
+
+```cpp
+// Core types
+vko::VulkanLibrary
+vko::GlobalCommands
+vko::Instance
+vko::Device : public DeviceHandle, public DeviceCommands {};
+
+// Vulkan Handles, owning, constructors simply take *CreateInfo{}
+vko::ImageView view = vko::ImageView(device, VkImageViewCreateInfo{ ... });
+vko::CommandBuffer
+vko::Buffer         // An unbound VkBuffer; use DeviceBuffer instead
+... many more
+
+// Memory Management
+vko::vma::Allocator allocator(globalCommands, instance, physicalDevice, device,
+                              VK_API_VERSION_1_4,
+                              VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT);
+vko::BoundBuffer buffer = vko::BoundBuffer<uint32_t>(device, 1024, VK_BUFFER_USAGE_*, VK_MEMORY_PROPERTY_*, allocator)
+vko::BoundImage
+vko::DeviceBuffer  // A BoundBuffer with .address()
+
+// Queues and Synchronization
+// A timeline vko::Semaphore with a VkQueue
+vko::TimelineQueue queue(device, queueFamilyIndex, queueIndex)
+// A std::promise of a timeline semaphore value
+vko::SubmitPromise submitPromise = queue.submitPromise()
+// A shared future semaphore value - .hasValue(), .ready(), .wait(), .waitUntil(), .waitFor()
+vko::SemaphoreValue nextSubmitSemaphoreValue = submitPromise.futureValue()
+queue.submit(device, waitInfos, commandBuffer, submitPromises, timelineSemaphoreStageMask, extraSignalInfos);
+bool signalled = nextSubmitSemaphoreValue.ready();
+nextSubmitSemaphoreValue.waitFor(device, std::chrono::seconds(123));
+
+// Swapchain, optional GLFW utils
+vko::glfw::physicalDevicePresentationSupport()
+vko::glfw::platformSurfaceExtension()
+vko::glfw::ScopedInit
+vko::glfw::Window window  = vko::glfw::makeWindow(800, 600, "Vulkan Window");
+vko::SurfaceKHR   surface = vko::glfw::makeSurface(instance, platformSupport, window.get());
+vko::Swapchain
+
+// Slang Shaders
+vko::slang::GlobalSession
+vko::slang::Session
+vko::slang::Module
+vko::slang::Composition
+vko::slang::Program
+vko::slang::Code
+
+// GLSLC Shaders
+shaderc::CompileOptions 
+shaderc::Compiler
+options.SetIncluder(std::make_unique<vko::shaderc::FileIncluder>(...));
+vko::shaderc::SpirvBinary binary(compiler, source, shaderc_glsl_compute_shader, shaderPath.string(), "main", options);
+
+// Bindings
+vko::BindingsAndFlags{{VkDescriptorSetLayoutBinding{}}, {0}};
+vko::SingleDescriptorSet
+vko::WriteDescriptorSetBuilder writes;
+writes.push_back<VK_DESCRIPTOR_TYPE_STORAGE_IMAGE>(...)
+device.vkUpdateDescriptorSets(device, writes.writes().size(), writes.writes().data(), 0U, nullptr);
+
+// Ray Tracing
+vko::simple::RayTracingPipeline
+vko::simple::HitGroupHandles
+vko::simple::ShaderBindingTables
+vko::as::SimpleGeometryInput
+vko::as::Input = vko::as::createBlasInput()
+               = vko::as::createTlasInput()
+vko::as::Sizes
+vko::as::AccelerationStructure
+vko::as::cmdBuild()
+
+// NVIDIA DLSS
+vko::ngx::requiredInstanceExtensions()
+vko::ngx::requiredDeviceExtensions()
+vko::ngx::FeatureDiscovery
+vko::ngx::ScopedInit
+vko::ngx::CapabilityParameter
+vko::ngx::OptimalSettings
+
+// Misc utils
+vko::check(VkResult)
+vko::get(device.vkGetDeviceQueue, device, queueFamilyIndex, 0) -> VkQueue
+vko::toVector(instance.vkEnumeratePhysicalDevices, instance) -> std::vector<VkPhysicalDevice>
+vko::chainPNext(nullptr, with<VkPresentIdKHR>(1U, &presentId), [&](auto pNext) { ... })
+vko::imgui::ScopedGlfwInit
+vko::imgui::ScopedVulkanInit
+vko::imgui::Context
+vko::implot::Context
+vko::imgui::window() // ever forget when you call ImGui::End() if ImGui::Begin() returns false?
+vko::cmdDynamicRenderingDefaults()
+vko::cmdImageBarrier(..., ImageAccess src, ImageAccess dst)
+vko::cmdMemoryBarrier(..., MemoryAccess src, MemoryAccess dst)
+vko::setName() // VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+```
 
 ## Building
 

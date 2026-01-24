@@ -43,7 +43,8 @@ public:
         return *this;
     }
     operator VkInstance() const& { return m_handle; }
-    explicit          operator bool() const { return m_handle != VK_NULL_HANDLE; }
+    operator VkInstance() && = delete;
+    bool              engaged() const { return m_handle != VK_NULL_HANDLE; }
     VkInstance        object() const { return m_handle; }
     const VkInstance* ptr() const { return &m_handle; }
 
@@ -105,7 +106,8 @@ public:
         return *this;
     }
     operator VkDevice() const& { return m_handle; }
-    explicit        operator bool() const { return m_handle != VK_NULL_HANDLE; }
+    operator VkDevice() && = delete;
+    bool            engaged() const { return m_handle != VK_NULL_HANDLE; }
     VkDevice        object() const { return m_handle; }
     const VkDevice* ptr() const { return &m_handle; }
 
@@ -135,7 +137,7 @@ struct CreateHandleVector<VkCommandBuffer, PFN_vkAllocateCommandBuffers> {
     using CreateInfo = VkCommandBufferAllocateInfo;
 
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     std::vector<VkCommandBuffer> operator()(const DeviceAndCommands&           vk,
                                             const VkCommandBufferAllocateInfo& createInfo) {
         return (*this)(vk, vk, createInfo);
@@ -174,7 +176,7 @@ using CommandBuffers = HandleVector<VkCommandBuffer, PFN_vkAllocateCommandBuffer
 class CommandBuffer {
 public:
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     CommandBuffer(const DeviceAndCommands& vk, const void* pNext, VkCommandPool commandPool,
                   VkCommandBufferLevel level)
         : CommandBuffer(vk, vk, pNext, commandPool, level) {}
@@ -195,7 +197,7 @@ public:
         }
         return m_commandBuffers[0];
     }
-    // explicit               operator bool() const { return static_cast<bool>(m_commandBuffers); }
+    operator VkCommandBuffer() && = delete;
     const VkCommandBuffer* ptr() const { return &m_commandBuffers[0]; }
     bool                   engaged() const { return !m_commandBuffers.empty(); }
 
@@ -212,7 +214,7 @@ struct CreateHandleVector<VkShaderEXT, PFN_vkCreateShadersEXT> {
     using CreateInfo = std::span<const VkShaderCreateInfoEXT>;
 
     template <device_and_commands DeviceAndCommands>
-    // requires std::constructible_from<VkDevice, DeviceAndCommands>
+    // requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     std::vector<VkShaderEXT> operator()(const DeviceAndCommands&               vk,
                                         std::span<const VkShaderCreateInfoEXT> createInfo) {
         return (*this)(vk, vk, createInfo);
@@ -230,7 +232,7 @@ struct CreateHandleVector<VkShaderEXT, PFN_vkCreateShadersEXT> {
 template <>
 struct DestroyVectorFunc<VkShaderEXT> {
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     DestroyVectorFunc(const DeviceAndCommands&               vk,
                       std::span<const VkShaderCreateInfoEXT> createInfo)
         : DestroyVectorFunc(vk, vk, createInfo) {}
@@ -256,7 +258,7 @@ struct CreateHandleVector<VkPipeline, PFN_vkCreateComputePipelines> {
     using CreateInfo = std::span<const VkComputePipelineCreateInfo>;
 
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     std::vector<VkPipeline> operator()(const DeviceAndCommands&                     vk,
                                        std::span<const VkComputePipelineCreateInfo> createInfo) {
         return (*this)(vk, vk, createInfo);
@@ -280,7 +282,7 @@ struct CreateHandleVector<VkPipeline, PFN_vkCreateGraphicsPipelines> {
     using CreateInfo = std::span<const VkGraphicsPipelineCreateInfo>;
 
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     std::vector<VkPipeline> operator()(const DeviceAndCommands&                      vk,
                                        std::span<const VkGraphicsPipelineCreateInfo> createInfo) {
         return (*this)(vk, vk, createInfo);
@@ -304,7 +306,7 @@ struct CreateHandleVector<VkPipeline, PFN_vkCreateRayTracingPipelinesKHR> {
     using CreateInfo = std::span<const VkRayTracingPipelineCreateInfoKHR>;
 
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     std::vector<VkPipeline>
     operator()(const DeviceAndCommands&                           vk,
                std::span<const VkRayTracingPipelineCreateInfoKHR> createInfo) {
@@ -326,7 +328,7 @@ template <>
 struct DestroyVectorFunc<VkPipeline> {
     // Constructor for ComputePipelines
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     DestroyVectorFunc(const DeviceAndCommands&                     vk,
                       std::span<const VkComputePipelineCreateInfo> createInfo)
         : DestroyVectorFunc(vk, vk, createInfo) {}
@@ -339,7 +341,7 @@ struct DestroyVectorFunc<VkPipeline> {
 
     // Constructor for GraphicsPipelines
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     DestroyVectorFunc(const DeviceAndCommands&                      vk,
                       std::span<const VkGraphicsPipelineCreateInfo> createInfo)
         : DestroyVectorFunc(vk, vk, createInfo) {}
@@ -352,7 +354,7 @@ struct DestroyVectorFunc<VkPipeline> {
 
     // Constructor for RayTracingPipelinesKHR
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     DestroyVectorFunc(const DeviceAndCommands&                           vk,
                       std::span<const VkRayTracingPipelineCreateInfoKHR> createInfo)
         : DestroyVectorFunc(vk, vk, createInfo) {}
@@ -376,7 +378,7 @@ struct DestroyVectorFunc<VkPipeline> {
 class ComputePipeline {
 public:
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     ComputePipeline(const DeviceAndCommands& vk, const VkComputePipelineCreateInfo& createInfo)
         : ComputePipeline(vk, vk, createInfo) {}
     template <device_commands DeviceCommands>
@@ -384,6 +386,7 @@ public:
                     const VkComputePipelineCreateInfo& createInfo)
         : m_pipelines(vk, device, std::span{&createInfo, 1}) {}
     operator VkPipeline() const& { return m_pipelines[0]; }
+    operator VkPipeline() && = delete;
     const VkPipeline* ptr() const { return &m_pipelines[0]; }
 
 private:
@@ -395,7 +398,7 @@ private:
 class GraphicsPipeline {
 public:
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     GraphicsPipeline(const DeviceAndCommands& vk, const VkGraphicsPipelineCreateInfo& createInfo)
         : GraphicsPipeline(vk, vk, createInfo) {}
     template <device_commands DeviceCommands>
@@ -403,6 +406,7 @@ public:
                      const VkGraphicsPipelineCreateInfo& createInfo)
         : m_pipelines(vk, device, std::span{&createInfo, 1}) {}
     operator VkPipeline() const& { return m_pipelines[0]; }
+    operator VkPipeline() && = delete;
     const VkPipeline* ptr() const { return &m_pipelines[0]; }
 
 private:
@@ -414,7 +418,7 @@ private:
 class RayTracingPipelineKHR {
 public:
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     RayTracingPipelineKHR(const DeviceAndCommands&                 vk,
                           const VkRayTracingPipelineCreateInfoKHR& createInfo)
         : RayTracingPipelineKHR(vk, vk, createInfo) {}
@@ -423,6 +427,7 @@ public:
                           const VkRayTracingPipelineCreateInfoKHR& createInfo)
         : m_pipelines(vk, device, std::span{&createInfo, 1}) {}
     operator VkPipeline() const& { return m_pipelines[0]; }
+    operator VkPipeline() && = delete;
     const VkPipeline* ptr() const { return &m_pipelines[0]; }
 
 private:
@@ -438,7 +443,7 @@ struct CreateHandleVector<VkDescriptorSet, PFN_vkAllocateDescriptorSets> {
     using CreateInfo = VkDescriptorSetAllocateInfo;
 
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     std::vector<VkDescriptorSet> operator()(const DeviceAndCommands&           vk,
                                             const VkDescriptorSetAllocateInfo& createInfo) {
         return (*this)(vk, vk, createInfo);
@@ -455,7 +460,7 @@ struct CreateHandleVector<VkDescriptorSet, PFN_vkAllocateDescriptorSets> {
 template <>
 struct DestroyVectorFunc<VkDescriptorSet> {
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     DestroyVectorFunc(const DeviceAndCommands& vk, const VkDescriptorSetAllocateInfo& allocateInfo)
         : DestroyVectorFunc(vk, vk, allocateInfo) {}
 
@@ -476,7 +481,7 @@ struct DestroyVectorFunc<VkDescriptorSet> {
 class DescriptorSet {
 public:
     template <device_and_commands DeviceAndCommands>
-        requires std::constructible_from<VkDevice, DeviceAndCommands>
+        requires std::constructible_from<VkDevice, const DeviceAndCommands&>
     DescriptorSet(const DeviceAndCommands& vk, const void* pNext, VkDescriptorPool descriptorPool,
                   VkDescriptorSetLayout setLayout)
         : DescriptorSet(vk, vk, pNext, descriptorPool, setLayout) {}
@@ -491,6 +496,7 @@ public:
                                           .descriptorSetCount = 1,
                                           .pSetLayouts        = &setLayout}) {}
     operator VkDescriptorSet() const& { return m_descriptorSets[0]; }
+    operator VkDescriptorSet() && = delete;
     const VkDescriptorSet* ptr() const { return &m_descriptorSets[0]; }
 
 private:

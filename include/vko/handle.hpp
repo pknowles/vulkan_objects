@@ -1,7 +1,6 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
-#include <string_view>
 #include <vko/adapters.hpp>
 #include <vko/exceptions.hpp>
 #include <vko/functions.hpp>
@@ -10,10 +9,11 @@
 namespace vko {
 
 template <class T>
-concept instance_and_commands = std::constructible_from<VkInstance, T> && instance_commands<T>;
+concept instance_and_commands =
+    std::constructible_from<VkInstance, const T&> && instance_commands<T>;
 
 template <class T>
-concept device_and_commands = std::constructible_from<VkDevice, T> && device_commands<T>;
+concept device_and_commands = std::constructible_from<VkDevice, const T&> && device_commands<T>;
 
 template <class Handle>
 struct handle_traits;
@@ -61,7 +61,7 @@ public:
     using CreateInfo = typename CreateHandle<T, CreateFunc>::CreateInfo;
 
     template <class ParentAndCommands, class... Args>
-        requires std::constructible_from<Parent, ParentAndCommands>
+        requires std::constructible_from<Parent, const ParentAndCommands&>
     Handle(const ParentAndCommands& vk, const CreateInfo& createInfo, const Args&... args)
         : Handle(vk, static_cast<Parent>(vk), createInfo, args...) {}
 
@@ -85,7 +85,8 @@ public:
         return *this;
     }
     operator T() const& { return m_handle; }
-    explicit operator bool() const& { return m_handle != VK_NULL_HANDLE; }
+    operator T() && = delete;
+    bool     engaged() const { return m_handle != VK_NULL_HANDLE; }
     T        object() const& { return m_handle; } // useful to be explicit for type deduction
     const T* ptr() const& { return &m_handle; }
 
@@ -124,7 +125,7 @@ public:
         return *this;
     }
     operator T() const& { return m_handle; } // l-value only for safety
-    // explicit operator bool() const & { return m_handle != VK_NULL_HANDLE; }
+    operator T() && = delete;
     T        object() const { return m_handle; }                    // static_cast<T>() shortcut
     const T* ptr() const { return &m_handle; }                      // direct to vulkan pointer
     bool     engaged() const { return m_handle != VK_NULL_HANDLE; } // for moved-from objects
@@ -151,7 +152,7 @@ public:
     using CreateInfo = typename CreateHandleVector<T, CreateFunc>::CreateInfo;
 
     template <class ParentAndCommands, class... Args>
-        requires std::constructible_from<Parent, ParentAndCommands>
+        requires std::constructible_from<Parent, const ParentAndCommands&>
     HandleVector(const ParentAndCommands& vk, CreateInfo&& createInfo, const Args&... args)
         : HandleVector(vk, static_cast<Parent>(vk), createInfo, args...) {}
 
@@ -170,13 +171,12 @@ public:
         m_handles = std::move(other.m_handles);
         return *this;
     }
-    auto&    operator[](size_t i) const { return m_handles[i]; }
-    auto     begin() const { return m_handles.begin(); }
-    auto     end() const { return m_handles.end(); }
-    auto     data() const { return m_handles.data(); }
-    auto     size() const { return m_handles.size(); }
-    auto     empty() const { return m_handles.empty(); }
-    explicit operator bool() const { return !empty(); }
+    auto& operator[](size_t i) const { return m_handles[i]; }
+    auto  begin() const { return m_handles.begin(); }
+    auto  end() const { return m_handles.end(); }
+    auto  data() const { return m_handles.data(); }
+    auto  size() const { return m_handles.size(); }
+    auto  empty() const { return m_handles.empty(); }
 
 private:
     void destroy() {

@@ -51,6 +51,7 @@ public:
         check(vk.vkBeginCommandBuffer(m_commandBuffer, &beginInfo));
     }
     operator VkCommandBuffer() const& { return m_commandBuffer; }
+    operator VkCommandBuffer() && = delete;
     // explicit operator bool() const & { return static_cast<bool>(m_commandBuffer); }
     bool            engaged() const { return m_commandBuffer.engaged(); }
     CommandBuffer&& end() {

@@ -2065,7 +2065,8 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_ActualDataTransfer) {
     vko::copyBuffer(ctx->device, cmd, *uploadStaging, 0, deviceBuffer, 0, numElements);
 
     auto uploadSemaphore = queue.nextSubmitSemaphore();
-    queue.submit(ctx->device, {}, cmd.end(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    auto uploadCmd       = cmd.end();
+    queue.submit(ctx->device, {}, uploadCmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     staging.endBatch(uploadSemaphore);
     uploadSemaphore.wait(ctx->device);
     staging.wait();
@@ -2078,7 +2079,8 @@ TEST_F(UnitTestFixture, RecyclingStagingPool_ActualDataTransfer) {
     vko::copyBuffer(ctx->device, cmd, deviceBuffer, 0, *downloadStaging, 0, numElements);
 
     auto downloadSemaphore = queue.nextSubmitSemaphore();
-    queue.submit(ctx->device, {}, cmd.end(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    auto downloadCmd       = cmd.end();
+    queue.submit(ctx->device, {}, downloadCmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     staging.endBatch(downloadSemaphore);
     downloadSemaphore.wait(ctx->device);
 
@@ -2305,7 +2307,8 @@ TEST_F(UnitTestFixture, StagingStream_QueueFamilyTransition) {
                                      &releaseBarrier, 0, nullptr);
 
     auto releaseSemaphore = queue1.nextSubmitSemaphore();
-    queue1.submit(ctx->device, {}, cmd1.end(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    auto releaseCmd       = cmd1.end();
+    queue1.submit(ctx->device, {}, releaseCmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     releaseSemaphore.wait(ctx->device);
 
     // Acquire ownership on queue2
@@ -2340,7 +2343,8 @@ TEST_F(UnitTestFixture, StagingStream_QueueFamilyTransition) {
                                      &acquireBarrier, 0, nullptr);
 
     auto acquireSemaphore = queue2.nextSubmitSemaphore();
-    queue2.submit(ctx->device, {}, cmd2.end(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+    auto acquireCmd       = cmd2.end();
+    queue2.submit(ctx->device, {}, acquireCmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     acquireSemaphore.wait(ctx->device);
 
     // Download using queue2

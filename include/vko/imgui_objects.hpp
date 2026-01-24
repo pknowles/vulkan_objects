@@ -141,7 +141,8 @@ public:
             m_end();
     }
 
-    explicit operator bool() const { return m_active; }
+    explicit operator bool() const& { return m_active; }
+    explicit operator bool() && = delete;
 
     template <class Fn>
     void active(Fn&& fn) {
@@ -507,6 +508,7 @@ public:
     }
 
     operator VkDescriptorSet() const& { return m_descriptor; }
+    operator VkDescriptorSet() && = delete;
     operator ImTextureID() const {
         return reinterpret_cast<ImTextureID>(m_descriptor);
     } // for imgui compatibility

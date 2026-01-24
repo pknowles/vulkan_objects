@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 #include <test_context_fixtures.hpp>
+#include <vector>
 #include <vko/query_pool.hpp>
 #include <vko/timeline_queue.hpp>
 
@@ -50,7 +51,7 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_TimestampProfiling) {
                                queue.nextSubmitSemaphore());
 
     // End command buffer and submit
-    VkCommandBuffer cmdBuffer = recording.end();
+    vko::CommandBuffer cmdBuffer = recording.end();
     queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
@@ -114,7 +115,7 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_OcclusionQuery) {
     static_assert(std::same_as<decltype(future)::ResultType, uint64_t>);
 
     // Submit and mark queries recyclable
-    VkCommandBuffer cmdBuffer = recording.end();
+    vko::CommandBuffer cmdBuffer = recording.end();
     queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     queries.endBatch(future.semaphore());
@@ -157,6 +158,8 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_MultiFrameRecycling) {
     size_t initialPoolCount = queries.poolCount();
 
     // Simulate 3 frames
+    std::vector<vko::CommandBuffer> commandBuffers;
+    commandBuffers.reserve(3);
     for (int frame = 0; frame < 3; ++frame) {
         auto            recording = ctx->beginRecording(commandPool);
         VkCommandBuffer cmd       = recording;
@@ -170,9 +173,9 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_MultiFrameRecycling) {
         vko::cmdWriteTimestamp(ctx->device, cmd, q2, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
                                queue.nextSubmitSemaphore());
 
-        VkCommandBuffer cmdBuffer = recording.end();
-        queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
-                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+        commandBuffers.push_back(recording.end());
+        queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{},
+                     commandBuffers.back(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
         queries.endBatch(f1.semaphore());
     }
@@ -222,7 +225,7 @@ TEST_F(UnitTestFixture, RecyclingQueryPool_PoolExpansion) {
     EXPECT_LE(queries.poolCount(), 3u); // Should not exceed maxPools
 
     // Cleanup
-    VkCommandBuffer cmdBuffer = recording.end();
+    vko::CommandBuffer cmdBuffer = recording.end();
     queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     queries.endBatch(timestampFuture.semaphore());

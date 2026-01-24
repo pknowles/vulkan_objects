@@ -3,6 +3,7 @@
 #include <chrono>
 #include <gtest/gtest.h>
 #include <test_context_fixtures.hpp>
+#include <vector>
 #include <vko/timeline_queue.hpp>
 
 TEST_F(UnitTestFixture, TimelineQueue_BasicConstruction) {
@@ -33,7 +34,7 @@ TEST_F(UnitTestFixture, TimelineQueue_SimpleSubmit) {
 
     // Test the raw submit API - record and end command buffer manually
     vko::simple::RecordingCommandBuffer recording = ctx->beginRecording(commandPool);
-    VkCommandBuffer                     cmdBuffer = recording.end();
+    vko::CommandBuffer                  cmdBuffer = recording.end();
 
     // Submit using the queue's .submit() method
     queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
@@ -48,11 +49,13 @@ TEST_F(UnitTestFixture, TimelineQueue_MultipleSubmissions) {
     vko::CommandPool         commandPool = ctx->createCommandPool();
 
     // Submit multiple command buffers
-    constexpr int numSubmissions = 5;
+    constexpr int                   numSubmissions = 5;
+    std::vector<vko::CommandBuffer> commandBuffers;
+    commandBuffers.reserve(numSubmissions);
     for (int i = 0; i < numSubmissions; ++i) {
-        VkCommandBuffer cmdBuffer = ctx->beginRecording(commandPool).end();
-        queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
-                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+        commandBuffers.push_back(ctx->beginRecording(commandPool).end());
+        queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{},
+                     commandBuffers.back(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     }
 
     // Wait for all to complete
@@ -75,7 +78,7 @@ TEST_F(UnitTestFixture, SemaphoreValue_WaitOnSubmission) {
     EXPECT_FALSE(nextValue.hasValue()); // Not submitted yet
 
     // Submit a command buffer
-    VkCommandBuffer cmdBuffer = ctx->beginRecording(commandPool).end();
+    vko::CommandBuffer cmdBuffer = ctx->beginRecording(commandPool).end();
     queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
@@ -94,7 +97,7 @@ TEST_F(UnitTestFixture, SemaphoreValue_TryWait) {
     vko::CommandPool         commandPool = ctx->createCommandPool();
 
     vko::SemaphoreValue nextValue = queue.nextSubmitSemaphore();
-    VkCommandBuffer     cmdBuffer = ctx->beginRecording(commandPool).end();
+    vko::CommandBuffer  cmdBuffer = ctx->beginRecording(commandPool).end();
     queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
@@ -107,7 +110,7 @@ TEST_F(UnitTestFixture, SemaphoreValue_WaitFor) {
     vko::CommandPool         commandPool = ctx->createCommandPool();
 
     vko::SemaphoreValue nextValue = queue.nextSubmitSemaphore();
-    VkCommandBuffer     cmdBuffer = ctx->beginRecording(commandPool).end();
+    vko::CommandBuffer  cmdBuffer = ctx->beginRecording(commandPool).end();
     queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
@@ -120,7 +123,7 @@ TEST_F(UnitTestFixture, SemaphoreValue_WaitUntil) {
     vko::CommandPool         commandPool = ctx->createCommandPool();
 
     vko::SemaphoreValue nextValue = queue.nextSubmitSemaphore();
-    VkCommandBuffer     cmdBuffer = ctx->beginRecording(commandPool).end();
+    vko::CommandBuffer  cmdBuffer = ctx->beginRecording(commandPool).end();
     queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
@@ -134,7 +137,7 @@ TEST_F(UnitTestFixture, SemaphoreValue_WaitSemaphoreInfo) {
     vko::CommandPool         commandPool = ctx->createCommandPool();
 
     vko::SemaphoreValue nextValue = queue.nextSubmitSemaphore();
-    VkCommandBuffer     cmdBuffer = ctx->beginRecording(commandPool).end();
+    vko::CommandBuffer  cmdBuffer = ctx->beginRecording(commandPool).end();
     queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer,
                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
@@ -157,7 +160,7 @@ TEST_F(UnitTestFixture, TimelineQueue_SubmitWithDependency) {
 
     // First submission
     vko::SemaphoreValue firstValue = queue.nextSubmitSemaphore();
-    VkCommandBuffer     cmdBuffer1 = ctx->beginRecording(commandPool).end();
+    vko::CommandBuffer  cmdBuffer1 = ctx->beginRecording(commandPool).end();
     queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{}, cmdBuffer1,
                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
@@ -165,7 +168,7 @@ TEST_F(UnitTestFixture, TimelineQueue_SubmitWithDependency) {
     VkSemaphoreSubmitInfo waitInfo =
         firstValue.waitSemaphoreInfo(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
     vko::SemaphoreValue secondValue = queue.nextSubmitSemaphore();
-    VkCommandBuffer     cmdBuffer2  = ctx->beginRecording(commandPool).end();
+    vko::CommandBuffer  cmdBuffer2  = ctx->beginRecording(commandPool).end();
     queue.submit(ctx->device, std::initializer_list<VkSemaphoreSubmitInfo>{waitInfo}, cmdBuffer2,
                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
