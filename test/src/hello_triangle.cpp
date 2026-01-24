@@ -16,13 +16,16 @@
 #include <vko/command_recording.hpp>
 #include <vko/dynamic_library.hpp>
 #include <vko/functions.hpp>
-#include <vko/glfw_objects.hpp>
 #include <vko/handles.hpp>
 #include <vko/ray_tracing.hpp>
 #include <vko/shortcuts.hpp>
 #include <vko/swapchain.hpp>
 #include <vko/timeline_queue.hpp>
 #include <vulkan/vulkan_core.h>
+
+#if VULKAN_OBJECTS_HAS_GLFW
+    #include <vko/glfw_objects.hpp>
+#endif
 
 #if VULKAN_OBJECTS_HAS_SLANG
     #include <vko/slang_compiler.hpp>
@@ -83,7 +86,7 @@ TEST(Integration, InitHappyPath) {
     vko::CommandPool commandPool(device, commandPoolCreateInfo);
 }
 
-#if VULKAN_OBJECTS_HAS_SLANG
+#if VULKAN_OBJECTS_HAS_SLANG && VULKAN_OBJECTS_HAS_GLFW
 TEST(Integration, WindowSystemIntegration) {
     vko::VulkanLibrary  library;
     vko::GlobalCommands globalCommands(library.loader());

@@ -17,7 +17,6 @@ add_custom_target(vulkan_objects_generated)
 file(GLOB vulkan_objects_headers include/vko/*.hpp)
 add_library(vulkan_objects
   src/functions.cpp
-  src/glfw_xcb_hack.cpp
   ${generated_directory}/src/gen_functions.cpp
   ${generated_sources} # Just so these appear in visual studio
   ${vulkan_objects_headers} # Same
@@ -35,10 +34,12 @@ set(VULKAN_OBJECTS_SHADERC_TAG "v2025.5" CACHE STRING "GIT tag from https://gith
 set(VULKAN_OBJECTS_SPIRV_HEADERS_TAG "vulkan-sdk-1.4.335.0" CACHE STRING "GIT tag from https://github.com/KhronosGroup/SPIRV-Headers/tags")
 set(VULKAN_OBJECTS_SPIRV_TOOLS_TAG "v2025.4" CACHE STRING "GIT tag from https://github.com/KhronosGroup/SPIRV-Tools/tags")
 set(VULKAN_OBJECTS_GLSLANG_TAG "16.1.0" CACHE STRING "GIT tag from https://github.com/KhronosGroup/glslang/tags")
+set(VULKAN_OBJECTS_GLFW_TAG "3.4" CACHE STRING "GIT tag from https://github.com/glfw/glfw/tags")
 option(VULKAN_OBJECTS_FETCH_VVL "Include Vulkan Validation Layers with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_VMA "Include Vulkan Memory Allocator with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_SLANG "Include Slang compiler with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_SHADERC "Include Shaderc compiler with FetchContent()" OFF)
+option(VULKAN_OBJECTS_FETCH_GLFW "Include GLFW for XCB workaround library (vulkan_objects_glfw)" OFF)
 option(VULKAN_OBJECTS_SHADERC_BUILD_EXECUTABLES "Build glslc command-line compiler (for offline shader compilation)" OFF)
 
 if(VULKAN_OBJECTS_SPEC_OVERRIDE)
@@ -268,6 +269,32 @@ if(VULKAN_OBJECTS_FETCH_SHADERC)
 
   # Statically linked shaderc_combined
   target_link_libraries(vulkan_objects PUBLIC shaderc_combined)
+endif()
+
+if(VULKAN_OBJECTS_FETCH_GLFW)
+  # GLFW for window/surface creation and XCB workaround
+  include(FetchContent)
+  FetchContent_Declare(
+    glfw
+    GIT_REPOSITORY https://github.com/glfw/glfw.git
+    GIT_TAG ${VULKAN_OBJECTS_GLFW_TAG}
+    GIT_SHALLOW TRUE
+  )
+  set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(glfw)
+endif()
+
+# GLFW XCB workaround library - see https://github.com/glfw/glfw/issues/1061
+# GLFW does not expose native XCB handles, only X11/Xlib. This library provides
+# glfwGetXCBConnection/Visual/Window functions. Must be compiled separately to
+# avoid X11 macro pollution (Success, None, etc.) leaking into other headers.
+# Can be removed once GLFW adds native XCB support.
+if((TARGET glfw) AND XCB_FOUND)
+  add_library(vulkan_objects_glfw STATIC src/glfw_xcb_hack.cpp)
+  target_link_libraries(vulkan_objects_glfw PUBLIC vulkan_objects glfw)
+  target_link_libraries(vulkan_objects_glfw PUBLIC ${XCB_LIBRARIES} ${X11_LIBRARIES} ${X11_XCB_LIBRARIES})
 endif()
 
 option(VULKAN_OBJECTS_TESTING_BUILD_ALL "Require all test dependencies (VVL, VMA, etc) to build tests" ON)

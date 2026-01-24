@@ -9,4 +9,5 @@ IndentPPDirectives: BeforeHash
 IndentWidth: 4
 PackConstructorInitializers: Never
 PointerAlignment: Left
+ReflowComments: false
 SortIncludes: true

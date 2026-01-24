@@ -5,9 +5,13 @@
 #include <array>
 #include <string_view>
 #include <vko/adapters.hpp>
-#include <vko/glfw_objects.hpp>
 #include <vko/handles.hpp>
 #include <vulkan/vulkan_core.h>
+
+#if VULKAN_OBJECTS_HAS_GLFW
+    #include <vko/glfw_objects.hpp>
+#endif
+
 // Dangerous internal pointers encapsulated in a non-copyable non-movable
 // app-specific struct
 struct TestInstanceCreateInfo {
@@ -179,6 +183,8 @@ inline bool physicalDeviceSuitable(const vko::Instance& instance, VkPhysicalDevi
     return true;
 };
 
+#if VULKAN_OBJECTS_HAS_GLFW
+
 struct WindowInstanceCreateInfo {
     std::vector<const char*>     requiredLayers;
     std::array<const char*, 3>   requiredExtensions;
@@ -296,3 +302,5 @@ struct RayTracingDeviceCreateInfo {
     RayTracingDeviceCreateInfo(const RayTracingDeviceCreateInfo& other)           = delete;
     RayTracingDeviceCreateInfo operator=(const RayTracingDeviceCreateInfo& other) = delete;
 };
+
+#endif // VULKAN_OBJECTS_HAS_GLFW

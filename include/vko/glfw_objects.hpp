@@ -44,9 +44,12 @@ static constexpr auto None = 0L;
 namespace vko {
 namespace glfw {
 
-// Workaround because GLFW/glfw3native.h does not provide xcb handles
-// NOTE: these are defined in vulkan_objects and are NOT currently part of
-// GLFW.. but IMO they should be. See: https://github.com/glfw/glfw/issues/1061
+// GLFW XCB Workaround Functions
+// GLFW does not provide native XCB getters (only X11/Xlib). These functions are
+// implemented in vulkan_objects_glfw library (src/glfw_xcb_hack.cpp). To use:
+// - Link against vulkan_objects_glfw (enable with VULKAN_OBJECTS_FETCH_GLFW=ON)
+// - Or compile src/glfw_xcb_hack.cpp separately in your project
+// See: https://github.com/glfw/glfw/issues/1061
 #if defined(VK_USE_PLATFORM_XCB_KHR)
 xcb_visualid_t    glfwGetXCBVisualID();
 xcb_connection_t* glfwGetXCBConnection();

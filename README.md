@@ -145,17 +145,28 @@ Admittedly this is not accurate, doesn't quite sit right with me and may change.
 | `VULKAN_OBJECTS_FETCH_VMA`                 | `ON` fetches [Vulkan Memory Allocator][vma] source         |
 | `VULKAN_OBJECTS_FETCH_SLANG`               | `ON` fetches [Slang Compiler][slang] source                |
 | `VULKAN_OBJECTS_FETCH_SHADERC`             | `ON` fetches [Shaderc Compiler][shaderc] source            |
+| `VULKAN_OBJECTS_FETCH_GLFW`                | `ON` fetches [GLFW][glfw] and builds XCB workaround library|
 | `VULKAN_OBJECTS_SHADERC_BUILD_EXECUTABLES` | `ON` builds `glslc` executable (for offline compilation)   |
 | `VULKAN_OBJECTS_SPEC_OVERRIDE`             | `/path/to/vk.xml` (ignores `_SPEC_TAG`)                    |
 | `VULKAN_OBJECTS_SPEC_TAG`                  | `<default version>` if not `_OVERRIDE`                     |
 | `VULKAN_OBJECTS_VMA_TAG`                   | `<default version>` if `_FETCH_VMA`                        |
 | `VULKAN_OBJECTS_SLANG_TAG`                 | `<default version>` if `_FETCH_SLANG`                      |
 | `VULKAN_OBJECTS_SHADERC_TAG`               | `<default version>` if `_FETCH_SHADERC`                    |
+| `VULKAN_OBJECTS_GLFW_TAG`                  | `<default version>` if `_FETCH_GLFW`                       |
 
 [vvl]: https://github.com/KhronosGroup/Vulkan-ValidationLayers
 [vma]: https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
 [slang]: https://github.com/shader-slang/slang
 [shaderc]: https://github.com/google/shaderc
+[glfw]: https://github.com/glfw/glfw
+
+**Note on GLFW XCB support:** GLFW does not expose native XCB handles (only
+X11/Xlib), which causes X11 macro pollution (Success, None, etc.). The
+`vulkan_objects_glfw` library provides `glfwGetXCBConnection/Visual/Window`
+workarounds. This is compiled separately to isolate the X11 headers. See
+[glfw/glfw#1061](https://github.com/glfw/glfw/issues/1061). External users can
+either enable `VULKAN_OBJECTS_FETCH_GLFW` or otherwise provide a `glfw` target
+themselves (preferred).
 
 ## Issues
 

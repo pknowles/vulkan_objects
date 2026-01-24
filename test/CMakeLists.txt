@@ -14,14 +14,6 @@ if(NOT GTest_FOUND)
   FetchContent_MakeAvailable(googletest)
 endif()
 
-FetchContent_Declare(
-    glfw
-    GIT_REPOSITORY https://github.com/glfw/glfw.git
-    GIT_TAG 3.4
-    GIT_SHALLOW TRUE
-)
-FetchContent_MakeAvailable(glfw)
-
 # Download https://github.com/scottt/debugbreak
 # TODO: just inline?
 set(DEBUGBREAK_DIR "${CMAKE_BINARY_DIR}/debugbreak")
@@ -50,12 +42,23 @@ add_executable(vulkan_objects_tests
 #   CXX_CLANG_TIDY "clang-tidy;--checks=bugprone-use-after-move,bugprone-move-forwarding-reference,performance-move-const-arg,performance-unnecessary-value-param"
 # )
 
-target_link_libraries(vulkan_objects_tests vulkan_objects glfw gtest_main)
+target_link_libraries(vulkan_objects_tests vulkan_objects gtest_main)
 target_include_directories(vulkan_objects_tests PRIVATE "${DEBUGBREAK_DIR}" src)
 
 # TODO: vulkan_objects provides these dependencies. could pick them up
 # separately
 # TODO: default to fatal errors for disabled tests!
+if(TARGET vulkan_objects_glfw)
+  target_link_libraries(vulkan_objects_tests vulkan_objects_glfw)
+  target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_GLFW=1)
+else()
+  target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_GLFW=0)
+  if(TARGET glfw)
+    message(WARNING "GLFW found but vulkan_objects_glfw (required for xcb/linux X11 support) is not available - is it still needed? window tests will not be built")
+  else()
+    message(WARNING "vulkan_objects_glfw not built - vulkan_objects_tests will not build tests that create a window")
+  endif()
+endif()
 if(TARGET slang)
   target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_SLANG=1)
 else()
