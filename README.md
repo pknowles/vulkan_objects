@@ -184,9 +184,9 @@ vko::DeviceBuffer<int> buf = vko::upload(stream, device, allocator, std::array<i
 stream.submit();
 
 // Queries and Profiling, see query_pool.hpp
-vko::RecyclingQueryPool queries;
+vko::QueryStream queryStream;
 vko::ScopedQuery // RAII begin/end query
-auto future = vko::cmdWriteTimestamp(cmd, queries.allocate())
+auto future = vko::cmdWriteTimestamp(device, cmd, queryStream, stage)
 queries.endBatch(submitPromise.futureValue()) // recycling is blocked without
 queue.submit(submitPromise, cmd)
 uint64_t timestamp = future.get();
