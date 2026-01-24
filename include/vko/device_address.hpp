@@ -37,7 +37,7 @@ public:
         requires std::same_as<container_view_t<Buffer>, T> && requires(const Buffer& b) {
             { b.address() } -> std::convertible_to<VkDeviceAddress>;
         }
-    DeviceAddress(const Buffer& buffer)
+    explicit DeviceAddress(const Buffer& buffer)
         : m_address(buffer.address()) {}
 
     template <buffer Buffer, class DeviceAndCommands>
@@ -45,7 +45,7 @@ public:
                  requires(const Buffer& b, const DeviceAndCommands& d) {
                      { b.address(d) } -> std::convertible_to<VkDeviceAddress>;
                  }
-    DeviceAddress(const Buffer& buffer, const DeviceAndCommands& device)
+    explicit DeviceAddress(const Buffer& buffer, const DeviceAndCommands& device)
         : m_address(buffer.address(device)) {}
 
     // Non-type-safe constructor from raw address
@@ -122,7 +122,7 @@ public:
 
     template <buffer Buffer>
         requires std::same_as<container_view_t<Buffer>, T>
-    DeviceSpan(const Buffer& buffer)
+    explicit DeviceSpan(const Buffer& buffer)
         : m_address(buffer)
         , m_size(buffer.size()) {}
 
@@ -133,7 +133,7 @@ public:
             typename Buffer::ValueType;
             requires std::same_as<typename Buffer::ValueType, T>;
         }
-    DeviceSpan(const Buffer& buffer, const DeviceAndCommands& device)
+    explicit DeviceSpan(const Buffer& buffer, const DeviceAndCommands& device)
         : m_address(buffer, device)
         , m_size(buffer.size()) {}
 

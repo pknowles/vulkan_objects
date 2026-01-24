@@ -756,9 +756,10 @@ TEST_F(UnitTestFixture, StagingStream_UploadChunked) {
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
     // Upload with chunked fill - callback provides offset for each chunk
-    streaming.upload(gpuBuffer, 0, 10000, [](VkDeviceSize offset, auto span) {
-        std::iota(span.begin(), span.end(), static_cast<int>(offset));
-    });
+    vko::upload(streaming, ctx->device, vko::BufferSpan(gpuBuffer),
+                [](VkDeviceSize offset, auto span) {
+                    std::iota(span.begin(), span.end(), static_cast<int>(offset));
+                });
 
     streaming.submit(); // Ensure upload completes
     ctx->device.vkQueueWaitIdle(queue);
@@ -783,11 +784,12 @@ TEST_F(UnitTestFixture, StagingStream_UploadLarge) {
         VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
     // Upload should handle multiple chunks automatically
-    streaming.upload(gpuBuffer, 0, 10000, [](VkDeviceSize offset, auto span) {
-        for (size_t i = 0; i < span.size(); ++i) {
-            span[i] = static_cast<float>(offset + i) * 2.0f;
-        }
-    });
+    vko::upload(streaming, ctx->device, vko::BufferSpan(gpuBuffer),
+                [](VkDeviceSize offset, auto span) {
+                    for (size_t i = 0; i < span.size(); ++i) {
+                        span[i] = static_cast<float>(offset + i) * 2.0f;
+                    }
+                });
 
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
@@ -808,7 +810,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadVoid) {
         ctx->device, 1000, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
-    vko::upload(streaming, ctx->device, gpuBuffer, VkDeviceSize{0}, VkDeviceSize{1000},
+    vko::upload(streaming, ctx->device, vko::BufferSpan(gpuBuffer),
                 [](VkDeviceSize offset, auto span) {
                     std::iota(span.begin(), span.end(), static_cast<int>(offset));
                 });
@@ -819,15 +821,14 @@ TEST_F(UnitTestFixture, StagingStream_DownloadVoid) {
     int sum   = 0;
     int count = 0;
 
-    auto handle =
-        vko::downloadForEach(streaming, ctx->device, gpuBuffer, VkDeviceSize{0}, VkDeviceSize{1000},
-                             [&sum, &count](VkDeviceSize, auto mapped) {
-                                 // Process chunk without storing
-                                 for (auto val : mapped) {
-                                     sum += val;
-                                     count++;
-                                 }
-                             });
+    auto handle = vko::downloadForEach(streaming, ctx->device, vko::BufferSpan(gpuBuffer),
+                                       [&sum, &count](VkDeviceSize, auto mapped) {
+                                           // Process chunk without storing
+                                           for (auto val : mapped) {
+                                               sum += val;
+                                               count++;
+                                           }
+                                       });
 
     streaming.submit();
     handle.wait(ctx->device); // Wait and process all chunks
@@ -852,17 +853,18 @@ TEST_F(UnitTestFixture, StagingStream_DownloadWithTransform) {
         ctx->device, 5000, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
-    streaming.upload(gpuBuffer, 0, 5000, [](VkDeviceSize offset, auto span) {
-        for (size_t i = 0; i < span.size(); ++i) {
-            span[i] = static_cast<float>(offset + i) * 2.0f;
-        }
-    });
+    vko::upload(streaming, ctx->device, vko::BufferSpan(gpuBuffer),
+                [](VkDeviceSize offset, auto span) {
+                    for (size_t i = 0; i < span.size(); ++i) {
+                        span[i] = static_cast<float>(offset + i) * 2.0f;
+                    }
+                });
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
 
     // Download with transform using free function
     auto downloadFuture =
-        vko::download<float>(streaming, ctx->device, gpuBuffer, VkDeviceSize{0}, VkDeviceSize{5000},
+        vko::download<float>(streaming, ctx->device, vko::BufferSpan(gpuBuffer),
                              [](VkDeviceSize, auto input, auto output) {
                                  std::ranges::copy(input, output.begin()); // Identity transform
                              });
@@ -892,7 +894,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadSimple) {
         ctx->device, 2000, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
-    vko::upload(streaming, ctx->device, gpuBuffer, VkDeviceSize{0}, VkDeviceSize{2000},
+    vko::upload(streaming, ctx->device, vko::BufferSpan(gpuBuffer),
                 [](VkDeviceSize offset, auto span) {
                     for (size_t i = 0; i < span.size(); ++i) {
                         span[i] = static_cast<int>(offset + i) * 10;
@@ -902,8 +904,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadSimple) {
     ctx->device.vkQueueWaitIdle(queue);
 
     // Use simple download() free function - no transform lambda needed
-    auto downloadFuture =
-        vko::download(streaming, ctx->device, gpuBuffer, VkDeviceSize{0}, VkDeviceSize{2000});
+    auto downloadFuture = vko::download(streaming, ctx->device, vko::BufferSpan(gpuBuffer));
     streaming.submit();
 
     // Wait and get result
@@ -934,9 +935,10 @@ TEST_F(UnitTestFixture, StagingStream_MultipleBatchedTransfers) {
 
     // Upload to all buffers - should all fit in one pool and batch together
     for (size_t i = 0; i < buffers.size(); ++i) {
-        streaming.upload(buffers[i], 0, 100, [i](VkDeviceSize, auto span) {
-            std::fill(span.begin(), span.end(), static_cast<int>(i * 1000));
-        });
+        vko::upload(streaming, ctx->device, vko::BufferSpan(buffers[i]),
+                    [i](VkDeviceSize, auto span) {
+                        std::fill(span.begin(), span.end(), static_cast<int>(i * 1000));
+                    });
     }
 
     // Single submit should handle all transfers batched together
@@ -964,11 +966,12 @@ TEST_F(UnitTestFixture, StagingStream_GiantTransferImplicitCycling) {
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
     // Upload should automatically cycle pools, submit, and wait as needed
-    streaming.upload(gpuBuffer, 0, largeSize, [](VkDeviceSize offset, auto span) {
-        for (size_t i = 0; i < span.size(); ++i) {
-            span[i] = static_cast<float>(offset + i);
-        }
-    });
+    vko::upload(streaming, ctx->device, vko::BufferSpan(gpuBuffer),
+                [](VkDeviceSize offset, auto span) {
+                    for (size_t i = 0; i < span.size(); ++i) {
+                        span[i] = static_cast<float>(offset + i);
+                    }
+                });
 
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
@@ -991,8 +994,8 @@ TEST_F(UnitTestFixture, StagingStream_GiantTransferImplicitCycling) {
     size_t                   valueErrors     = 0;
     size_t                   duplicateVisits = 0;
 
-    auto handle =
-        streaming.downloadForEach(gpuBuffer, 0, largeSize, [&](VkDeviceSize offset, auto mapped) {
+    auto handle = vko::downloadForEach(
+        streaming, ctx->device, vko::BufferSpan(gpuBuffer), [&](VkDeviceSize offset, auto mapped) {
             size_t chunkId = chunks.size();
             chunks.push_back({chunkId, (size_t)offset, mapped.size()});
 
@@ -1078,15 +1081,16 @@ TEST_F(UnitTestFixture, StagingStream_NonBlockingDownloadWithPoolCycling) {
         ctx->device, 1000, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
-    streaming.upload(buffer1, 0, 1000, [](VkDeviceSize offset, auto span) {
-        std::iota(span.begin(), span.end(), static_cast<int>(offset));
-    });
+    vko::upload(streaming, ctx->device, vko::BufferSpan(buffer1).subspan(0, 1000),
+                [](VkDeviceSize offset, auto span) {
+                    std::iota(span.begin(), span.end(), static_cast<int>(offset));
+                });
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
 
     // Start small download but DON'T wait on it yet
-    auto downloadFuture = streaming.downloadTransform<int>(
-        buffer1, 0, 100,
+    auto downloadFuture = vko::download<int>(
+        streaming, ctx->device, vko::BufferSpan(buffer1).subspan(0, 100),
         [](VkDeviceSize, auto input, auto output) { std::ranges::copy(input, output.begin()); });
     streaming.submit();
 
@@ -1096,11 +1100,12 @@ TEST_F(UnitTestFixture, StagingStream_NonBlockingDownloadWithPoolCycling) {
                                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
     // This should cycle pools multiple times, but shouldn't affect our download
-    streaming.upload(buffer2, 0, 20000, [](VkDeviceSize offset, auto span) {
-        for (size_t i = 0; i < span.size(); ++i) {
-            span[i] = static_cast<float>(offset + i);
-        }
-    });
+    vko::upload(streaming, ctx->device, vko::BufferSpan(buffer2).subspan(0, 20000),
+                [](VkDeviceSize offset, auto span) {
+                    for (size_t i = 0; i < span.size(); ++i) {
+                        span[i] = static_cast<float>(offset + i);
+                    }
+                });
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
 
@@ -1129,14 +1134,14 @@ TEST_F(UnitTestFixture, StagingStream_ManualSubmitTinyDownload) {
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
     // Upload
-    streaming.upload(gpuBuffer, 0, 10,
-                     [](VkDeviceSize, auto span) { std::iota(span.begin(), span.end(), 42); });
+    vko::upload(streaming, ctx->device, vko::BufferSpan(gpuBuffer).subspan(0, 10),
+                [](VkDeviceSize, auto span) { std::iota(span.begin(), span.end(), 42); });
     streaming.submit(); // Manual submit
     ctx->device.vkQueueWaitIdle(queue);
 
     // Download with manual submit
-    auto downloadFuture = streaming.downloadTransform<int>(
-        gpuBuffer, 0, 10,
+    auto downloadFuture = vko::download<int>(
+        streaming, ctx->device, vko::BufferSpan(gpuBuffer).subspan(0, 10),
         [](VkDeviceSize, auto input, auto output) { std::ranges::copy(input, output.begin()); });
 
     streaming.submit(); // Manual submit even though it's tiny
@@ -1167,9 +1172,10 @@ TEST_F(UnitTestFixture, StagingStream_CancelOnScopeExit) {
                                                                    /*poolSize=*/1 << 16);
         vko::StagingStream streaming(queue, std::move(staging));
 
-        streaming.upload(gpuBuffer, 0, 1000, [](VkDeviceSize offset, auto span) {
-            std::iota(span.begin(), span.end(), static_cast<int>(offset));
-        });
+        vko::upload(streaming, ctx->device, vko::BufferSpan(gpuBuffer).subspan(0, 1000),
+                    [](VkDeviceSize offset, auto span) {
+                        std::iota(span.begin(), span.end(), static_cast<int>(offset));
+                    });
         streaming.submit();
         ctx->device.vkQueueWaitIdle(queue);
     }
@@ -1181,10 +1187,11 @@ TEST_F(UnitTestFixture, StagingStream_CancelOnScopeExit) {
                                                                    /*poolSize=*/1 << 16);
         vko::StagingStream streaming(queue, std::move(staging));
 
-        auto future = streaming.downloadTransform<int>(gpuBuffer, 0, 1000,
-                                                       [](VkDeviceSize, auto input, auto output) {
-                                                           std::ranges::copy(input, output.begin());
-                                                       });
+        auto future =
+            vko::download<int>(streaming, ctx->device, vko::BufferSpan(gpuBuffer).subspan(0, 1000),
+                               [](VkDeviceSize, auto input, auto output) {
+                                   std::ranges::copy(input, output.begin());
+                               });
 
         // NO submit() - streaming destructor should cancel
         return future;
@@ -1213,11 +1220,12 @@ TEST_F(UnitTestFixture, StagingStream_PartialDownloadMissingFinalSubmit) {
             /*minPools=*/2, /*maxPools=*/2, /*poolSize=*/1 << 14); // Small pools
         vko::StagingStream streaming(queue, std::move(staging));
 
-        streaming.upload(gpuBuffer, 0, largeSize, [](VkDeviceSize offset, auto span) {
-            for (size_t i = 0; i < span.size(); ++i) {
-                span[i] = static_cast<float>(offset + i);
-            }
-        });
+        vko::upload(streaming, ctx->device, vko::BufferSpan(gpuBuffer).subspan(0, largeSize),
+                    [](VkDeviceSize offset, auto span) {
+                        for (size_t i = 0; i < span.size(); ++i) {
+                            span[i] = static_cast<float>(offset + i);
+                        }
+                    });
         streaming.submit();
         ctx->device.vkQueueWaitIdle(queue);
     }
@@ -1231,10 +1239,11 @@ TEST_F(UnitTestFixture, StagingStream_PartialDownloadMissingFinalSubmit) {
 
         // This will trigger multiple automatic submits as pools cycle
         // but won't submit the final chunk
-        auto future = streaming.downloadTransform<float>(
-            gpuBuffer, 0, largeSize, [](VkDeviceSize, auto input, auto output) {
-                std::ranges::copy(input, output.begin());
-            });
+        auto future = vko::download<float>(streaming, ctx->device,
+                                           vko::BufferSpan(gpuBuffer).subspan(0, largeSize),
+                                           [](VkDeviceSize, auto input, auto output) {
+                                               std::ranges::copy(input, output.begin());
+                                           });
 
         // NO final submit() - some chunks submitted automatically, but not all
         return future;
@@ -1268,16 +1277,17 @@ TEST_F(UnitTestFixture, StagingStream_NonZeroBufferOffset) {
     // UPLOAD TEST: Upload to non-zero offset
     // Verify that callback receives offsets starting at 0, NOT uploadOffset
     std::vector<VkDeviceSize> uploadCallbackOffsets;
-    streaming.upload(gpuBuffer, uploadOffset, uploadSize,
-                     [&uploadCallbackOffsets](VkDeviceSize offset, auto span) {
-                         uploadCallbackOffsets.push_back(offset);
-                         // Fill with: value = userOffset + localIndex
-                         // This relies on offset being relative to our data (0-based), not the
-                         // buffer offset
-                         for (size_t i = 0; i < span.size(); ++i) {
-                             span[i] = static_cast<int>(offset + i);
-                         }
-                     });
+    vko::upload(streaming, ctx->device,
+                vko::BufferSpan(gpuBuffer).subspan(uploadOffset, uploadSize),
+                [&uploadCallbackOffsets](VkDeviceSize offset, auto span) {
+                    uploadCallbackOffsets.push_back(offset);
+                    // Fill with: value = userOffset + localIndex
+                    // This relies on offset being relative to our data (0-based), not the
+                    // buffer offset
+                    for (size_t i = 0; i < span.size(); ++i) {
+                        span[i] = static_cast<int>(offset + i);
+                    }
+                });
 
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
@@ -1299,8 +1309,8 @@ TEST_F(UnitTestFixture, StagingStream_NonZeroBufferOffset) {
     // DOWNLOAD TEST: Download from non-zero offset
     // Verify that callback receives offsets starting at 0, NOT uploadOffset
     std::vector<VkDeviceSize> downloadCallbackOffsets;
-    auto                      downloadFuture = streaming.downloadTransform<int>(
-        gpuBuffer, uploadOffset, uploadSize,
+    auto                      downloadFuture = vko::download<int>(
+        streaming, ctx->device, vko::BufferSpan(gpuBuffer).subspan(uploadOffset, uploadSize),
         [&downloadCallbackOffsets](VkDeviceSize offset, auto input, auto output) {
             downloadCallbackOffsets.push_back(offset);
             // Verify data matches what we uploaded
@@ -1328,15 +1338,15 @@ TEST_F(UnitTestFixture, StagingStream_NonZeroBufferOffset) {
 
     // FOREACH TEST: Test downloadForEach with non-zero offset
     std::vector<VkDeviceSize> forEachCallbackOffsets;
-    auto                      forEachHandle =
-        streaming.downloadForEach(gpuBuffer, uploadOffset, uploadSize,
-                                  [&forEachCallbackOffsets](VkDeviceSize offset, auto mapped) {
-                                      forEachCallbackOffsets.push_back(offset);
-                                      // Verify data
-                                      for (size_t i = 0; i < mapped.size(); ++i) {
-                                          EXPECT_EQ(mapped[i], static_cast<int>(offset + i));
-                                      }
-                                  });
+    auto                      forEachHandle = vko::downloadForEach(
+        streaming, ctx->device, vko::BufferSpan(gpuBuffer).subspan(uploadOffset, uploadSize),
+        [&forEachCallbackOffsets](VkDeviceSize offset, auto mapped) {
+            forEachCallbackOffsets.push_back(offset);
+            // Verify data
+            for (size_t i = 0; i < mapped.size(); ++i) {
+                EXPECT_EQ(mapped[i], static_cast<int>(offset + i));
+            }
+        });
 
     streaming.submit();
     forEachHandle.wait(ctx->device);
@@ -1362,18 +1372,18 @@ TEST_F(UnitTestFixture, StagingStream_ZeroSizeTransfer) {
 
     // Zero-size upload should not crash or call callback
     bool uploadCallbackCalled = false;
-    streaming.upload(buffer, 0, 0,
-                     [&uploadCallbackCalled](VkDeviceSize, auto) { uploadCallbackCalled = true; });
+    vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 0),
+                [&uploadCallbackCalled](VkDeviceSize, auto) { uploadCallbackCalled = true; });
 
     EXPECT_FALSE(uploadCallbackCalled) << "Zero-size upload should not invoke callback";
 
     // Zero-size download should work now (supported for free!)
-    auto downloadFuture = streaming.downloadTransform<int>(
-        buffer, 0, 0,
-        []([[maybe_unused]] VkDeviceSize offset, [[maybe_unused]] auto input,
-           [[maybe_unused]] auto output) {
-            FAIL() << "Zero-size download callback should not be called";
-        });
+    auto downloadFuture =
+        vko::download<int>(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 0),
+                           []([[maybe_unused]] VkDeviceSize offset, [[maybe_unused]] auto input,
+                              [[maybe_unused]] auto output) {
+                               FAIL() << "Zero-size download callback should not be called";
+                           });
 
     streaming.submit();
     auto& result = downloadFuture.get(ctx->device);
@@ -1381,8 +1391,9 @@ TEST_F(UnitTestFixture, StagingStream_ZeroSizeTransfer) {
 
     // Zero-size forEach should also work
     bool forEachCalled = false;
-    auto forEachHandle = streaming.downloadForEach(
-        buffer, 0, 0, [&forEachCalled](VkDeviceSize, auto) { forEachCalled = true; });
+    auto forEachHandle =
+        vko::downloadForEach(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 0),
+                             [&forEachCalled](VkDeviceSize, auto) { forEachCalled = true; });
 
     streaming.submit();
     forEachHandle.wait(ctx->device);
@@ -1410,17 +1421,19 @@ TEST_F(UnitTestFixture, StagingStream_UnalignedOffsetAndSize) {
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
     // Upload with unaligned parameters
-    streaming.upload(buffer, oddOffset, oddSize, [](VkDeviceSize offset, auto span) {
-        for (size_t i = 0; i < span.size(); ++i) {
-            span[i] = static_cast<int>(offset + i + 1000);
-        }
-    });
+    vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(oddOffset, oddSize),
+                [](VkDeviceSize offset, auto span) {
+                    for (size_t i = 0; i < span.size(); ++i) {
+                        span[i] = static_cast<int>(offset + i + 1000);
+                    }
+                });
 
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
 
     // Download the same unaligned region and verify
-    auto downloadFuture = streaming.download(buffer, oddOffset, oddSize);
+    auto downloadFuture =
+        vko::download(streaming, ctx->device, vko::BufferSpan(buffer).subspan(oddOffset, oddSize));
     streaming.submit();
 
     auto& result = downloadFuture.get(ctx->device);
@@ -1461,12 +1474,12 @@ TEST_F(UnitTestFixture, StagingStream_SubrangeTransfers) {
 
     // Upload each subrange with different data
     for (const auto& sub : subranges) {
-        streaming.upload(buffer, sub.offset, sub.size,
-                         [baseValue = sub.baseValue](VkDeviceSize offset, auto span) {
-                             for (size_t i = 0; i < span.size(); ++i) {
-                                 span[i] = baseValue + static_cast<float>(offset + i);
-                             }
-                         });
+        vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(sub.offset, sub.size),
+                    [baseValue = sub.baseValue](VkDeviceSize offset, auto span) {
+                        for (size_t i = 0; i < span.size(); ++i) {
+                            span[i] = baseValue + static_cast<float>(offset + i);
+                        }
+                    });
     }
 
     streaming.submit();
@@ -1474,7 +1487,8 @@ TEST_F(UnitTestFixture, StagingStream_SubrangeTransfers) {
 
     // Download and verify each subrange
     for (const auto& sub : subranges) {
-        auto downloadFuture = streaming.download(buffer, sub.offset, sub.size);
+        auto downloadFuture = vko::download(streaming, ctx->device,
+                                            vko::BufferSpan(buffer).subspan(sub.offset, sub.size));
         streaming.submit();
 
         auto& result = downloadFuture.get(ctx->device);
@@ -1506,12 +1520,12 @@ TEST_F(UnitTestFixture, StagingStream_MultipleDownloadsCancelledOutOfOrder) {
                              VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
-        streaming.upload(buffers[i], 0, 100,
-                         [marker = static_cast<int>(i * 100)](VkDeviceSize offset, auto span) {
-                             for (size_t j = 0; j < span.size(); ++j) {
-                                 span[j] = marker + static_cast<int>(offset + j);
-                             }
-                         });
+        vko::upload(streaming, ctx->device, vko::BufferSpan(buffers[i]).subspan(0, 100),
+                    [marker = static_cast<int>(i * 100)](VkDeviceSize offset, auto span) {
+                        for (size_t j = 0; j < span.size(); ++j) {
+                            span[j] = marker + static_cast<int>(offset + j);
+                        }
+                    });
     }
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
@@ -1520,11 +1534,13 @@ TEST_F(UnitTestFixture, StagingStream_MultipleDownloadsCancelledOutOfOrder) {
     auto copyLambda = [](VkDeviceSize, auto input, auto output) {
         std::ranges::copy(input, output.begin());
     };
-    using FutureType = decltype(streaming.downloadTransform<int>(buffers[0], 0, 0, copyLambda));
+    using FutureType = decltype(vko::download<int>(
+        streaming, ctx->device, vko::BufferSpan(buffers[0]).subspan(0, 0), copyLambda));
     std::vector<FutureType> futures;
 
     for (size_t i = 0; i < numDownloads; ++i) {
-        futures.push_back(streaming.downloadTransform<int>(buffers[i], 0, 100, copyLambda));
+        futures.push_back(vko::download<int>(
+            streaming, ctx->device, vko::BufferSpan(buffers[i]).subspan(0, 100), copyLambda));
     }
     streaming.submit();
 
@@ -1560,13 +1576,14 @@ TEST_F(UnitTestFixture, StagingStream_ExceptionInUserCallback) {
     // Upload should complete even if callback throws
     bool exceptionCaught = false;
     try {
-        streaming.upload(buffer, 0, 500, [](VkDeviceSize, auto span) {
-            // Fill first half, then throw
-            for (size_t i = 0; i < span.size() / 2; ++i) {
-                span[i] = static_cast<float>(i);
-            }
-            throw std::runtime_error("User callback exception");
-        });
+        vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 500),
+                    [](VkDeviceSize, auto span) {
+                        // Fill first half, then throw
+                        for (size_t i = 0; i < span.size() / 2; ++i) {
+                            span[i] = static_cast<float>(i);
+                        }
+                        throw std::runtime_error("User callback exception");
+                    });
     } catch (const std::runtime_error& e) {
         exceptionCaught = true;
         EXPECT_STREQ(e.what(), "User callback exception");
@@ -1575,14 +1592,15 @@ TEST_F(UnitTestFixture, StagingStream_ExceptionInUserCallback) {
     EXPECT_TRUE(exceptionCaught) << "Exception should have been thrown";
 
     // StagingStream should still be usable after exception
-    streaming.upload(buffer, 0, 100, [](VkDeviceSize offset, auto span) {
-        for (size_t i = 0; i < span.size(); ++i) {
-            span[i] = static_cast<float>(offset + i);
-        }
-    });
+    vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 100),
+                [](VkDeviceSize offset, auto span) {
+                    for (size_t i = 0; i < span.size(); ++i) {
+                        span[i] = static_cast<float>(offset + i);
+                    }
+                });
     streaming.submit();
 
-    auto future = streaming.download(buffer, 0, 100);
+    auto future = vko::download(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 100));
     streaming.submit();
 
     auto& result = future.get(ctx->device);
@@ -1622,23 +1640,26 @@ TEST_F(UnitTestFixture, StagingStream_InterleavedUploadDownload) {
     auto copyLambda = [](VkDeviceSize, auto input, auto output) {
         std::ranges::copy(input, output.begin());
     };
-    using FutureType = decltype(streaming.downloadTransform<int>(buffers[0], 0, 0, copyLambda));
+    using FutureType = decltype(vko::download<int>(
+        streaming, ctx->device, vko::BufferSpan(buffers[0]).subspan(0, 0), copyLambda));
     std::vector<FutureType> futures;
 
     for (size_t i = 0; i < numBuffers; ++i) {
         // Upload to buffer i
-        streaming.upload(buffers[i], 0, bufferSize,
-                         [baseValue = i * 1000](VkDeviceSize offset, auto span) {
-                             for (size_t j = 0; j < span.size(); ++j) {
-                                 span[j] = static_cast<int>(baseValue + offset + j);
-                             }
-                         });
+        vko::upload(streaming, ctx->device, vko::BufferSpan(buffers[i]).subspan(0, bufferSize),
+                    [baseValue = i * 1000](VkDeviceSize offset, auto span) {
+                        for (size_t j = 0; j < span.size(); ++j) {
+                            span[j] = static_cast<int>(baseValue + offset + j);
+                        }
+                    });
 
         // Submit upload to ensure it completes before download
         streaming.submit();
 
         // Download from current buffer (now that upload is submitted)
-        futures.push_back(streaming.downloadTransform<int>(buffers[i], 0, bufferSize, copyLambda));
+        futures.push_back(vko::download<int>(streaming, ctx->device,
+                                             vko::BufferSpan(buffers[i]).subspan(0, bufferSize),
+                                             copyLambda));
     }
 
     streaming.submit();
@@ -1815,12 +1836,13 @@ TEST_F(UnitTestFixture, StagingStream_ConcurrentDownloads) {
 #else
             // Upload unique data pattern for this iteration
             for (size_t i = 0; i < numDownloads; ++i) {
-                streaming.upload(buffers[i], 0, downloadSize,
-                                 [iter, i](VkDeviceSize offset, auto span) {
-                                     for (size_t j = 0; j < span.size(); ++j) {
-                                         span[j] = humanValueHash(iter, i, offset, j);
-                                     }
-                                 });
+                vko::upload(streaming, ctx->device,
+                            vko::BufferSpan(buffers[i]).subspan(0, downloadSize),
+                            [iter, i](VkDeviceSize offset, auto span) {
+                                for (size_t j = 0; j < span.size(); ++j) {
+                                    span[j] = humanValueHash(iter, i, offset, j);
+                                }
+                            });
             }
 #endif
             [[maybe_unused]] auto uploadComplete = streaming.submit();
@@ -1849,10 +1871,11 @@ TEST_F(UnitTestFixture, StagingStream_ConcurrentDownloads) {
                 << " downloadIdx=" << downloadIdx << " offset=" << offset;
         };
 
-        using TransformFutureType =
-            decltype(streaming.downloadTransform<uint32_t>(buffers[0], 0, 0, copyLambda));
-        using ForEachFutureType = decltype(streaming.downloadForEach(
-            buffers[0], 0, 0, std::function<void(VkDeviceSize, std::span<const uint32_t>)>()));
+        using TransformFutureType = decltype(vko::download<uint32_t>(
+            streaming, ctx->device, vko::BufferSpan(buffers[0]).subspan(0, 0), copyLambda));
+        using ForEachFutureType   = decltype(vko::downloadForEach(
+            streaming, ctx->device, vko::BufferSpan(buffers[0]).subspan(0, 0),
+            std::function<void(VkDeviceSize, std::span<const uint32_t>)>()));
 
         // Start all downloads concurrently. Alternating between Transform and
         // ForEach to test both paths.
@@ -1863,13 +1886,15 @@ TEST_F(UnitTestFixture, StagingStream_ConcurrentDownloads) {
         size_t                                              forEachBytesCompleted = 0;
         for (size_t i = 0; i < numDownloads; ++i) {
             if (i % 2 == 0) {
-                futures.push_back({i, streaming.downloadTransform<uint32_t>(
-                                          buffers[i], 0, downloadSize, copyLambda)});
+                futures.push_back(
+                    {i, vko::download<uint32_t>(
+                            streaming, ctx->device,
+                            vko::BufferSpan(buffers[i]).subspan(0, downloadSize), copyLambda)});
             } else {
                 bool keepFuture = (i / 2) % 2 == 0;
                 forEachCountSubmitted++;
-                auto future = streaming.downloadForEach(
-                    buffers[i], 0, downloadSize,
+                auto future = vko::downloadForEach(
+                    streaming, ctx->device, vko::BufferSpan(buffers[i]).subspan(0, downloadSize),
                     std::function([&sharedQueue, &callbackRecheckDelay, &verifyResults, iter,
                                    downloadIdx = i, &forEachCountCompleted, &forEachBytesCompleted](
                                       VkDeviceSize offset, std::span<const uint32_t> result) {
@@ -1986,11 +2011,12 @@ TEST_F(UnitTestFixture, StagingStream_TinyPoolStressTest) {
 
         // Upload known data pattern
         float uploadMarker = static_cast<float>(maxPools * 1000);
-        streaming.upload(buffer, 0, bufferSize, [uploadMarker](VkDeviceSize offset, auto span) {
-            for (size_t j = 0; j < span.size(); ++j) {
-                span[j] = uploadMarker + static_cast<float>(offset + j);
-            }
-        });
+        vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, bufferSize),
+                    [uploadMarker](VkDeviceSize offset, auto span) {
+                        for (size_t j = 0; j < span.size(); ++j) {
+                            span[j] = uploadMarker + static_cast<float>(offset + j);
+                        }
+                    });
         streaming.submit();
         ctx->device.vkQueueWaitIdle(queue);
 
@@ -2000,8 +2026,8 @@ TEST_F(UnitTestFixture, StagingStream_TinyPoolStressTest) {
         std::vector<size_t> chunkSizes;
         size_t              errorCount = 0;
 
-        auto handle = streaming.downloadForEach(
-            buffer, 0, bufferSize,
+        auto handle = vko::downloadForEach(
+            streaming, ctx->device, vko::BufferSpan(buffer),
             [&, uploadMarker](VkDeviceSize offset, std::span<const float> mapped) {
                 size_t thisChunk = chunkIndex++;
                 chunkOffsets.push_back(static_cast<size_t>(offset));
@@ -2063,13 +2089,12 @@ TEST_F(UnitTestFixture, StagingStream_CommandBufferRecycling) {
     // This should trigger command buffer recycling
     constexpr size_t numIterations = 50;
     for (size_t i = 0; i < numIterations; ++i) {
-        streaming.upload(
-            buffer, 0, 500,
-            [value = static_cast<int>(i)]([[maybe_unused]] VkDeviceSize offset, auto span) {
-                for (size_t j = 0; j < span.size(); ++j) {
-                    span[j] = value;
-                }
-            });
+        vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 500),
+                    [value = static_cast<int>(i)]([[maybe_unused]] VkDeviceSize offset, auto span) {
+                        for (size_t j = 0; j < span.size(); ++j) {
+                            span[j] = value;
+                        }
+                    });
 
         streaming.submit();
 
@@ -2106,17 +2131,19 @@ TEST_F(UnitTestFixture, StagingStream_MemoryPressure) {
                                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
     // This upload should automatically submit and wait when pools are exhausted
-    streaming.upload(buffer, 0, largeTransferSize, [](VkDeviceSize offset, auto span) {
-        for (size_t i = 0; i < span.size(); ++i) {
-            span[i] = static_cast<float>(offset + i);
-        }
-    });
+    vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, largeTransferSize),
+                [](VkDeviceSize offset, auto span) {
+                    for (size_t i = 0; i < span.size(); ++i) {
+                        span[i] = static_cast<float>(offset + i);
+                    }
+                });
 
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
 
     // Verify the transfer completed successfully despite memory pressure
-    auto downloadFuture = streaming.download(buffer, 0, largeTransferSize);
+    auto downloadFuture = vko::download(streaming, ctx->device,
+                                        vko::BufferSpan(buffer).subspan(0, largeTransferSize));
     streaming.submit();
 
     auto& result = downloadFuture.get(ctx->device);
@@ -2148,22 +2175,25 @@ TEST_F(UnitTestFixture, StagingStream_SemaphoreChaining) {
     auto copyLambda = [](VkDeviceSize, auto input, auto output) {
         std::ranges::copy(input, output.begin());
     };
-    using FutureType = decltype(streaming.downloadTransform<int>(buffer, 0, 0, copyLambda));
+    using FutureType = decltype(vko::download<int>(
+        streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 0), copyLambda));
     std::vector<FutureType> futures;
 
     // Chain operations: upload, download, upload, download, etc.
     // Each operation depends on the previous via semaphore chaining
     for (size_t i = 0; i < numOperations; ++i) {
         // Upload with incremented values
-        streaming.upload(buffer, 0, bufferSize, [iteration = i](VkDeviceSize offset, auto span) {
-            for (size_t j = 0; j < span.size(); ++j) {
-                span[j] = static_cast<int>(iteration * 1000 + offset + j);
-            }
-        });
+        vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, bufferSize),
+                    [iteration = i](VkDeviceSize offset, auto span) {
+                        for (size_t j = 0; j < span.size(); ++j) {
+                            span[j] = static_cast<int>(iteration * 1000 + offset + j);
+                        }
+                    });
         streaming.submit();
 
         // Download to verify
-        futures.push_back(streaming.downloadTransform<int>(buffer, 0, bufferSize, copyLambda));
+        futures.push_back(vko::download<int>(
+            streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, bufferSize), copyLambda));
         streaming.submit();
     }
 
@@ -2193,22 +2223,25 @@ TEST_F(UnitTestFixture, StagingStream_FutureAbandonedNeverAccessed) {
         ctx->device, 1000, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
-    streaming.upload(buffer, 0, 1000, [](VkDeviceSize offset, auto span) {
-        for (size_t i = 0; i < span.size(); ++i) {
-            span[i] = static_cast<float>(offset + i);
-        }
-    });
+    vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 1000),
+                [](VkDeviceSize offset, auto span) {
+                    for (size_t i = 0; i < span.size(); ++i) {
+                        span[i] = static_cast<float>(offset + i);
+                    }
+                });
     streaming.submit();
 
     {
         // Create future but never call get() - should cancel on destruction
-        auto abandonedFuture = streaming.download(buffer, 0, 1000);
+        auto abandonedFuture =
+            vko::download(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 1000));
         streaming.submit();
         // Future destroyed here without get()
     }
 
     // Staging should still be usable after abandoned future
-    auto normalFuture = streaming.download(buffer, 0, 500);
+    auto normalFuture =
+        vko::download(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 500));
     streaming.submit();
     auto& result = normalFuture.get(ctx->device);
 
@@ -2238,14 +2271,16 @@ TEST_F(UnitTestFixture, StagingStream_FutureOutlivesStaging) {
                                                                    /*poolSize=*/1 << 14);
         vko::StagingStream streaming(queue, std::move(staging));
 
-        streaming.upload(buffer, 0, 500, [](VkDeviceSize offset, auto span) {
-            for (size_t i = 0; i < span.size(); ++i) {
-                span[i] = static_cast<int>(offset + i * 2);
-            }
-        });
+        vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 500),
+                    [](VkDeviceSize offset, auto span) {
+                        for (size_t i = 0; i < span.size(); ++i) {
+                            span[i] = static_cast<int>(offset + i * 2);
+                        }
+                    });
         streaming.submit();
 
-        auto result = streaming.downloadTransform<int>(buffer, 0, 500, copyLambda);
+        auto result = vko::download<int>(streaming, ctx->device,
+                                         vko::BufferSpan(buffer).subspan(0, 500), copyLambda);
         streaming.submit();
 
         // Evaluate now while StagingStream exists
@@ -2285,14 +2320,16 @@ TEST_F(UnitTestFixture, StagingStream_FutureCompletesAfterStagingDestroyed) {
                                                                    /*poolSize=*/1 << 14);
         vko::StagingStream streaming(queue, std::move(staging));
 
-        streaming.upload(buffer, 0, 200, [](VkDeviceSize offset, auto span) {
-            for (size_t i = 0; i < span.size(); ++i) {
-                span[i] = static_cast<float>(offset + i);
-            }
-        });
+        vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 200),
+                    [](VkDeviceSize offset, auto span) {
+                        for (size_t i = 0; i < span.size(); ++i) {
+                            span[i] = static_cast<float>(offset + i);
+                        }
+                    });
         streaming.submit();
 
-        auto result = streaming.downloadTransform<float>(buffer, 0, 200, copyLambda);
+        auto result = vko::download<float>(streaming, ctx->device,
+                                           vko::BufferSpan(buffer).subspan(0, 200), copyLambda);
         streaming.submit();
 
         // StagingStream destructor waits for submitted work, so future remains valid
@@ -2326,11 +2363,12 @@ TEST_F(UnitTestFixture, StagingStream_MoveSemanticsDuringPendingTransfers) {
                              VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
-        streaming.upload(buffers[i], 0, 200, [marker = i * 10.0](VkDeviceSize offset, auto span) {
-            for (size_t j = 0; j < span.size(); ++j) {
-                span[j] = marker + static_cast<double>(offset + j);
-            }
-        });
+        vko::upload(streaming, ctx->device, vko::BufferSpan(buffers[i]).subspan(0, 200),
+                    [marker = i * 10.0](VkDeviceSize offset, auto span) {
+                        for (size_t j = 0; j < span.size(); ++j) {
+                            span[j] = marker + static_cast<double>(offset + j);
+                        }
+                    });
     }
     streaming.submit();
 
@@ -2338,11 +2376,13 @@ TEST_F(UnitTestFixture, StagingStream_MoveSemanticsDuringPendingTransfers) {
     auto copyLambda = [](VkDeviceSize, auto input, auto output) {
         std::ranges::copy(input, output.begin());
     };
-    using FutureType = decltype(streaming.downloadTransform<double>(buffers[0], 0, 0, copyLambda));
+    using FutureType = decltype(vko::download<double>(
+        streaming, ctx->device, vko::BufferSpan(buffers[0]).subspan(0, 0), copyLambda));
     std::vector<FutureType> futures;
 
     for (size_t i = 0; i < numBuffers; ++i) {
-        futures.push_back(streaming.downloadTransform<double>(buffers[i], 0, 200, copyLambda));
+        futures.push_back(vko::download<double>(
+            streaming, ctx->device, vko::BufferSpan(buffers[i]).subspan(0, 200), copyLambda));
     }
     streaming.submit();
 
@@ -2515,11 +2555,12 @@ TEST_F(UnitTestFixture, StagingStream_PersistentAllocationFailureThrows) {
     // Try to upload - should throw after submit/retry fails
     EXPECT_THROW(
         {
-            streaming.upload(buffer, 0, 100, [](VkDeviceSize, auto span) {
-                for (size_t i = 0; i < span.size(); ++i) {
-                    span[i] = static_cast<uint32_t>(i);
-                }
-            });
+            vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 100),
+                        [](VkDeviceSize, auto span) {
+                            for (size_t i = 0; i < span.size(); ++i) {
+                                span[i] = static_cast<uint32_t>(i);
+                            }
+                        });
         },
         std::runtime_error);
 }
@@ -2558,13 +2599,13 @@ TEST_F(UnitTestFixture, StagingStream_MultipleQueueSupport) {
                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
     // Upload on both queues simultaneously
-    stream1.upload(buffer1, 0, bufferSize, [](VkDeviceSize offset, auto span) {
+    vko::upload(stream1, ctx->device, vko::BufferSpan(buffer1), [](VkDeviceSize offset, auto span) {
         for (size_t i = 0; i < span.size(); ++i) {
             span[i] = static_cast<float>(offset + i) * 10.0f;
         }
     });
 
-    stream2.upload(buffer2, 0, bufferSize, [](VkDeviceSize offset, auto span) {
+    vko::upload(stream2, ctx->device, vko::BufferSpan(buffer2), [](VkDeviceSize offset, auto span) {
         for (size_t i = 0; i < span.size(); ++i) {
             span[i] = static_cast<float>(offset + i) * 20.0f;
         }
@@ -2578,8 +2619,8 @@ TEST_F(UnitTestFixture, StagingStream_MultipleQueueSupport) {
         std::ranges::copy(input, output.begin());
     };
 
-    auto future1 = stream1.downloadTransform<float>(buffer1, 0, bufferSize, copyLambda);
-    auto future2 = stream2.downloadTransform<float>(buffer2, 0, bufferSize, copyLambda);
+    auto future1 = vko::download<float>(stream1, ctx->device, vko::BufferSpan(buffer1), copyLambda);
+    auto future2 = vko::download<float>(stream2, ctx->device, vko::BufferSpan(buffer2), copyLambda);
 
     stream1.submit();
     stream2.submit();
@@ -2625,11 +2666,12 @@ TEST_F(UnitTestFixture, StagingStream_QueueFamilyTransition) {
                                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
     // Upload using queue1
-    stream1.upload(sharedBuffer, 0, bufferSize, [](VkDeviceSize offset, auto span) {
-        for (size_t i = 0; i < span.size(); ++i) {
-            span[i] = static_cast<uint32_t>(offset + i + 1000);
-        }
-    });
+    vko::upload(stream1, ctx->device, vko::BufferSpan(sharedBuffer),
+                [](VkDeviceSize offset, auto span) {
+                    for (size_t i = 0; i < span.size(); ++i) {
+                        span[i] = static_cast<uint32_t>(offset + i + 1000);
+                    }
+                });
 
     auto uploadComplete = stream1.submit();
     uploadComplete.wait(ctx->device);
@@ -2698,7 +2740,8 @@ TEST_F(UnitTestFixture, StagingStream_QueueFamilyTransition) {
         std::ranges::copy(input, output.begin());
     };
 
-    auto future = stream2.downloadTransform<uint32_t>(sharedBuffer, 0, bufferSize, copyLambda);
+    auto future =
+        vko::download<uint32_t>(stream2, ctx->device, vko::BufferSpan(sharedBuffer), copyLambda);
     stream2.submit();
 
     auto& result = future.get(ctx->device);
@@ -2836,7 +2879,7 @@ TEST_F(UnitTestFixture, StagingStream_Download_DeviceSpan) {
     vko::StagingStream streaming(queue, std::move(staging));
 
     // Upload test data
-    streaming.upload(buffer, testData);
+    vko::upload(streaming, ctx->device, testData, vko::BufferSpan(buffer));
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
 
@@ -2917,7 +2960,8 @@ TEST_F(UnitTestFixture, StagingStream_Upload_DeviceSpan_Callback) {
     ctx->device.vkQueueWaitIdle(queue);
 
     // Verify by downloading the data back
-    auto future = streaming.download(buffer, 0, dataSize);
+    auto future =
+        vko::download(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, dataSize));
     streaming.submit();
 
     auto& result = future.get(ctx->device);
@@ -2958,12 +3002,13 @@ TEST_F(UnitTestFixture, StagingStream_Upload_DeviceSpan_Range) {
     vko::DeviceAddress<int> deviceAddr(buffer, ctx->device);
     vko::DeviceSpan<int>    deviceSpan(deviceAddr, buffer.size());
 
-    vko::upload(streaming, ctx->device, deviceSpan, testData);
+    vko::upload(streaming, ctx->device, testData, deviceSpan);
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
 
     // Verify by downloading the data back
-    auto future = streaming.download(buffer, 0, dataSize);
+    auto future =
+        vko::download(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, dataSize));
     streaming.submit();
 
     auto& result = future.get(ctx->device);
@@ -2990,10 +3035,10 @@ TEST_F(UnitTestFixture, StagingStream_UploadRange) {
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
     // Use free function with range
-    vko::upload(streaming, ctx->device, buffer, testData);
+    vko::upload(streaming, ctx->device, testData, vko::BufferSpan(buffer));
     streaming.submit();
 
-    auto future = vko::download(streaming, ctx->device, buffer, VkDeviceSize{0}, dataSize);
+    auto future = vko::download(streaming, ctx->device, vko::BufferSpan(buffer));
     streaming.submit();
 
     auto& result = future.get(ctx->device);
@@ -3021,7 +3066,7 @@ TEST_F(UnitTestFixture, StagingStream_UploadCreateBuffer_Callback) {
         });
     streaming.submit();
 
-    auto future = vko::download(streaming, ctx->device, buffer, VkDeviceSize{0}, dataSize);
+    auto future = vko::download(streaming, ctx->device, vko::BufferSpan(buffer));
     streaming.submit();
 
     auto& result = future.get(ctx->device);
@@ -3045,7 +3090,7 @@ TEST_F(UnitTestFixture, StagingStream_UploadCreateBuffer_Range) {
                               VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
     streaming.submit();
 
-    auto future = vko::download(streaming, ctx->device, buffer, VkDeviceSize{0}, testData.size());
+    auto future = vko::download(streaming, ctx->device, vko::BufferSpan(buffer));
     streaming.submit();
 
     auto& result = future.get(ctx->device);
@@ -3079,7 +3124,7 @@ TEST_F(UnitTestFixture, StagingStream_Download_DeviceSpan_Transform) {
                                   VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
-    vko::upload(streaming, ctx->device, buffer, testData);
+    vko::upload(streaming, ctx->device, testData, vko::BufferSpan(buffer));
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
 
@@ -3127,7 +3172,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadForEach_DeviceSpan) {
                                   VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
-    vko::upload(streaming, ctx->device, buffer, testData);
+    vko::upload(streaming, ctx->device, testData, vko::BufferSpan(buffer));
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
 
@@ -3174,7 +3219,7 @@ TEST_F(UnitTestFixture, StagingStream_UploadBufferSpan_Callback) {
     streaming.submit();
 
     // Verify by downloading
-    auto future = vko::download(streaming, ctx->device, buffer, VkDeviceSize{0}, dataSize);
+    auto future = vko::download(streaming, ctx->device, vko::BufferSpan(buffer));
     streaming.submit();
 
     auto& result = future.get(ctx->device);
@@ -3203,11 +3248,11 @@ TEST_F(UnitTestFixture, StagingStream_UploadBufferSpan_Range) {
 
     // Use upload free function with BufferSpan and range
     vko::BufferSpan<std::byte> bufSpan(buffer);
-    vko::upload(streaming, ctx->device, bufSpan, testData);
+    vko::upload(streaming, ctx->device, testData, bufSpan);
     streaming.submit();
 
     // Verify by downloading
-    auto future = vko::download(streaming, ctx->device, buffer, VkDeviceSize{0}, dataSize);
+    auto future = vko::download(streaming, ctx->device, vko::BufferSpan(buffer));
     streaming.submit();
 
     auto& result = future.get(ctx->device);
@@ -3234,16 +3279,18 @@ TEST_F(UnitTestFixture, StagingStream_CancellationBehavior) {
                                                                    /*poolSize=*/1 << 16);
         vko::StagingStream streaming(queue, std::move(staging));
 
-        streaming.upload(buffer, 0, 100, [](VkDeviceSize offset, auto span) {
-            std::iota(span.begin(), span.end(), static_cast<int>(offset));
-        });
+        vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 100),
+                    [](VkDeviceSize offset, auto span) {
+                        std::iota(span.begin(), span.end(), static_cast<int>(offset));
+                    });
         streaming.submit();
         ctx->device.vkQueueWaitIdle(queue);
 
-        auto future = streaming.downloadTransform<int>(buffer, 0, 100,
-                                                       [](VkDeviceSize, auto input, auto output) {
-                                                           std::ranges::copy(input, output.begin());
-                                                       });
+        auto future =
+            vko::download<int>(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 100),
+                               [](VkDeviceSize, auto input, auto output) {
+                                   std::ranges::copy(input, output.begin());
+                               });
         streaming.submit();
 
         // Destroy streaming before calling get() - legitimate cancellation
@@ -3256,10 +3303,11 @@ TEST_F(UnitTestFixture, StagingStream_CancellationBehavior) {
                                                                    /*poolSize=*/1 << 16);
         vko::StagingStream streaming(queue, std::move(staging));
 
-        auto future = streaming.downloadTransform<int>(buffer, 0, 100,
-                                                       [](VkDeviceSize, auto input, auto output) {
-                                                           std::ranges::copy(input, output.begin());
-                                                       });
+        auto future =
+            vko::download<int>(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 100),
+                               [](VkDeviceSize, auto input, auto output) {
+                                   std::ranges::copy(input, output.begin());
+                               });
 
         // NO submit() - user forgot!
         // Streaming destructs, cancels all pending futures
@@ -3308,16 +3356,17 @@ TEST_F(UnitTestFixture, StagingStream_DestructorWaitsForInFlightWork) {
             vko::StagingStream streaming(queue, std::move(staging));
 
             // Upload unique data for this iteration
-            streaming.upload(buffer, 0, bufferSize,
-                             [iter = iteration](VkDeviceSize offset, auto span) {
-                                 for (size_t i = 0; i < span.size(); ++i) {
-                                     span[i] = static_cast<int>(iter * 100000 + offset + i);
-                                 }
-                             });
+            vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, bufferSize),
+                        [iter = iteration](VkDeviceSize offset, auto span) {
+                            for (size_t i = 0; i < span.size(); ++i) {
+                                span[i] = static_cast<int>(iter * 100000 + offset + i);
+                            }
+                        });
             streaming.submit();
 
             // Download to verify data integrity later
-            auto result = streaming.downloadTransform<int>(buffer, 0, bufferSize, copyLambda);
+            auto result = vko::download<int>(
+                streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, bufferSize), copyLambda);
             streaming.submit();
 
             // CRITICAL: Return future while staging pool destructs here with GPU work in-flight
@@ -3368,14 +3417,15 @@ TEST_F(UnitTestFixture, StagingStreamRef_BasicUploadDownload) {
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
     // Upload via ref
-    streamingRef.upload(gpuBuffer, 0, 1000, [](VkDeviceSize offset, auto span) {
-        std::iota(span.begin(), span.end(), static_cast<int>(offset));
-    });
+    vko::upload(streamingRef, ctx->device, vko::BufferSpan(gpuBuffer),
+                [](VkDeviceSize offset, auto span) {
+                    std::iota(span.begin(), span.end(), static_cast<int>(offset));
+                });
     streamingRef.submit();
     ctx->device.vkQueueWaitIdle(queue);
 
     // Download via ref
-    auto downloadFuture = streamingRef.download(gpuBuffer, 0, 1000);
+    auto downloadFuture = vko::download(streamingRef, ctx->device, vko::BufferSpan(gpuBuffer));
     streamingRef.submit();
 
     auto& result = downloadFuture.get(ctx->device);
@@ -3413,14 +3463,14 @@ TEST_F(UnitTestFixture, StagingStreamRef_SharedResources) {
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
     // Upload using ref1
-    ref1.upload(buffer1, 0, 500, [](VkDeviceSize /*offset*/, auto span) {
-        std::fill(span.begin(), span.end(), 100);
-    });
+    vko::upload(
+        ref1, ctx->device, vko::BufferSpan(buffer1),
+        [](VkDeviceSize /*offset*/, auto span) { std::fill(span.begin(), span.end(), 100); });
 
     // Upload using ref2 (shares same command buffer and staging)
-    ref2.upload(buffer2, 0, 500, [](VkDeviceSize /*offset*/, auto span) {
-        std::fill(span.begin(), span.end(), 200);
-    });
+    vko::upload(
+        ref2, ctx->device, vko::BufferSpan(buffer2),
+        [](VkDeviceSize /*offset*/, auto span) { std::fill(span.begin(), span.end(), 200); });
 
     // Both uploads in same batch, submitted together
     ref1.submit();
@@ -3515,13 +3565,13 @@ TEST_F(UnitTestFixture, StagingStream_DownloadWithActualTypeConversion) {
         ctx->device, dataSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
-    streaming.upload(buffer, sourceData);
+    vko::upload(streaming, ctx->device, sourceData, vko::BufferSpan(buffer));
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
 
     // Download with type conversion: int32_t → float (with scaling)
     auto future = vko::download<float>(
-        streaming, ctx->device, buffer, VkDeviceSize{0}, dataSize,
+        streaming, ctx->device, vko::BufferSpan(buffer),
         [](VkDeviceSize, std::span<const int32_t> input, std::span<float> output) {
             // Convert int32_t to float with scaling
             for (size_t i = 0; i < input.size(); ++i) {
@@ -3564,7 +3614,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadDeviceAddressWithTypeConversion) {
                                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
-    streaming.upload(buffer, sourceData);
+    vko::upload(streaming, ctx->device, sourceData, vko::BufferSpan(buffer));
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
 
@@ -3728,9 +3778,10 @@ TEST_F(UnitTestFixture, StagingStream_DedicatedStagingPool_BasicUpload) {
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
     // Upload with callback
-    streaming.upload(gpuBuffer, 0, 1000, [](VkDeviceSize offset, auto span) {
-        std::iota(span.begin(), span.end(), static_cast<int>(offset));
-    });
+    vko::upload(streaming, ctx->device, vko::BufferSpan(gpuBuffer).subspan(0, 1000),
+                [](VkDeviceSize offset, auto span) {
+                    std::iota(span.begin(), span.end(), static_cast<int>(offset));
+                });
 
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
@@ -3779,16 +3830,17 @@ TEST_F(UnitTestFixture, StagingStream_DedicatedStagingPool_UploadDownloadRoundtr
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
 
     // Upload known pattern: value at index i = i * 2
-    streaming.upload(gpuBuffer, 0, 500, [](VkDeviceSize offset, auto span) {
-        for (size_t i = 0; i < span.size(); ++i) {
-            span[i] = static_cast<int>((offset + i) * 2);
-        }
-    });
+    vko::upload(streaming, ctx->device, vko::BufferSpan(gpuBuffer).subspan(0, 500),
+                [](VkDeviceSize offset, auto span) {
+                    for (size_t i = 0; i < span.size(); ++i) {
+                        span[i] = static_cast<int>((offset + i) * 2);
+                    }
+                });
     streaming.submit();
     ctx->device.vkQueueWaitIdle(queue);
 
     // Download and verify
-    auto future = streaming.download(gpuBuffer, 0, 500);
+    auto future = vko::download(streaming, ctx->device, vko::BufferSpan(gpuBuffer).subspan(0, 500));
     streaming.submit();
 
     auto& result = future.get(ctx->device);
@@ -3844,8 +3896,9 @@ TEST_F(UnitTestFixture, StagingStream_DroppedForEachFutureDoesNotImmediatelyInvo
 
     // Start download and IMMEDIATELY drop the future
     {
-        auto future = streaming.downloadForEach(
-            buffer, 0, 100, [&](VkDeviceSize, std::span<const int>) { callbackCount++; });
+        auto future =
+            vko::downloadForEach(streaming, ctx->device, vko::BufferSpan(buffer),
+                                 [&](VkDeviceSize, std::span<const int>) { callbackCount++; });
     }
 
     // Callback should NOT have been invoked - dropping the future doesn't trigger it
@@ -3875,8 +3928,9 @@ TEST_F(UnitTestFixture, StagingStream_WaitInvokesDroppedForEachCallback) {
 
     // Start download and drop the future
     {
-        auto future = streaming.downloadForEach(
-            buffer, 0, 100, [&](VkDeviceSize, std::span<const int>) { callbackCount++; });
+        auto future =
+            vko::downloadForEach(streaming, ctx->device, vko::BufferSpan(buffer),
+                                 [&](VkDeviceSize, std::span<const int>) { callbackCount++; });
     }
 
     streaming.submit();
@@ -3900,8 +3954,9 @@ TEST_F(UnitTestFixture, StagingStream_FutureWaitInvokesCallback) {
 
     std::atomic<size_t> callbackCount{0};
 
-    auto future = streaming.downloadForEach(
-        buffer, 0, 100, [&](VkDeviceSize, std::span<const int>) { callbackCount++; });
+    auto future =
+        vko::downloadForEach(streaming, ctx->device, vko::BufferSpan(buffer),
+                             [&](VkDeviceSize, std::span<const int>) { callbackCount++; });
 
     streaming.submit();
 
@@ -3910,4 +3965,332 @@ TEST_F(UnitTestFixture, StagingStream_FutureWaitInvokesCallback) {
     // future.wait(device) should invoke the callback
     future.wait(ctx->device);
     EXPECT_EQ(callbackCount.load(), 1u) << "Callback NOT invoked by future.wait()";
+}
+
+// Comprehensive test for all free-function upload/download overloads with non-zero offsets.
+// Uses small pool size to force chunking, verifying offset handling across chunk boundaries.
+TEST_F(UnitTestFixture, FreeFunctionOverloads_OffsetHandling) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+
+    // Small pool size (64 bytes = 16 ints) to force chunking, many pools for speed
+    // Include SHADER_DEVICE_ADDRESS_BIT for DeviceSpan operations using indirect copy
+    constexpr VkDeviceSize poolSize = 64;
+    auto                   staging  = vko::vma::RecyclingStagingPool<vko::Device>(
+        ctx->device, ctx->allocator,
+        /*minPools=*/2, /*maxPools=*/50, poolSize,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    vko::StagingStream streaming(queue, std::move(staging));
+
+    // Buffer layout: 100 elements, we'll write to different regions
+    constexpr size_t bufferSize = 100;
+    constexpr int    sentinel   = -1;
+
+    auto buffer =
+        vko::BoundBuffer<int>(ctx->device, bufferSize,
+                              VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+
+    // Pre-fill buffer with sentinel value
+    vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, bufferSize),
+                [=](VkDeviceSize, auto span) { std::ranges::fill(span, sentinel); });
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+
+    // Test regions: each overload writes to a separate 10-element region
+    // Region 0: offset 0-9   (upload: buffer+offset+size+fn)
+    // Region 1: offset 10-19 (upload: buffer+range+offset)
+    // Region 2: offset 20-29 (upload: BufferSpan+fn with subspan)
+    // Region 3: offset 30-39 (upload: BufferSpan+range with subspan)
+    // Region 4: offset 40-49 (upload: DeviceSpan+size+fn)
+    // Region 5: offset 50-59 (upload: DeviceSpan+range)
+    // Region 6: offset 60-69 (upload: allocator+size+fn - separate buffer)
+    // Region 7: offset 70-79 (upload: allocator+range - separate buffer)
+    // Remaining 80-99: stays sentinel for boundary checks
+
+    constexpr size_t regionSize = 10;
+
+    // Marker values: region N gets values N*100 + index
+    auto makeMarker = [](int region, size_t idx) { return region * 100 + static_cast<int>(idx); };
+
+    // ===== UPLOAD TESTS =====
+
+    // 1. upload(stream, device, BufferSpan<T>, fn) - region 0
+    vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, regionSize),
+                [&](VkDeviceSize off, std::span<int> span) {
+                    for (size_t i = 0; i < span.size(); ++i)
+                        span[i] = makeMarker(0, off + i);
+                });
+
+    // 2. upload(stream, device, BufferSpan<T>, range) - region 1
+    std::vector<int> region1Data(regionSize);
+    for (size_t i = 0; i < regionSize; ++i)
+        region1Data[i] = makeMarker(1, i);
+    vko::upload(streaming, ctx->device, region1Data,
+                vko::BufferSpan(buffer).subspan(10, regionSize));
+
+    // 3. upload(stream, device, BufferSpan<T>, fn) with subspan offset
+    vko::BufferSpan<int> bufSpan2 = vko::BufferSpan(buffer).subspan(20, regionSize);
+    vko::upload(streaming, ctx->device, bufSpan2, [&](VkDeviceSize off, std::span<int> span) {
+        for (size_t i = 0; i < span.size(); ++i)
+            span[i] = makeMarker(2, off + i);
+    });
+
+    // 4. upload(stream, device, BufferSpan<T>, range) with subspan offset
+    std::vector<int> region3Data(regionSize);
+    for (size_t i = 0; i < regionSize; ++i)
+        region3Data[i] = makeMarker(3, i);
+    vko::BufferSpan<int> bufSpan3 = vko::BufferSpan(buffer).subspan(30, regionSize);
+    vko::upload(streaming, ctx->device, region3Data, bufSpan3);
+
+    // Submit uploads so far
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+
+    // DeviceSpan overloads require VK_NV_copy_memory_indirect
+    bool hasIndirectCopy = ctx->device.vkCmdCopyMemoryIndirectNV != nullptr;
+
+    if (hasIndirectCopy) {
+        // 5. upload(stream, device, DeviceSpan, size, fn) with subspan offset
+        vko::DeviceAddress<int> bufAddr(buffer, ctx->device);
+        vko::DeviceSpan<int>    devSpan4 =
+            vko::DeviceSpan<int>(bufAddr, bufferSize).subspan(40, regionSize);
+        vko::upload(streaming, ctx->device, devSpan4, VkDeviceSize{regionSize},
+                    [&](VkDeviceSize off, std::span<int> span) {
+                        for (size_t i = 0; i < span.size(); ++i)
+                            span[i] = makeMarker(4, off + i);
+                    });
+
+        // 6. upload(stream, device, DeviceSpan, range) with subspan offset
+        std::vector<int> region5Data(regionSize);
+        for (size_t i = 0; i < regionSize; ++i)
+            region5Data[i] = makeMarker(5, i);
+        vko::DeviceSpan<int> devSpan5 =
+            vko::DeviceSpan<int>(bufAddr, bufferSize).subspan(50, regionSize);
+        vko::upload(streaming, ctx->device, region5Data, devSpan5);
+
+        streaming.submit();
+        ctx->device.vkQueueWaitIdle(queue);
+    }
+
+    // 7 & 8: Allocator overloads create new buffers, test separately
+    std::vector<int> region6Data(regionSize);
+    for (size_t i = 0; i < regionSize; ++i)
+        region6Data[i] = makeMarker(6, i);
+    auto allocBuffer6 =
+        vko::upload<int>(streaming, ctx->device, ctx->allocator, VkDeviceSize{regionSize},
+                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                         [&](VkDeviceSize off, std::span<int> span) {
+                             for (size_t i = 0; i < span.size(); ++i)
+                                 span[i] = makeMarker(6, off + i);
+                         });
+
+    std::vector<int> region7Data(regionSize);
+    for (size_t i = 0; i < regionSize; ++i)
+        region7Data[i] = makeMarker(7, i);
+    auto allocBuffer7 =
+        vko::upload(streaming, ctx->device, ctx->allocator, region7Data,
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+
+    streaming.submit();
+    ctx->device.vkQueueWaitIdle(queue);
+
+    // ===== VERIFY UPLOADS via raw download =====
+    auto verifyFuture =
+        vko::download(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, bufferSize));
+    streaming.submit();
+    auto& fullData = verifyFuture.get(ctx->device);
+
+    // Check region 0
+    for (size_t i = 0; i < regionSize; ++i)
+        EXPECT_EQ(fullData[0 + i], makeMarker(0, i)) << "Region 0 mismatch at " << i;
+
+    // Check region 1
+    for (size_t i = 0; i < regionSize; ++i)
+        EXPECT_EQ(fullData[10 + i], makeMarker(1, i)) << "Region 1 mismatch at " << i;
+
+    // Check region 2
+    for (size_t i = 0; i < regionSize; ++i)
+        EXPECT_EQ(fullData[20 + i], makeMarker(2, i)) << "Region 2 mismatch at " << i;
+
+    // Check region 3
+    for (size_t i = 0; i < regionSize; ++i)
+        EXPECT_EQ(fullData[30 + i], makeMarker(3, i)) << "Region 3 mismatch at " << i;
+
+    if (hasIndirectCopy) {
+        // Check region 4
+        for (size_t i = 0; i < regionSize; ++i)
+            EXPECT_EQ(fullData[40 + i], makeMarker(4, i)) << "Region 4 mismatch at " << i;
+
+        // Check region 5
+        for (size_t i = 0; i < regionSize; ++i)
+            EXPECT_EQ(fullData[50 + i], makeMarker(5, i)) << "Region 5 mismatch at " << i;
+    }
+
+    // Check sentinel regions (60-99, or 40-99 if no indirect copy)
+    size_t sentinelStart = hasIndirectCopy ? 60 : 40;
+    for (size_t i = sentinelStart; i < bufferSize; ++i)
+        EXPECT_EQ(fullData[i], sentinel) << "Sentinel corrupted at " << i;
+
+    // Verify allocator buffers
+    auto alloc6Future = vko::download(streaming, ctx->device, vko::BufferSpan(allocBuffer6));
+    auto alloc7Future = vko::download(streaming, ctx->device, vko::BufferSpan(allocBuffer7));
+    streaming.submit();
+
+    auto& alloc6Data = alloc6Future.get(ctx->device);
+    auto& alloc7Data = alloc7Future.get(ctx->device);
+    for (size_t i = 0; i < regionSize; ++i) {
+        EXPECT_EQ(alloc6Data[i], makeMarker(6, i)) << "Alloc buffer 6 mismatch at " << i;
+        EXPECT_EQ(alloc7Data[i], makeMarker(7, i)) << "Alloc buffer 7 mismatch at " << i;
+    }
+
+    // ===== DOWNLOAD OVERLOAD TESTS =====
+    // Use region 0 data (values 0-9) for download tests
+
+    // download(stream, device, BufferSpan<T>) - identity
+    {
+        auto future =
+            vko::download(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, regionSize));
+        streaming.submit();
+        auto& result = future.get(ctx->device);
+        ASSERT_EQ(result.size(), regionSize);
+        for (size_t i = 0; i < regionSize; ++i)
+            EXPECT_EQ(result[i], makeMarker(0, i)) << "download(BufferSpan) mismatch at " << i;
+    }
+
+    // download<DstT>(stream, device, BufferSpan<SrcT>, fn) - transform
+    {
+        auto future = vko::download<float>(
+            streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, regionSize),
+            [](VkDeviceSize, std::span<const int> in, std::span<float> out) {
+                for (size_t i = 0; i < in.size(); ++i)
+                    out[i] = static_cast<float>(in[i]) + 0.5f;
+            });
+        streaming.submit();
+        auto& result = future.get(ctx->device);
+        ASSERT_EQ(result.size(), regionSize);
+        for (size_t i = 0; i < regionSize; ++i)
+            EXPECT_FLOAT_EQ(result[i], makeMarker(0, i) + 0.5f)
+                << "download<DstT>(BufferSpan,fn) mismatch at " << i;
+    }
+
+    // 11. download(stream, device, BufferSpan<T>) - identity with subspan offset
+    {
+        vko::BufferSpan<const int> srcSpan = vko::BufferSpan(buffer).subspan(10, regionSize);
+        auto                       future  = vko::download(streaming, ctx->device, srcSpan);
+        streaming.submit();
+        auto& result = future.get(ctx->device);
+        ASSERT_EQ(result.size(), regionSize);
+        for (size_t i = 0; i < regionSize; ++i)
+            EXPECT_EQ(result[i], makeMarker(1, i)) << "download(BufferSpan) mismatch at " << i;
+    }
+
+    // 12. download<DstT>(stream, device, BufferSpan<SrcT>, fn) - transform with subspan
+    {
+        vko::BufferSpan<const int> srcSpan = vko::BufferSpan(buffer).subspan(20, regionSize);
+        auto                       future =
+            vko::download<float>(streaming, ctx->device, srcSpan,
+                                 [](VkDeviceSize, std::span<const int> in, std::span<float> out) {
+                                     for (size_t i = 0; i < in.size(); ++i)
+                                         out[i] = static_cast<float>(in[i]) + 0.25f;
+                                 });
+        streaming.submit();
+        auto& result = future.get(ctx->device);
+        ASSERT_EQ(result.size(), regionSize);
+        for (size_t i = 0; i < regionSize; ++i)
+            EXPECT_FLOAT_EQ(result[i], makeMarker(2, i) + 0.25f)
+                << "download<DstT>(BufferSpan,fn) mismatch at " << i;
+    }
+
+    // downloadForEach(stream, device, BufferSpan<T>, fn) - streaming with subspan
+    {
+        std::vector<int> collected;
+        auto             handle = vko::downloadForEach(streaming, ctx->device,
+                                                       vko::BufferSpan(buffer).subspan(30, regionSize),
+                                                       [&](VkDeviceSize, std::span<const int> data) {
+                                               for (size_t i = 0; i < data.size(); ++i)
+                                                   collected.push_back(data[i]);
+                                           });
+        streaming.submit();
+        handle.wait(ctx->device);
+        ASSERT_EQ(collected.size(), regionSize);
+        for (size_t i = 0; i < regionSize; ++i)
+            EXPECT_EQ(collected[i], makeMarker(3, i))
+                << "downloadForEach(BufferSpan) mismatch at " << i;
+    }
+
+    // 16. downloadForEach(stream, device, BufferSpan<T>, fn) - streaming with subspan
+    {
+        vko::BufferSpan<const int> srcSpan = vko::BufferSpan(buffer).subspan(0, regionSize);
+        std::vector<int>           collected;
+        auto                       handle = vko::downloadForEach(streaming, ctx->device, srcSpan,
+                                                                 [&](VkDeviceSize, std::span<const int> data) {
+                                               for (size_t i = 0; i < data.size(); ++i)
+                                                   collected.push_back(data[i]);
+                                           });
+        streaming.submit();
+        handle.wait(ctx->device);
+        ASSERT_EQ(collected.size(), regionSize);
+        for (size_t i = 0; i < regionSize; ++i)
+            EXPECT_EQ(collected[i], makeMarker(0, i))
+                << "downloadForEach(BufferSpan) mismatch at " << i;
+    }
+
+    if (hasIndirectCopy) {
+        vko::DeviceAddress<int> bufAddr(buffer, ctx->device);
+
+        // 13. download(stream, device, DeviceSpan) - identity with subspan
+        {
+            vko::DeviceSpan<const int> srcSpan =
+                vko::DeviceSpan<const int>(vko::DeviceAddress<const int>(bufAddr.raw()), bufferSize)
+                    .subspan(40, regionSize);
+            auto future = vko::download(streaming, ctx->device, srcSpan);
+            streaming.submit();
+            auto& result = future.get(ctx->device);
+            ASSERT_EQ(result.size(), regionSize);
+            for (size_t i = 0; i < regionSize; ++i)
+                EXPECT_EQ(result[i], makeMarker(4, i)) << "download(DeviceSpan) mismatch at " << i;
+        }
+
+        // 14. download<DstT>(stream, device, DeviceSpan, fn) - transform with subspan
+        {
+            vko::DeviceSpan<const int> srcSpan =
+                vko::DeviceSpan<const int>(vko::DeviceAddress<const int>(bufAddr.raw()), bufferSize)
+                    .subspan(50, regionSize);
+            auto future = vko::download<float>(
+                streaming, ctx->device, srcSpan,
+                [](VkDeviceSize, std::span<const int> in, std::span<float> out) {
+                    for (size_t i = 0; i < in.size(); ++i)
+                        out[i] = static_cast<float>(in[i]) + 0.75f;
+                });
+            streaming.submit();
+            auto& result = future.get(ctx->device);
+            ASSERT_EQ(result.size(), regionSize);
+            for (size_t i = 0; i < regionSize; ++i)
+                EXPECT_FLOAT_EQ(result[i], makeMarker(5, i) + 0.75f)
+                    << "download<DstT>(DeviceSpan,fn) mismatch at " << i;
+        }
+
+        // 17. downloadForEach(stream, device, DeviceSpan, fn) - streaming with subspan
+        {
+            vko::DeviceSpan<const int> srcSpan =
+                vko::DeviceSpan<const int>(vko::DeviceAddress<const int>(bufAddr.raw()), bufferSize)
+                    .subspan(40, regionSize);
+            std::vector<int> collected;
+            auto             handle = vko::downloadForEach(streaming, ctx->device, srcSpan,
+                                                           [&](VkDeviceSize, std::span<const int> data) {
+                                                   for (size_t i = 0; i < data.size(); ++i)
+                                                       collected.push_back(data[i]);
+                                               });
+            streaming.submit();
+            handle.wait(ctx->device);
+            ASSERT_EQ(collected.size(), regionSize);
+            for (size_t i = 0; i < regionSize; ++i)
+                EXPECT_EQ(collected[i], makeMarker(4, i))
+                    << "downloadForEach(DeviceSpan) mismatch at " << i;
+        }
+    }
 }
