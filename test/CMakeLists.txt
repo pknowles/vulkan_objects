@@ -35,6 +35,7 @@ add_executable(vulkan_objects_tests
   src/test_staging.cpp
   src/test_query.cpp
   src/test_pnext_chain.cpp
+  src/test_staging_reuse_bug.cpp
   # test_zero_cost.cpp added via object library below
   )
 
