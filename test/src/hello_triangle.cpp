@@ -309,12 +309,12 @@ TEST(Integration, WindowSystemIntegration) {
             VK_NULL_HANDLE,
         };
 
-        auto [imageIndex, reuseImageSemaphore] = swapchain.acquire(device, 0ULL);
-        VkSemaphore renderingFinished          = swapchain.renderFinishedSemaphores[imageIndex];
+        auto [imageIndex, acquireSemaphore] = swapchain.acquire(device, 0ULL);
+        VkSemaphore renderingFinished       = swapchain.getRenderSemaphore(device);
 
         {
             vko::simple::ImmediateCommandBuffer cmd(device, commandPool, queue);
-            cmd.addWait(reuseImageSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+            cmd.addWait(acquireSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
             cmd.addSignal(renderingFinished);
             vko::simple::clearSwapchainImage(
                 device, cmd, swapchain.images[imageIndex],
@@ -390,7 +390,7 @@ TEST(Integration, WindowSystemIntegration) {
                                  });
         }
 
-        swapchain.present(device, queue, imageIndex, renderingFinished);
+        swapchain.present(device, queue, imageIndex, renderingFinished, nullptr);
         device.vkQueueWaitIdle(queue);
         break;
     }
@@ -692,12 +692,12 @@ TEST(Integration, HelloTriangleRayTracing) {
         // device.vkCmdPushDescriptorSet(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
         // rtPipeline.layout(), 0U, writes.writes().size(), writes.writes().data());
 
-        auto [imageIndex, reuseImageSemaphore] = swapchain.acquire(device, 0ULL);
-        VkSemaphore renderingFinished          = swapchain.renderFinishedSemaphores[imageIndex];
+        auto [imageIndex, acquireSemaphore] = swapchain.acquire(device, 0ULL);
+        VkSemaphore renderingFinished       = swapchain.getRenderSemaphore(device);
 
         {
             vko::simple::ImmediateCommandBuffer cmd(device, commandPool, queue);
-            cmd.addWait(reuseImageSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+            cmd.addWait(acquireSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
             cmd.addSignal(renderingFinished);
             vko::simple::clearSwapchainImage(
                 device, cmd, swapchain.images[imageIndex],

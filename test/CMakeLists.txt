@@ -34,6 +34,8 @@ add_executable(vulkan_objects_tests
   src/test_timeline_queue.cpp
   src/test_staging.cpp
   src/test_query.cpp
+  src/test_pnext_chain.cpp
+  # test_zero_cost.cpp added via object library below
   )
 
 # Enable clang-tidy to catch common bugs like use-after-move
@@ -42,7 +44,7 @@ add_executable(vulkan_objects_tests
 #   CXX_CLANG_TIDY "clang-tidy;--checks=bugprone-use-after-move,bugprone-move-forwarding-reference,performance-move-const-arg,performance-unnecessary-value-param"
 # )
 
-target_link_libraries(vulkan_objects_tests vulkan_objects gtest_main)
+target_link_libraries(vulkan_objects_tests vulkan_objects gtest_main gmock_main)
 target_include_directories(vulkan_objects_tests PRIVATE "${DEBUGBREAK_DIR}" src)
 
 # TODO: vulkan_objects provides these dependencies. could pick them up
@@ -103,3 +105,48 @@ endif()
 
 include(GoogleTest)
 gtest_discover_tests(vulkan_objects_tests DISCOVERY_MODE PRE_TEST)
+
+# Zero-cost optimization verification with embedded symbols
+# Create object library for test_zero_cost.cpp with optimizations
+add_library(test_zero_cost_obj OBJECT src/test_zero_cost.cpp)
+target_link_libraries(test_zero_cost_obj PUBLIC vulkan_objects gtest)
+target_include_directories(test_zero_cost_obj PRIVATE "${DEBUGBREAK_DIR}" src)
+target_compile_options(test_zero_cost_obj PRIVATE
+  $<$<CXX_COMPILER_ID:GNU>:-O3>
+  $<$<CXX_COMPILER_ID:Clang,AppleClang>:-O3>
+  $<$<CXX_COMPILER_ID:MSVC>:/O2>
+
+  # Uncomment to debug inlining failures (adds verbose output during compilation):
+  # $<$<CXX_COMPILER_ID:GNU>:-fopt-info-inline-optimized -fopt-info-inline-missed>
+  # $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Rpass=inline -Rpass-missed=inline>
+)
+
+# Extract symbols and embed them (Linux only)
+if(UNIX AND NOT APPLE)
+  set(SYMBOLS_TXT_NAME "test_zero_cost_symbols.txt")
+  set(SYMBOLS_O_NAME "test_zero_cost_symbols.o")
+
+  target_compile_definitions(test_zero_cost_obj PRIVATE SYMBOL_DATA_SUPPORTED=1)
+
+  add_custom_command(
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${SYMBOLS_O_NAME}"
+    COMMAND sh -c "nm -S $<TARGET_OBJECTS:test_zero_cost_obj> | grep mockPresent > '${SYMBOLS_TXT_NAME}' || echo 'No symbols' > '${SYMBOLS_TXT_NAME}'"
+    COMMAND objcopy
+            --input-target=binary
+            --output-target=elf64-x86-64
+            --binary-architecture=i386:x86-64
+            "${SYMBOLS_TXT_NAME}" "${SYMBOLS_O_NAME}"
+    DEPENDS $<TARGET_OBJECTS:test_zero_cost_obj>
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    COMMENT "Embedding symbol sizes for zero-cost verification"
+    VERBATIM
+    BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/${SYMBOLS_TXT_NAME}"
+  )
+
+  target_sources(vulkan_objects_tests PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/${SYMBOLS_O_NAME}"
+    $<TARGET_OBJECTS:test_zero_cost_obj>)
+else()
+  target_compile_definitions(test_zero_cost_obj PRIVATE SYMBOL_DATA_SUPPORTED=0)
+  target_sources(vulkan_objects_tests PRIVATE $<TARGET_OBJECTS:test_zero_cost_obj>)
+endif()
