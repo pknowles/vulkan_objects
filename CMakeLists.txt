@@ -29,11 +29,11 @@ add_dependencies(vulkan_objects vulkan_objects_generated)
 set(VULKAN_OBJECTS_SPEC_OVERRIDE "" CACHE FILEPATH "Override path to own vk.xml. Ignores VULKAN_OBJECTS_SPEC_TAG")
 set(VULKAN_OBJECTS_SPEC_TAG "v1.4.335" CACHE STRING "GIT tag from https://github.com/KhronosGroup/Vulkan-Headers/tags")
 set(VULKAN_OBJECTS_VMA_TAG "v3.3.0" CACHE STRING "GIT tag from https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/tags")
-set(VULKAN_OBJECTS_SLANG_TAG "v2026.1" CACHE STRING "GIT tag from https://github.com/shader-slang/slang/tags")
-set(VULKAN_OBJECTS_SHADERC_TAG "v2025.5" CACHE STRING "GIT tag from https://github.com/google/shaderc/tags")
-set(VULKAN_OBJECTS_SPIRV_HEADERS_TAG "vulkan-sdk-1.4.335.0" CACHE STRING "GIT tag from https://github.com/KhronosGroup/SPIRV-Headers/tags")
-set(VULKAN_OBJECTS_SPIRV_TOOLS_TAG "v2025.4" CACHE STRING "GIT tag from https://github.com/KhronosGroup/SPIRV-Tools/tags")
-set(VULKAN_OBJECTS_GLSLANG_TAG "16.1.0" CACHE STRING "GIT tag from https://github.com/KhronosGroup/glslang/tags")
+set(VULKAN_OBJECTS_SLANG_TAG "v2026.1.1" CACHE STRING "GIT tag from https://github.com/shader-slang/slang/tags")
+set(VULKAN_OBJECTS_SHADERC_TAG "v2026.1" CACHE STRING "GIT tag from https://github.com/google/shaderc/tags")
+set(VULKAN_OBJECTS_SPIRV_HEADERS_TAG "vulkan-sdk-1.4.341" CACHE STRING "GIT tag from https://github.com/KhronosGroup/SPIRV-Headers/tags")
+set(VULKAN_OBJECTS_SPIRV_TOOLS_TAG "v2026.1" CACHE STRING "GIT tag from https://github.com/KhronosGroup/SPIRV-Tools/tags")
+set(VULKAN_OBJECTS_GLSLANG_TAG "16.2.0" CACHE STRING "GIT tag from https://github.com/KhronosGroup/glslang/tags")
 set(VULKAN_OBJECTS_GLFW_TAG "3.4" CACHE STRING "GIT tag from https://github.com/glfw/glfw/tags")
 option(VULKAN_OBJECTS_FETCH_VVL "Include Vulkan Validation Layers with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_VMA "Include Vulkan Memory Allocator with FetchContent()" OFF)
@@ -271,24 +271,7 @@ if(VULKAN_OBJECTS_FETCH_SLANG)
   set(SLANG_ENABLE_SPLIT_DEBUG_INFO OFF CACHE BOOL "" FORCE)
   set(SLANG_SLANG_LLVM_FLAVOR DISABLE CACHE STRING "" FORCE) # only needed for host code gen
 
-  option(SLANG_GLSLANG_ALIAS_WORKAROUND "Workaround for slang's broken alias that conflicts with FetchContent targets" ON)
-  if(SLANG_GLSLANG_ALIAS_WORKAROUND)
-    message(STATUS "Applying slang glslang alias workaround")
-    FetchContent_GetProperties(slang)
-    if(NOT slang_POPULATED)
-      FetchContent_Populate(slang)
-      # Fix slang's broken alias that conflicts with FetchContent targets
-      file(READ "${slang_SOURCE_DIR}/CMakeLists.txt" _slang_cmake)
-      string(REPLACE 
-        "add_library(glslang ALIAS glslang::glslang)"
-        "if(NOT TARGET glslang)\n        add_library(glslang ALIAS glslang::glslang)\n    endif()"
-        _slang_cmake "${_slang_cmake}")
-      file(WRITE "${slang_SOURCE_DIR}/CMakeLists.txt" "${_slang_cmake}")
-      add_subdirectory("${slang_SOURCE_DIR}" "${slang_BINARY_DIR}")
-    endif()
-  else()
-    FetchContent_MakeAvailable(slang)
-  endif()
+  FetchContent_MakeAvailable(slang)
   target_compile_options(slang PRIVATE -Wno-overloaded-virtual) # ideally upstreamed
   target_compile_options(core PRIVATE -Wno-overloaded-virtual) # not "slang-core" but just "core"
   target_link_libraries(vulkan_objects PUBLIC slang)
