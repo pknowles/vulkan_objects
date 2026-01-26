@@ -15,7 +15,7 @@ TEST_F(UnitTestFixture, TimelineQueue_BasicConstruction) {
     EXPECT_NE(static_cast<VkQueue>(queue), VK_NULL_HANDLE);
     EXPECT_NE(queue.ptr(), nullptr);
 
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 TEST_F(UnitTestFixture, TimelineQueue_NextSubmitSemaphore) {
@@ -41,7 +41,7 @@ TEST_F(UnitTestFixture, TimelineQueue_SimpleSubmit) {
                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
     // Wait for completion
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 TEST_F(UnitTestFixture, TimelineQueue_MultipleSubmissions) {
@@ -59,7 +59,7 @@ TEST_F(UnitTestFixture, TimelineQueue_MultipleSubmissions) {
     }
 
     // Wait for all to complete
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 TEST_F(UnitTestFixture, SemaphoreValue_AlreadySignalled) {

@@ -76,7 +76,7 @@ TEST_F(UnitTestFixture, QueryBatch_TimestampProfiling_NonShared) {
     EXPECT_GT(elapsedNs, 0.0);
     EXPECT_LT(elapsedNs, 1e9); // Should be less than 1 second
 
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Use-case: Frame-based GPU timestamp profiling (shared)
@@ -123,7 +123,7 @@ TEST_F(UnitTestFixture, QueryBatch_TimestampProfiling_Shared) {
     EXPECT_GT(elapsedNs, 0.0);
     EXPECT_LT(elapsedNs, 1e9);
 
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Use-case: Occlusion query with RAII scoped query (non-shared)
@@ -155,7 +155,7 @@ TEST_F(UnitTestFixture, ScopedQuery_Occlusion_NonShared) {
     uint64_t result = batch.get(ctx->device, handle);
     EXPECT_EQ(result, 0u);
 
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Use-case: Occlusion query with RAII scoped query (shared)
@@ -183,7 +183,7 @@ TEST_F(UnitTestFixture, ScopedQuery_Occlusion_Shared) {
     uint64_t result = sharedHandle.get(ctx->device);
     EXPECT_EQ(result, 0u);
 
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Use-case: SharedQuery handles survive batch destruction
@@ -222,7 +222,7 @@ TEST_F(UnitTestFixture, QueryBatch_SharedHandlesSurviveBatchDestruction) {
         auto batch = complete(std::move(builder), submitSemaphore);
 
         // Wait for GPU before command buffer goes out of scope
-        ctx->device.vkQueueWaitIdle(queue);
+        vko::check(ctx->device.vkQueueWaitIdle(queue));
         // batch and dummyWork go out of scope here
     }
 
@@ -301,7 +301,7 @@ TEST_F(UnitTestFixture, QueryBatch_PoolRecycling) {
         EXPECT_GT(t2, t1);
     }
 
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Use-case: Multiple frames with QueryBatchRecycler
@@ -343,7 +343,7 @@ TEST_F(UnitTestFixture, QueryBatch_MultiFrameRecycling) {
     }
 
     // Wait for all frames to complete
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Reclaim ready batches
     recycler.reclaimReady(ctx->device);
@@ -394,7 +394,7 @@ TEST_F(UnitTestFixture, QueryBatch_RecyclingWhileHoldingHandles) {
     }
 
     // Wait for GPU
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Trigger reclamation - pools are recycled but results should be cached
     recycler.reclaimReady(ctx->device);
@@ -445,7 +445,7 @@ TEST_F(UnitTestFixture, QueryBatch_MultiplePools) {
         prevTimestamp = timestamp;
     }
 
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Use-case: Empty batch (no queries allocated)
@@ -464,7 +464,7 @@ TEST_F(UnitTestFixture, QueryBatch_EmptyBatch) {
     // Complete with no queries allocated - should not crash
     auto batch = complete(std::move(builder), submitSemaphore);
 
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // TODO: Future test cases

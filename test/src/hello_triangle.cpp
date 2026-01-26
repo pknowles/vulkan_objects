@@ -74,7 +74,7 @@ TEST(Integration, InitHappyPath) {
     VkQueue queue = vko::get(device.vkGetDeviceQueue, device, queueFamilyIndex, 0);
 
     // Test the first device call
-    device.vkQueueWaitIdle(queue);
+    vko::check(device.vkQueueWaitIdle(queue));
 
     // Create the first non-instance/device object
     VkCommandPoolCreateInfo commandPoolCreateInfo{
@@ -138,7 +138,7 @@ TEST(Integration, WindowSystemIntegration) {
     VkQueue queue = vko::get(device.vkGetDeviceQueue, device, queueFamilyIndex, 0);
 
     // Test the first device call
-    device.vkQueueWaitIdle(queue);
+    vko::check(device.vkQueueWaitIdle(queue));
 
     // Create the first non-instance/device object
     VkCommandPoolCreateInfo commandPoolCreateInfo{
@@ -391,7 +391,7 @@ TEST(Integration, WindowSystemIntegration) {
         }
 
         swapchain.present(device, queue, imageIndex, renderingFinished, nullptr);
-        device.vkQueueWaitIdle(queue);
+        vko::check(device.vkQueueWaitIdle(queue));
         break;
     }
 }
@@ -444,7 +444,7 @@ TEST(Integration, HelloTriangleRayTracing) {
     VkQueue queue = vko::get(device.vkGetDeviceQueue, device, queueFamilyIndex, 0);
 
     // Test the first device call
-    device.vkQueueWaitIdle(queue);
+    vko::check(device.vkQueueWaitIdle(queue));
 
     // Create the first non-instance/device object
     VkCommandPoolCreateInfo commandPoolCreateInfo{
@@ -753,7 +753,7 @@ TEST(Integration, HelloTriangleRayTracing) {
         }
 
         swapchain.present(device, queue, imageIndex, renderingFinished, nullptr);
-        device.vkQueueWaitIdle(queue);
+        vko::check(device.vkQueueWaitIdle(queue));
         break;
     }
 }

@@ -66,6 +66,7 @@ struct DescriptorSetPoolSizes {
     std::vector<VkDescriptorPoolSize> sizes;
 };
 
+// A pool sized to allocate a single descriptor set
 class SingleDescriptorSetPool {
 public:
     template <device_and_commands DeviceAndCommands>
@@ -92,6 +93,7 @@ private:
     DescriptorPool m_pool;
 };
 
+// TODO: remove the layout - not that useful, owning it as well
 struct SingleDescriptorSet {
     template <device_and_commands DeviceAndCommands>
     SingleDescriptorSet(const DeviceAndCommands& device, const BindingsAndFlags& bindingsAndFlags,

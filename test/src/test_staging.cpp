@@ -762,7 +762,7 @@ TEST_F(UnitTestFixture, StagingStream_UploadChunked) {
                 });
 
     streaming.submit(); // Ensure upload completes
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // TODO: Verify by downloading once download is implemented
     // For now, just verify it doesn't crash
@@ -792,7 +792,7 @@ TEST_F(UnitTestFixture, StagingStream_UploadLarge) {
                 });
 
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Use-case: GPU→CPU data processing without storage (e.g., checksums, statistics)
@@ -815,7 +815,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadVoid) {
                     std::iota(span.begin(), span.end(), static_cast<int>(offset));
                 });
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Download with void callback using free function - just accumulate stats, no storage
     int sum   = 0;
@@ -860,7 +860,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadWithTransform) {
                     }
                 });
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Download with transform using free function
     auto downloadFuture =
@@ -901,7 +901,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadSimple) {
                     }
                 });
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Use simple download() free function - no transform lambda needed
     auto downloadFuture = vko::download(streaming, ctx->device, vko::BufferSpan(gpuBuffer));
@@ -943,7 +943,7 @@ TEST_F(UnitTestFixture, StagingStream_MultipleBatchedTransfers) {
 
     // Single submit should handle all transfers batched together
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Success - multiple small transfers were batched
     // (Download verification is tested separately in other tests)
@@ -974,7 +974,7 @@ TEST_F(UnitTestFixture, StagingStream_GiantTransferImplicitCycling) {
                 });
 
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Insert memory barrier to make upload writes visible to download reads
     // This is the user's responsibility when doing back-to-back transfers
@@ -1086,7 +1086,7 @@ TEST_F(UnitTestFixture, StagingStream_NonBlockingDownloadWithPoolCycling) {
                     std::iota(span.begin(), span.end(), static_cast<int>(offset));
                 });
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Start small download but DON'T wait on it yet
     auto downloadFuture = vko::download<int>(
@@ -1107,7 +1107,7 @@ TEST_F(UnitTestFixture, StagingStream_NonBlockingDownloadWithPoolCycling) {
                     }
                 });
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // NOW retrieve the original download - should still work
     auto& result = downloadFuture.get(ctx->device);
@@ -1137,7 +1137,7 @@ TEST_F(UnitTestFixture, StagingStream_ManualSubmitTinyDownload) {
     vko::upload(streaming, ctx->device, vko::BufferSpan(gpuBuffer).subspan(0, 10),
                 [](VkDeviceSize, auto span) { std::iota(span.begin(), span.end(), 42); });
     streaming.submit(); // Manual submit
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Download with manual submit
     auto downloadFuture = vko::download<int>(
@@ -1177,7 +1177,7 @@ TEST_F(UnitTestFixture, StagingStream_CancelOnScopeExit) {
                         std::iota(span.begin(), span.end(), static_cast<int>(offset));
                     });
         streaming.submit();
-        ctx->device.vkQueueWaitIdle(queue);
+        vko::check(ctx->device.vkQueueWaitIdle(queue));
     }
 
     // Now start a download but let streaming go out of scope WITHOUT submit
@@ -1227,7 +1227,7 @@ TEST_F(UnitTestFixture, StagingStream_PartialDownloadMissingFinalSubmit) {
                         }
                     });
         streaming.submit();
-        ctx->device.vkQueueWaitIdle(queue);
+        vko::check(ctx->device.vkQueueWaitIdle(queue));
     }
 
     // Start large download that will cause automatic submits
@@ -1290,7 +1290,7 @@ TEST_F(UnitTestFixture, StagingStream_NonZeroBufferOffset) {
                 });
 
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Verify that callbacks received 0-based offsets
     ASSERT_FALSE(uploadCallbackOffsets.empty()) << "Upload callback never called";
@@ -1429,7 +1429,7 @@ TEST_F(UnitTestFixture, StagingStream_UnalignedOffsetAndSize) {
                 });
 
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Download the same unaligned region and verify
     auto downloadFuture =
@@ -1483,7 +1483,7 @@ TEST_F(UnitTestFixture, StagingStream_SubrangeTransfers) {
     }
 
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Download and verify each subrange
     for (const auto& sub : subranges) {
@@ -1528,7 +1528,7 @@ TEST_F(UnitTestFixture, StagingStream_MultipleDownloadsCancelledOutOfOrder) {
                     });
     }
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Start downloads
     auto copyLambda = [](VkDeviceSize, auto input, auto output) {
@@ -1984,7 +1984,7 @@ TEST_F(UnitTestFixture, StagingStream_ConcurrentDownloads) {
     }
 
     // Wait for all GPU work to complete before destroying resources
-    ctx->device.vkQueueWaitIdle(sharedQueue);
+    vko::check(ctx->device.vkQueueWaitIdle(sharedQueue));
 }
 
 // Debug test: Stress test with tiny pools to catch race conditions
@@ -2018,7 +2018,7 @@ TEST_F(UnitTestFixture, StagingStream_TinyPoolStressTest) {
                         }
                     });
         streaming.submit();
-        ctx->device.vkQueueWaitIdle(queue);
+        vko::check(ctx->device.vkQueueWaitIdle(queue));
 
         // Download and verify using downloadForEach, with poison values written after read
         size_t              chunkIndex = 0;
@@ -2100,12 +2100,12 @@ TEST_F(UnitTestFixture, StagingStream_CommandBufferRecycling) {
 
         // Wait occasionally to allow recycling
         if (i % 10 == 9) {
-            ctx->device.vkQueueWaitIdle(queue);
+            vko::check(ctx->device.vkQueueWaitIdle(queue));
         }
     }
 
     // Final wait
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // If command buffers leaked, memory usage would grow unbounded
     // No assertion needed - test passes if it doesn't crash or OOM
@@ -2139,7 +2139,7 @@ TEST_F(UnitTestFixture, StagingStream_MemoryPressure) {
                 });
 
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Verify the transfer completed successfully despite memory pressure
     auto downloadFuture = vko::download(streaming, ctx->device,
@@ -2783,7 +2783,7 @@ TEST_F(UnitTestFixture, StagingStream_AtomicPairAllocation_ExactFit) {
     EXPECT_GT(callCount, 0);
 
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Use-case: Atomic paired allocation chunks when data exceeds pool size
@@ -2816,7 +2816,7 @@ TEST_F(UnitTestFixture, StagingStream_AtomicPairAllocation_Chunking) {
     EXPECT_EQ(totalProcessed, dataSize);
 
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Use-case: Atomic paired allocation userOffset increments correctly
@@ -2850,7 +2850,7 @@ TEST_F(UnitTestFixture, StagingStream_AtomicPairAllocation_OffsetTracking) {
     }
 
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Test download(DeviceSpan) with real data using VK_NV_copy_memory_indirect
@@ -2881,7 +2881,7 @@ TEST_F(UnitTestFixture, StagingStream_Download_DeviceSpan) {
     // Upload test data
     vko::upload(streaming, ctx->device, testData, vko::BufferSpan(buffer));
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Test 1: Download full buffer using DeviceSpan constructor
     {
@@ -2957,7 +2957,7 @@ TEST_F(UnitTestFixture, StagingStream_Upload_DeviceSpan_Callback) {
                          std::copy_n(testData.begin() + offset, mapped.size(), mapped.begin());
                      });
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Verify by downloading the data back
     auto future =
@@ -3004,7 +3004,7 @@ TEST_F(UnitTestFixture, StagingStream_Upload_DeviceSpan_Range) {
 
     vko::upload(streaming, ctx->device, testData, deviceSpan);
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Verify by downloading the data back
     auto future =
@@ -3126,7 +3126,7 @@ TEST_F(UnitTestFixture, StagingStream_Download_DeviceSpan_Transform) {
 
     vko::upload(streaming, ctx->device, testData, vko::BufferSpan(buffer));
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Create DeviceSpan and download with transform
     vko::DeviceAddress<int>    addr(buffer, ctx->device);
@@ -3174,7 +3174,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadForEach_DeviceSpan) {
 
     vko::upload(streaming, ctx->device, testData, vko::BufferSpan(buffer));
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Create DeviceSpan and downloadForEach
     vko::DeviceAddress<int>    addr(buffer, ctx->device);
@@ -3284,7 +3284,7 @@ TEST_F(UnitTestFixture, StagingStream_CancellationBehavior) {
                         std::iota(span.begin(), span.end(), static_cast<int>(offset));
                     });
         streaming.submit();
-        ctx->device.vkQueueWaitIdle(queue);
+        vko::check(ctx->device.vkQueueWaitIdle(queue));
 
         auto future =
             vko::download<int>(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, 100),
@@ -3393,7 +3393,7 @@ TEST_F(UnitTestFixture, StagingStream_DestructorWaitsForInFlightWork) {
     }
 
     // Ensure all GPU work is complete before test ends
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Use-case: Non-owning reference to staging resources
@@ -3422,7 +3422,7 @@ TEST_F(UnitTestFixture, StagingStreamRef_BasicUploadDownload) {
                     std::iota(span.begin(), span.end(), static_cast<int>(offset));
                 });
     streamingRef.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Download via ref
     auto downloadFuture = vko::download(streamingRef, ctx->device, vko::BufferSpan(gpuBuffer));
@@ -3435,7 +3435,7 @@ TEST_F(UnitTestFixture, StagingStreamRef_BasicUploadDownload) {
     }
 
     // Wait for all GPU work to complete before test cleanup
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Use-case: Multiple refs can share same resources
@@ -3480,7 +3480,7 @@ TEST_F(UnitTestFixture, StagingStreamRef_SharedResources) {
     EXPECT_GT(ref1.capacity(), 0u);
 
     // Wait for all GPU work to complete before test cleanup
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Use-case: BufferSpan with suballocation offset (e.g., accessing packed structs)
@@ -3530,7 +3530,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadBufferSpanWithOffset) {
                     }
                 });
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Download just the data region using BufferSpan with byte offset
     vko::BufferAddress<const float> dataAddr(static_cast<VkBuffer>(buffer), headerSize);
@@ -3567,7 +3567,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadWithActualTypeConversion) {
 
     vko::upload(streaming, ctx->device, sourceData, vko::BufferSpan(buffer));
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Download with type conversion: int32_t → float (with scaling)
     auto future = vko::download<float>(
@@ -3616,7 +3616,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadDeviceAddressWithTypeConversion) {
 
     vko::upload(streaming, ctx->device, sourceData, vko::BufferSpan(buffer));
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Create DeviceSpan and download with type conversion: uint32_t → int64_t
     vko::DeviceAddress<uint32_t>    addr(buffer, ctx->device);
@@ -3784,7 +3784,7 @@ TEST_F(UnitTestFixture, StagingStream_DedicatedStagingPool_BasicUpload) {
                 });
 
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Use-case: StagingStream with DedicatedStagingPool using withSingleAndStagingBuffer
@@ -3813,7 +3813,7 @@ TEST_F(UnitTestFixture, StagingStream_DedicatedStagingPool_AtomicPairAllocation)
     EXPECT_EQ(callCount, 1);
 
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 }
 
 // Use-case: StagingStream with DedicatedStagingPool download roundtrip
@@ -3837,7 +3837,7 @@ TEST_F(UnitTestFixture, StagingStream_DedicatedStagingPool_UploadDownloadRoundtr
                     }
                 });
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Download and verify
     auto future = vko::download(streaming, ctx->device, vko::BufferSpan(gpuBuffer).subspan(0, 500));
@@ -3996,7 +3996,7 @@ TEST_F(UnitTestFixture, FreeFunctionOverloads_OffsetHandling) {
     vko::upload(streaming, ctx->device, vko::BufferSpan(buffer).subspan(0, bufferSize),
                 [=](VkDeviceSize, auto span) { std::ranges::fill(span, sentinel); });
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // Test regions: each overload writes to a separate 10-element region
     // Region 0: offset 0-9   (upload: buffer+offset+size+fn)
@@ -4046,7 +4046,7 @@ TEST_F(UnitTestFixture, FreeFunctionOverloads_OffsetHandling) {
 
     // Submit uploads so far
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // DeviceSpan overloads require VK_NV_copy_memory_indirect
     bool hasIndirectCopy = ctx->device.vkCmdCopyMemoryIndirectNV != nullptr;
@@ -4071,7 +4071,7 @@ TEST_F(UnitTestFixture, FreeFunctionOverloads_OffsetHandling) {
         vko::upload(streaming, ctx->device, region5Data, devSpan5);
 
         streaming.submit();
-        ctx->device.vkQueueWaitIdle(queue);
+        vko::check(ctx->device.vkQueueWaitIdle(queue));
     }
 
     // 7 & 8: Allocator overloads create new buffers, test separately
@@ -4096,7 +4096,7 @@ TEST_F(UnitTestFixture, FreeFunctionOverloads_OffsetHandling) {
                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
 
     streaming.submit();
-    ctx->device.vkQueueWaitIdle(queue);
+    vko::check(ctx->device.vkQueueWaitIdle(queue));
 
     // ===== VERIFY UPLOADS via raw download =====
     auto verifyFuture =

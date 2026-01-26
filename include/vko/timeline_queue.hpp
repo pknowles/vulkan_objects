@@ -830,7 +830,7 @@ public:
     template <device_and_commands DeviceAndCommands>
     void wait(DeviceAndCommands& device) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        device.vkQueueWaitIdle(m_queue);
+        vko::check(device.vkQueueWaitIdle(m_queue));
     }
 
     template <class Fn>

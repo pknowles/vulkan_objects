@@ -20,6 +20,39 @@ using container_view_t =
                        const typename std::remove_reference_t<Container>::ValueType,
                        typename std::remove_reference_t<Container>::ValueType>;
 
+// Align a value up to the nearest multiple of alignment
+// Assumes alignment is a power of two
+template <class T>
+constexpr T align_up(T value, T alignment) {
+    return (value + alignment - 1) & ~(alignment - 1);
+}
+
+// Align a value down to the nearest multiple of alignment
+// Assumes alignment is a power of two
+template <class T>
+constexpr T align_down(T value, T alignment) {
+    return value & ~(alignment - 1);
+}
+
+// Aligns-up width, height and depth of a VkExtent3D
+constexpr VkExtent3D align_up(const VkExtent3D& value, const VkExtent3D& alignment) {
+    return {align_up(value.width, alignment.width), align_up(value.height, alignment.height),
+            align_up(value.depth, alignment.depth)};
+}
+
+// Ceiling of integer division
+template <std::integral T>
+constexpr T ceil_div(T numerator, T denominator) {
+    return (numerator + denominator - 1) / denominator;
+}
+
+// Ceiling of integer division for VkExtent3D dimensions
+constexpr VkExtent3D ceil_div(const VkExtent3D& numerator, const VkExtent3D& denominator) {
+    return {ceil_div(numerator.width, denominator.width),
+            ceil_div(numerator.height, denominator.height),
+            ceil_div(numerator.depth, denominator.depth)};
+}
+
 // Typed wrapper for VkDeviceAddress with element-based arithmetic. Works with
 // any buffer type providing .address() and ValueType. This might be used for
 // shader interop, where a uniform buffer or push constant can declare a

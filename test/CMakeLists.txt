@@ -33,6 +33,7 @@ add_executable(vulkan_objects_tests
   src/hello_triangle.cpp
   src/test_timeline_queue.cpp
   src/test_staging.cpp
+  src/test_staging_images.cpp
   src/test_query.cpp
   src/test_pnext_chain.cpp
   src/test_staging_reuse_bug.cpp

@@ -1,0 +1,65 @@
+// Copyright (c) 2026 Pyarelal Knowles, MIT License
+// This file was generated from {{ template_filename }}. Do not edit directly.
+{# Ignore that. This is the original! #}
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vko/exceptions.hpp>
+#include <vulkan/vulkan_core.h>
+
+namespace vko {
+
+// Format info returned by formatInfo()
+struct FormatInfo {
+    std::string_view name;
+    uint32_t blockSize;      // Total bytes per texel block
+    uint32_t texelsPerBlock; // Texels in a block (1 for uncompressed)
+    VkExtent3D blockExtent;  // Block dimensions in texels
+};
+
+// Compile-time format traits
+template<VkFormat> struct format_traits;
+## for format in findall("//formats/format/@name")
+{% set blockSize = find("//formats/format[@name='" + format + "']/@blockSize") %}
+{% set texelsPerBlock = find("//formats/format[@name='" + format + "']/@texelsPerBlock") %}
+{% set blockExtent = find("//formats/format[@name='" + format + "']/@blockExtent") %}
+{% if blockSize and texelsPerBlock %}
+{% if blockExtent %}
+template<> struct format_traits<{{ format }}> { static constexpr std::string_view name = "{{ format }}"; static constexpr uint32_t blockSize = {{ blockSize }}; static constexpr uint32_t texelsPerBlock = {{ texelsPerBlock }}; static constexpr VkExtent3D blockExtent = { {{ sub(",.*", "", blockExtent) }}, {{ sub("^[^,]*,([^,]*).*", "$1", blockExtent) }}, {{ sub("^[^,]*,[^,]*,", "", blockExtent) }} }; };
+{% else %}
+template<> struct format_traits<{{ format }}> { static constexpr std::string_view name = "{{ format }}"; static constexpr uint32_t blockSize = {{ blockSize }}; static constexpr uint32_t texelsPerBlock = {{ texelsPerBlock }}; static constexpr VkExtent3D blockExtent = {1, 1, 1}; };
+{% endif %}
+{% else %}
+// Skipping {{ format }} - missing blockSize and/or texelsPerBlock
+{% endif %}
+## endfor
+
+// Convert compile-time format_traits to runtime FormatInfo
+template<VkFormat F>
+constexpr FormatInfo toFormatInfo() {
+    return {format_traits<F>::name, format_traits<F>::blockSize, format_traits<F>::texelsPerBlock, format_traits<F>::blockExtent};
+}
+
+// Runtime format info lookup. Throws for unknown formats.
+// At compile-time, unknown formats cause a compile error.
+constexpr FormatInfo formatInfo(VkFormat format) {
+    switch (format) {
+## for format in findall("//formats/format/@name")
+{% set blockSize = find("//formats/format[@name='" + format + "']/@blockSize") %}
+{% set texelsPerBlock = find("//formats/format[@name='" + format + "']/@texelsPerBlock") %}
+{% if blockSize and texelsPerBlock %}
+    case {{ format }}: return toFormatInfo<{{ format }}>();
+{% endif %}
+## endfor
+    default: throw Exception("Unknown VkFormat " + std::to_string(static_cast<int>(format)));
+    }
+}
+
+// Convert VkFormat to string
+constexpr std::string_view to_string(VkFormat format) {
+    return formatInfo(format).name;
+}
+
+}  // namespace vko

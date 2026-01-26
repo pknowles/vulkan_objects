@@ -48,7 +48,11 @@
 // stream.poll();                    // OK: non-blocking, calls callback because we waited on the semaphore
 // stream.wait();                    // OK: waits and calls callback, if not already called
 // future.wait(device);              // OK: waits and calls callback, if not already called
+//
+// TODO: the staging stream must hold a device internally pointer; should we
+// remove device as a separate parameter?
 
+#include <array>
 #include <cstdio>
 #include <functional>
 #include <stdexcept>
@@ -59,6 +63,7 @@
 #include <vko/bound_buffer.hpp>
 #include <vko/command_recording.hpp>
 #include <vko/device_address.hpp>
+#include <vko/formats.hpp>
 #include <vko/handles.hpp>
 #include <vko/shortcuts.hpp>
 #include <vko/timeline_queue.hpp>
@@ -328,16 +333,6 @@ static_assert(std::is_move_constructible_v<DedicatedStagingPool<Device, vko::vma
 static_assert(std::is_move_assignable_v<DedicatedStagingPool<Device, vko::vma::Allocator>>);
 
 namespace vma {
-
-// Align a value up to the nearest multiple of alignment
-constexpr VkDeviceSize align_up(VkDeviceSize value, VkDeviceSize alignment) {
-    return (value + alignment - 1) & ~(alignment - 1);
-}
-
-// Align a value down to the nearest multiple of alignment
-constexpr VkDeviceSize align_down(VkDeviceSize value, VkDeviceSize alignment) {
-    return value & ~(alignment - 1);
-}
 
 // Staging buffer allocator that provides temporary buffers from cyclical memory
 // pools. The caller must call endBatch() with a SemaphoreValue that will
@@ -1563,6 +1558,312 @@ auto downloadForEach(StreamType& stream, const DeviceAndCommands& device, Device
                                                                         finalSemaphore};
 }
 
+namespace detail {
+
+struct vec3u {
+    uint32_t               x, y, z;
+    friend constexpr vec3u operator+(const vec3u& a, const vec3u& b) {
+        return {a.x + b.x, a.y + b.y, a.z + b.z};
+    }
+    friend constexpr vec3u operator-(const vec3u& a, const vec3u& b) {
+        return {a.x - b.x, a.y - b.y, a.z - b.z};
+    }
+    friend constexpr vec3u operator*(const vec3u& a, const vec3u& b) {
+        return {a.x * b.x, a.y * b.y, a.z * b.z};
+    }
+    friend constexpr vec3u operator/(const vec3u& a, const vec3u& b) {
+        return {a.x / b.x, a.y / b.y, a.z / b.z};
+    }
+    friend constexpr vec3u ceil_div(const vec3u& a, const vec3u& b) {
+        return {ceil_div(a.x, b.x), ceil_div(a.y, b.y), ceil_div(a.z, b.z)};
+    }
+};
+
+constexpr vec3u fromPitchLinear(uint32_t element, vec3u imageSize) {
+    return {uint32_t(element % imageSize.x), uint32_t((element / imageSize.x) % imageSize.y),
+            uint32_t(element / (imageSize.x * imageSize.y))};
+}
+
+constexpr uint32_t toPitchLinear(vec3u c, vec3u imageSize) {
+    return c.z * (imageSize.x * imageSize.y) + c.y * imageSize.x + c.x;
+}
+
+template <class T, size_t N>
+class FixedVector {
+public:
+    T*       data() { return m_data.data(); }
+    const T* data() const { return m_data.data(); }
+    size_t   size() const { return m_count; }
+    const T& operator[](size_t index) const { return m_data[index]; }
+    T&       operator[](size_t index) { return m_data[index]; }
+    T*       begin() { return m_data.begin(); }
+    T*       end() { return m_data.begin() + m_count; }
+    const T* begin() const { return m_data.begin(); }
+    const T* end() const { return m_data.begin() + m_count; }
+    void     push_back(T&& value) {
+        if (m_count >= N)
+            throw std::runtime_error("FixedVector overflow");
+        m_data[m_count++] = std::move(value);
+    }
+
+private:
+    std::array<T, N> m_data  = {};
+    size_t           m_count = 0;
+};
+
+}; // namespace detail
+
+inline VkBufferImageCopy makeCopyRange(uint32_t beginBlock, uint32_t endBlock,
+                                       const detail::vec3u& sizeBlocks, const FormatInfo& fmtInfo,
+                                       const VkImageSubresourceLayers& subresource,
+                                       VkDeviceSize                    chunkStartBytes) {
+    assert(beginBlock < endBlock);
+    const detail::vec3u blockExtent = {fmtInfo.blockExtent.width, fmtInfo.blockExtent.height,
+                                       fmtInfo.blockExtent.depth};
+    detail::vec3u       begin3      = detail::fromPitchLinear(beginBlock, sizeBlocks) * blockExtent;
+    // Begin to end exclusive, so the inclusive end in 3D is the last byte
+    // of the range. Then increase in each dimension to be exclusive again.
+    detail::vec3u end3 =
+        detail::fromPitchLinear(endBlock - 1, sizeBlocks) * blockExtent + blockExtent;
+    detail::vec3u size3           = end3 - begin3;
+    VkDeviceSize  imageByteOffset = beginBlock * fmtInfo.blockSize;
+    VkDeviceSize  bufferOffset =
+        imageByteOffset - chunkStartBytes; // Relative to staging buffer start
+    assert(bufferOffset % fmtInfo.blockSize == 0 && "bufferOffset must be block-aligned");
+
+    // Validate that the range forms a valid rectangle
+    // For ranges spanning multiple layers/slices, intermediate layers must be complete
+    assert(end3.x >= begin3.x && "end3.x must be >= begin3.x (x-coordinate underflow)");
+    assert(end3.y >= begin3.y && "end3.y must be >= begin3.y (y-coordinate underflow - range "
+                                 "crosses layer boundary incorrectly)");
+    assert(end3.z >= begin3.z && "end3.z must be >= begin3.z (z-coordinate underflow)");
+    assert(size3.x > 0 && size3.x <= sizeBlocks.x * blockExtent.x && "size3.x out of range");
+    assert(size3.y > 0 && size3.y <= sizeBlocks.y * blockExtent.y && "size3.y out of range");
+    assert(size3.z > 0 && size3.z <= sizeBlocks.z * blockExtent.z && "size3.z out of range");
+
+    // Array images encode their third dimension in their layer count.
+    return subresource.layerCount > 1u ? VkBufferImageCopy{
+            .bufferOffset      = bufferOffset,
+            .bufferRowLength   = 0u,
+            .bufferImageHeight = 0u,
+            .imageSubresource  = VkImageSubresourceLayers{
+                .aspectMask= subresource.aspectMask,
+                .mipLevel= subresource.mipLevel,
+                .baseArrayLayer= subresource.baseArrayLayer + begin3.z,
+                .layerCount= size3.z, // put depth back in the layer count, where it came from
+            },
+            .imageOffset       = {int32_t(begin3.x), int32_t(begin3.y), 0},
+            .imageExtent       = {size3.x, size3.y, 1},
+        } : VkBufferImageCopy{
+            .bufferOffset      = bufferOffset,
+            .bufferRowLength   = 0u,
+            .bufferImageHeight = 0u,
+            .imageSubresource  = VkImageSubresourceLayers{
+                .aspectMask= subresource.aspectMask,
+                .mipLevel= subresource.mipLevel,
+                .baseArrayLayer= subresource.baseArrayLayer,
+                .layerCount= 1u,
+            },
+            .imageOffset       = {int32_t(begin3.x), int32_t(begin3.y), int32_t(begin3.z)},
+            .imageExtent       = {size3.x, size3.y, size3.z},
+        };
+}
+
+// Generate VkBufferImageCopy regions for a byte range [begin, end). Vulkan
+// requires rectangular copy regions so this hierarchically decomposes the byte
+// range into at most 5 regions (i.e. 1D, 2D, 3D, 2D, 1D).
+// beginBytes/endBytes are absolute byte offsets in the image, and beginBytes maps to byte 0 of
+// the staging buffer.
+inline detail::FixedVector<VkBufferImageCopy, 5>
+generateImageCopyRegions(VkDeviceSize beginBytes, VkDeviceSize endBytes,
+                         const VkImageSubresourceLayers& subresource, const VkExtent3D& extent,
+                         const FormatInfo& fmtInfo) {
+    assert(beginBytes < endBytes);
+    detail::FixedVector<VkBufferImageCopy, 5> result;
+
+    const VkExtent3D    extentBlocks = ceil_div(extent, fmtInfo.blockExtent);
+    const detail::vec3u sizeBlocks   = {extentBlocks.width, extentBlocks.height,
+                                        extentBlocks.depth * subresource.layerCount};
+
+    // Copy must be aligned to the block size
+    assert(beginBytes % fmtInfo.blockSize == 0);
+    assert(endBytes % fmtInfo.blockSize == 0);
+
+    auto completeAlignedRange =
+        [](VkDeviceSize begin, VkDeviceSize end,
+           VkDeviceSize alignment) -> std::optional<std::pair<VkDeviceSize, VkDeviceSize>> {
+        VkDeviceSize alignedBegin = ceil_div(begin, alignment) * alignment;
+        VkDeviceSize alignedEnd   = (end / alignment) * alignment;
+        // Return a valid range even if it's empty. In this case, the larger
+        // alignment splits the next alignments, which must be separate.
+        return (alignedBegin <= alignedEnd)
+                   ? std::make_optional<std::pair<VkDeviceSize, VkDeviceSize>>(alignedBegin,
+                                                                               alignedEnd)
+                   : std::nullopt;
+    };
+
+    auto emitCopyRange = [&result, &fmtInfo, &sizeBlocks, &subresource,
+                          chunkStartBytes = beginBytes](VkDeviceSize regionBeginBytes,
+                                                        VkDeviceSize regionEndBytes) {
+        // would be a bug for smaller alignments to be inside the range of larger alignments
+        assert(regionBeginBytes <= regionEndBytes);
+        if (regionBeginBytes < regionEndBytes) {
+            result.push_back(makeCopyRange(uint32_t(regionBeginBytes / fmtInfo.blockSize),
+                                           uint32_t(regionEndBytes / fmtInfo.blockSize), sizeBlocks,
+                                           fmtInfo, subresource, chunkStartBytes));
+        }
+    };
+
+    // Try to copy the biggest possible full 2D range first, then the remaining
+    // ranges of rows before and after, then the remaining range of blocks
+    // (pixels or compressed blocks) before and after. If the initial 2D or row
+    // ranges are not empty, begin at the rows or pixels respectively.
+    std::optional<std::pair<VkDeviceSize, VkDeviceSize>> copiedRange;
+    for (VkDeviceSize dimensionAlignment : {sizeBlocks.x * sizeBlocks.y * fmtInfo.blockSize,
+                                            sizeBlocks.x * fmtInfo.blockSize, fmtInfo.blockSize}) {
+        auto nextRange = completeAlignedRange(beginBytes, endBytes, dimensionAlignment);
+        if (nextRange) {
+            if (copiedRange) {
+                emitCopyRange(nextRange->first, copiedRange->first);
+                emitCopyRange(copiedRange->second, nextRange->second);
+            } else {
+                emitCopyRange(nextRange->first, nextRange->second);
+            }
+        }
+        copiedRange = nextRange;
+    }
+
+    return result;
+}
+
+// Download image to vector<std::byte> with optional transform
+// Transform signature: fn(VkDeviceSize offset, std::span<std::byte> input, std::span<DstT> output)
+// User must transition image to srcLayout before calling and add appropriate barriers.
+template <staging_stream StreamType, device_and_commands DeviceAndCommands, class Fn>
+    requires download_transform_callback<Fn, std::byte, std::byte>
+auto download(StreamType& stream, const DeviceAndCommands& device, VkImage src,
+              VkImageLayout srcLayout, const VkImageSubresourceLayers& subresource,
+              VkExtent3D extent, VkFormat format, Fn&& fn) {
+    using Allocator = typename StreamType::Allocator;
+
+    FormatInfo   fmtInfo   = formatInfo(format);
+    VkDeviceSize sizeBytes = imageSizeBytes(extent, subresource.layerCount, fmtInfo);
+    DownloadFutureBuilder<Fn, std::byte, std::byte, Allocator, true> builder(std::forward<Fn>(fn),
+                                                                             sizeBytes);
+
+    stream.template withStagingBufferUsed<std::byte>(
+        sizeBytes,
+        [&](VkCommandBuffer cmd, auto& stagingBuf, VkDeviceSize offsetBytes)
+            -> std::pair<std::optional<std::function<void(bool)>>, VkDeviceSize> {
+            auto copyRegions = generateImageCopyRegions(
+                offsetBytes, offsetBytes + stagingBuf.sizeBytes(), subresource, extent, fmtInfo);
+            device.vkCmdCopyImageToBuffer(cmd, src, srcLayout, stagingBuf,
+                                          uint32_t(copyRegions.size()), copyRegions.data());
+            auto callback = builder.addSubrange(offsetBytes, stagingBuf.map());
+            return {callback, stagingBuf.sizeBytes()};
+        });
+
+    SemaphoreValue finalSemaphore = builder.m_state->subranges.empty()
+                                        ? SemaphoreValue::makeSignalled()
+                                        : stream.commandBuffer().nextSubmitSemaphore();
+
+    return DownloadTransformFuture<Fn, std::byte, std::byte, Allocator>{std::move(builder),
+                                                                        finalSemaphore};
+}
+
+// Download image to vector<std::byte> (identity - no transform)
+// User must transition image to srcLayout before calling and add appropriate barriers.
+template <staging_stream StreamType, device_and_commands DeviceAndCommands>
+auto download(StreamType& stream, const DeviceAndCommands& device, VkImage src,
+              VkImageLayout srcLayout, const VkImageSubresourceLayers& subresource,
+              VkExtent3D extent, VkFormat format) {
+    return download(stream, device, src, srcLayout, subresource, extent, format,
+                    [](VkDeviceSize, std::span<std::byte> input, std::span<std::byte> output) {
+                        std::ranges::copy(input, output.begin());
+                    });
+}
+
+// Download from image calling callback for each chunk (streaming)
+// Handles arbitrary byte ranges - chunks may start/end mid-row and span layers.
+// Callback signature: fn(VkDeviceSize byteOffset, std::span<std::byte> data)
+// User must transition image to srcLayout before calling and add appropriate barriers.
+template <staging_stream StreamType, device_and_commands DeviceAndCommands, class Fn>
+    requires download_foreach_callback<Fn, std::byte>
+auto downloadForEach(StreamType& stream, const DeviceAndCommands& device, VkImage src,
+                     VkImageLayout srcLayout, const VkImageSubresourceLayers& subresource,
+                     const VkExtent3D& extent, VkFormat format, Fn&& fn) {
+    using Allocator = typename StreamType::Allocator;
+
+    FormatInfo                                                        fmtInfo = formatInfo(format);
+    DownloadFutureBuilder<Fn, std::byte, std::byte, Allocator, false> builder(std::forward<Fn>(fn));
+
+    stream.template withStagingBufferUsed<std::byte>(
+        imageSizeBytes(extent, subresource.layerCount, fmtInfo),
+        [&](VkCommandBuffer cmd, auto& stagingBuf, VkDeviceSize offsetBytes)
+            -> std::pair<std::optional<std::function<void(bool)>>, VkDeviceSize> {
+            auto copyRegions = generateImageCopyRegions(
+                offsetBytes, offsetBytes + stagingBuf.sizeBytes(), subresource, extent, fmtInfo);
+            device.vkCmdCopyImageToBuffer(cmd, src, srcLayout, stagingBuf,
+                                          uint32_t(copyRegions.size()), copyRegions.data());
+            auto callback = builder.addSubrange(offsetBytes, stagingBuf.map());
+            return {callback, stagingBuf.sizeBytes()};
+        });
+
+    SemaphoreValue finalSemaphore = builder.m_state->subranges.empty()
+                                        ? SemaphoreValue::makeSignalled()
+                                        : stream.commandBuffer().nextSubmitSemaphore();
+
+    return DownloadForEachHandle<Fn, std::byte, Allocator>{std::move(builder), finalSemaphore};
+}
+
+// Upload to image from staging buffer with callback to populate data.
+// Callback signature: fn(VkDeviceSize byteOffset, std::span<std::byte> stagingData)
+// User must transition image to dstLayout before calling and add appropriate barriers.
+// Handles arbitrary byte-range chunking with multiple VkBufferImageCopy regions.
+template <staging_stream StreamType, device_and_commands DeviceAndCommands, class Fn>
+    requires upload_callback<Fn, std::byte>
+void upload(StreamType& stream, const DeviceAndCommands& device, VkImage dst,
+            VkImageLayout dstLayout, const VkImageSubresourceLayers& subresource,
+            const VkExtent3D& extent, VkFormat format, Fn&& fn) {
+
+    FormatInfo fmtInfo = formatInfo(format);
+    stream.template withStagingBufferUsed<std::byte>(
+        imageSizeBytes(extent, subresource.layerCount, format),
+        [&](VkCommandBuffer cmd, auto& stagingBuf, VkDeviceSize offsetBytes) mutable
+            -> std::pair<std::optional<std::function<void(bool)>>, VkDeviceSize> {
+            // Let user populate the staging buffer
+            fn(offsetBytes, stagingBuf.map().span());
+
+            // Generate copy regions (max 5 with hierarchical decomposition)
+            auto copyRegions = generateImageCopyRegions(
+                offsetBytes, offsetBytes + stagingBuf.sizeBytes(), subresource, extent, fmtInfo);
+            device.vkCmdCopyBufferToImage(cmd, static_cast<VkBuffer>(stagingBuf), dst, dstLayout,
+                                          uint32_t(copyRegions.size()), copyRegions.data());
+
+            return {std::nullopt, stagingBuf.sizeBytes()};
+        });
+}
+
+// Upload contiguous range to image.
+// User must transition image to dstLayout before calling and add appropriate barriers.
+template <staging_stream StreamType, device_and_commands DeviceAndCommands,
+          std::ranges::contiguous_range SrcRange>
+    requires std::same_as<std::remove_cv_t<std::ranges::range_value_t<SrcRange>>, std::byte>
+void upload(StreamType& stream, const DeviceAndCommands& device, SrcRange&& srcRange, VkImage dst,
+            VkImageLayout dstLayout, const VkImageSubresourceLayers& subresource, VkExtent3D extent,
+            VkFormat format) {
+
+    if (std::ranges::size(srcRange) != imageSizeBytes(extent, subresource.layerCount, format)) {
+        throw std::out_of_range("srcRange size must match image size in bytes");
+    }
+
+    auto it = reinterpret_cast<const std::byte*>(std::ranges::data(srcRange));
+    upload(stream, device, dst, dstLayout, subresource, extent, format,
+           [&](VkDeviceSize offset, std::span<std::byte> staging) {
+               std::copy_n(it + offset, staging.size(), staging.begin());
+           });
+}
+
 // Lightweight non-owning view for staging operations. Holds references to a
 // CyclingCommandBuffer and StagingAllocator, providing the same API as StagingStream
 // but with trivial destructor and no ownership responsibilities. Multiple
@@ -1628,6 +1929,29 @@ public:
             // stagingBuf may be smaller than requested - loop until done
             userOffset += stagingBuf.size();
             totalSize -= stagingBuf.size();
+        }
+    }
+
+    // Variant where callback returns (optional cleanup, bytes actually used).
+    // Useful for image copies where only complete rows can be used.
+    // Callback signature: fn(cmd, buf, offset) -> pair<optional<cleanup>, bytesUsed>
+    template <class T, class Fn>
+    void withStagingBufferUsed(VkDeviceSize totalSize, Fn&& fn) {
+        VkDeviceSize userOffset = 0;
+        while (totalSize > 0) {
+            auto& stagingBuf = allocateUpTo<T>(totalSize);
+
+            // Invoke user callback - returns (optional cleanup, bytes used)
+            auto [maybeCallback, bytesUsed] = fn(commandBuffer(), stagingBuf, userOffset);
+
+            // Auto-register cleanup if returned
+            if (maybeCallback.has_value()) {
+                m_staging.get().registerBatchCallback(std::move(*maybeCallback));
+            }
+
+            // Use reported bytes, not buffer size (for row-aligned image copies)
+            userOffset += bytesUsed;
+            totalSize -= bytesUsed;
         }
     }
 
@@ -1758,6 +2082,11 @@ public:
         requires std::invocable<Fn, VkCommandBuffer, const BoundBuffer<T, Allocator>&, VkDeviceSize>
     void withStagingBuffer(VkDeviceSize totalSize, Fn&& fn) {
         m_ref.template withStagingBuffer<T>(totalSize, std::forward<Fn>(fn));
+    }
+
+    template <class T, class Fn>
+    void withStagingBufferUsed(VkDeviceSize totalSize, Fn&& fn) {
+        m_ref.template withStagingBufferUsed<T>(totalSize, std::forward<Fn>(fn));
     }
 
     SemaphoreValue submit() { return m_ref.submit(); }
