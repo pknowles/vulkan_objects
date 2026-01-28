@@ -1613,10 +1613,13 @@ private:
 
 }; // namespace detail
 
-inline VkBufferImageCopy makeCopyRange(uint32_t beginBlock, uint32_t endBlock,
-                                       const detail::vec3u& sizeBlocks, const FormatInfo& fmtInfo,
-                                       const VkImageSubresourceLayers& subresource,
-                                       VkDeviceSize                    chunkStartBytes) {
+// Compute image region for a block range within a larger region.
+// Takes block indices within the region's linear address space and produces the
+// corresponding image region, accounting for array vs 3D image semantics.
+// imageOffset is added to support sub-region transfers.
+inline Region makeCopyRange(uint32_t beginBlock, uint32_t endBlock, const detail::vec3u& sizeBlocks,
+                            const FormatInfo& fmtInfo, const VkImageSubresourceLayers& subresource,
+                            VkOffset3D imageOffset) {
     assert(beginBlock < endBlock);
     const detail::vec3u blockExtent = {fmtInfo.blockExtent.width, fmtInfo.blockExtent.height,
                                        fmtInfo.blockExtent.depth};
@@ -1625,11 +1628,7 @@ inline VkBufferImageCopy makeCopyRange(uint32_t beginBlock, uint32_t endBlock,
     // of the range. Then increase in each dimension to be exclusive again.
     detail::vec3u end3 =
         detail::fromPitchLinear(endBlock - 1, sizeBlocks) * blockExtent + blockExtent;
-    detail::vec3u size3           = end3 - begin3;
-    VkDeviceSize  imageByteOffset = beginBlock * fmtInfo.blockSize;
-    VkDeviceSize  bufferOffset =
-        imageByteOffset - chunkStartBytes; // Relative to staging buffer start
-    assert(bufferOffset % fmtInfo.blockSize == 0 && "bufferOffset must be block-aligned");
+    detail::vec3u size3 = end3 - begin3;
 
     // Validate that the range forms a valid rectangle
     // For ranges spanning multiple layers/slices, intermediate layers must be complete
@@ -1642,48 +1641,50 @@ inline VkBufferImageCopy makeCopyRange(uint32_t beginBlock, uint32_t endBlock,
     assert(size3.z > 0 && size3.z <= sizeBlocks.z * blockExtent.z && "size3.z out of range");
 
     // Array images encode their third dimension in their layer count.
-    return subresource.layerCount > 1u ? VkBufferImageCopy{
-            .bufferOffset      = bufferOffset,
-            .bufferRowLength   = 0u,
-            .bufferImageHeight = 0u,
-            .imageSubresource  = VkImageSubresourceLayers{
-                .aspectMask= subresource.aspectMask,
-                .mipLevel= subresource.mipLevel,
-                .baseArrayLayer= subresource.baseArrayLayer + begin3.z,
-                .layerCount= size3.z, // put depth back in the layer count, where it came from
-            },
-            .imageOffset       = {int32_t(begin3.x), int32_t(begin3.y), 0},
-            .imageExtent       = {size3.x, size3.y, 1},
-        } : VkBufferImageCopy{
-            .bufferOffset      = bufferOffset,
-            .bufferRowLength   = 0u,
-            .bufferImageHeight = 0u,
-            .imageSubresource  = VkImageSubresourceLayers{
-                .aspectMask= subresource.aspectMask,
-                .mipLevel= subresource.mipLevel,
-                .baseArrayLayer= subresource.baseArrayLayer,
-                .layerCount= 1u,
-            },
-            .imageOffset       = {int32_t(begin3.x), int32_t(begin3.y), int32_t(begin3.z)},
-            .imageExtent       = {size3.x, size3.y, size3.z},
+    if (subresource.layerCount > 1u) {
+        return Region{
+            .subresource =
+                VkImageSubresourceLayers{
+                    .aspectMask     = subresource.aspectMask,
+                    .mipLevel       = subresource.mipLevel,
+                    .baseArrayLayer = subresource.baseArrayLayer + begin3.z,
+                    .layerCount     = size3.z,
+                },
+            .offset = {imageOffset.x + int32_t(begin3.x), imageOffset.y + int32_t(begin3.y),
+                       imageOffset.z},
+            .extent = {size3.x, size3.y, 1},
         };
+    } else {
+        return Region{
+            .subresource =
+                VkImageSubresourceLayers{
+                    .aspectMask     = subresource.aspectMask,
+                    .mipLevel       = subresource.mipLevel,
+                    .baseArrayLayer = subresource.baseArrayLayer,
+                    .layerCount     = 1u,
+                },
+            .offset = {imageOffset.x + int32_t(begin3.x), imageOffset.y + int32_t(begin3.y),
+                       imageOffset.z + int32_t(begin3.z)},
+            .extent = {size3.x, size3.y, size3.z},
+        };
+    }
 }
 
 // Generate VkBufferImageCopy regions for a byte range [begin, end). Vulkan
 // requires rectangular copy regions so this hierarchically decomposes the byte
 // range into at most 5 regions (i.e. 1D, 2D, 3D, 2D, 1D).
-// beginBytes/endBytes are absolute byte offsets in the image, and beginBytes maps to byte 0 of
-// the staging buffer.
+// beginBytes/endBytes are absolute byte offsets within the subregion, and beginBytes maps to
+// byte 0 of the staging buffer. The imageSubregion.offset is added to support sub-region
+// transfers.
 inline detail::FixedVector<VkBufferImageCopy, 5>
 generateImageCopyRegions(VkDeviceSize beginBytes, VkDeviceSize endBytes,
-                         const VkImageSubresourceLayers& subresource, const VkExtent3D& extent,
-                         const FormatInfo& fmtInfo) {
+                         const Region& imageSubregion, const FormatInfo& fmtInfo) {
     assert(beginBytes < endBytes);
     detail::FixedVector<VkBufferImageCopy, 5> result;
 
-    const VkExtent3D    extentBlocks = ceil_div(extent, fmtInfo.blockExtent);
+    const VkExtent3D    extentBlocks = ceil_div(imageSubregion.extent, fmtInfo.blockExtent);
     const detail::vec3u sizeBlocks   = {extentBlocks.width, extentBlocks.height,
-                                        extentBlocks.depth * subresource.layerCount};
+                                        extentBlocks.depth * imageSubregion.subresource.layerCount};
 
     // Copy must be aligned to the block size
     assert(beginBytes % fmtInfo.blockSize == 0);
@@ -1702,15 +1703,24 @@ generateImageCopyRegions(VkDeviceSize beginBytes, VkDeviceSize endBytes,
                    : std::nullopt;
     };
 
-    auto emitCopyRange = [&result, &fmtInfo, &sizeBlocks, &subresource,
+    auto emitCopyRange = [&result, &fmtInfo, &sizeBlocks, &imageSubregion,
                           chunkStartBytes = beginBytes](VkDeviceSize regionBeginBytes,
                                                         VkDeviceSize regionEndBytes) {
         // would be a bug for smaller alignments to be inside the range of larger alignments
         assert(regionBeginBytes <= regionEndBytes);
         if (regionBeginBytes < regionEndBytes) {
-            result.push_back(makeCopyRange(uint32_t(regionBeginBytes / fmtInfo.blockSize),
-                                           uint32_t(regionEndBytes / fmtInfo.blockSize), sizeBlocks,
-                                           fmtInfo, subresource, chunkStartBytes));
+            Region region =
+                makeCopyRange(uint32_t(regionBeginBytes / fmtInfo.blockSize),
+                              uint32_t(regionEndBytes / fmtInfo.blockSize), sizeBlocks, fmtInfo,
+                              imageSubregion.subresource, imageSubregion.offset);
+            result.push_back(VkBufferImageCopy{
+                .bufferOffset      = regionBeginBytes - chunkStartBytes,
+                .bufferRowLength   = 0u,
+                .bufferImageHeight = 0u,
+                .imageSubresource  = region.subresource,
+                .imageOffset       = region.offset,
+                .imageExtent       = region.extent,
+            });
         }
     };
 
@@ -1736,18 +1746,27 @@ generateImageCopyRegions(VkDeviceSize beginBytes, VkDeviceSize endBytes,
     return result;
 }
 
-// Download image to vector<std::byte> with optional transform
+// Legacy overload for compatibility - converts to Region internally
+// DEPRECATED: Use the Region overload instead
+inline detail::FixedVector<VkBufferImageCopy, 5>
+generateImageCopyRegions(VkDeviceSize beginBytes, VkDeviceSize endBytes,
+                         const VkImageSubresourceLayers& subresource, const VkExtent3D& extent,
+                         const FormatInfo& fmtInfo) {
+    return generateImageCopyRegions(beginBytes, endBytes,
+                                    Region{.subresource = subresource, .extent = extent}, fmtInfo);
+}
+
+// Download image region to vector<std::byte> with optional transform
 // Transform signature: fn(VkDeviceSize offset, std::span<std::byte> input, std::span<DstT> output)
 // User must transition image to srcLayout before calling and add appropriate barriers.
 template <staging_stream StreamType, device_and_commands DeviceAndCommands, class Fn>
     requires download_transform_callback<Fn, std::byte, std::byte>
-auto download(StreamType& stream, const DeviceAndCommands& device, VkImage src,
-              VkImageLayout srcLayout, const VkImageSubresourceLayers& subresource,
-              VkExtent3D extent, VkFormat format, Fn&& fn) {
+auto download(StreamType& stream, const DeviceAndCommands& device, const ImageRegion& region,
+              VkImageLayout srcLayout, VkFormat format, Fn&& fn) {
     using Allocator = typename StreamType::Allocator;
 
     FormatInfo   fmtInfo   = formatInfo(format);
-    VkDeviceSize sizeBytes = imageSizeBytes(extent, subresource.layerCount, fmtInfo);
+    VkDeviceSize sizeBytes = imageSizeBytes(region.region(), fmtInfo);
     DownloadFutureBuilder<Fn, std::byte, std::byte, Allocator, true> builder(std::forward<Fn>(fn),
                                                                              sizeBytes);
 
@@ -1756,8 +1775,8 @@ auto download(StreamType& stream, const DeviceAndCommands& device, VkImage src,
         [&](VkCommandBuffer cmd, auto& stagingBuf, VkDeviceSize offsetBytes)
             -> std::pair<std::optional<std::function<void(bool)>>, VkDeviceSize> {
             auto copyRegions = generateImageCopyRegions(
-                offsetBytes, offsetBytes + stagingBuf.sizeBytes(), subresource, extent, fmtInfo);
-            device.vkCmdCopyImageToBuffer(cmd, src, srcLayout, stagingBuf,
+                offsetBytes, offsetBytes + stagingBuf.sizeBytes(), region.region(), fmtInfo);
+            device.vkCmdCopyImageToBuffer(cmd, region.image(), srcLayout, stagingBuf,
                                           uint32_t(copyRegions.size()), copyRegions.data());
             auto callback = builder.addSubrange(offsetBytes, stagingBuf.map());
             return {callback, stagingBuf.sizeBytes()};
@@ -1771,39 +1790,37 @@ auto download(StreamType& stream, const DeviceAndCommands& device, VkImage src,
                                                                         finalSemaphore};
 }
 
-// Download image to vector<std::byte> (identity - no transform)
+// Download image region to vector<std::byte> (identity - no transform)
 // User must transition image to srcLayout before calling and add appropriate barriers.
 template <staging_stream StreamType, device_and_commands DeviceAndCommands>
-auto download(StreamType& stream, const DeviceAndCommands& device, VkImage src,
-              VkImageLayout srcLayout, const VkImageSubresourceLayers& subresource,
-              VkExtent3D extent, VkFormat format) {
-    return download(stream, device, src, srcLayout, subresource, extent, format,
+auto download(StreamType& stream, const DeviceAndCommands& device, const ImageRegion& region,
+              VkImageLayout srcLayout, VkFormat format) {
+    return download(stream, device, region, srcLayout, format,
                     [](VkDeviceSize, std::span<std::byte> input, std::span<std::byte> output) {
                         std::ranges::copy(input, output.begin());
                     });
 }
 
-// Download from image calling callback for each chunk (streaming)
+// Download from image region calling callback for each chunk (streaming)
 // Handles arbitrary byte ranges - chunks may start/end mid-row and span layers.
 // Callback signature: fn(VkDeviceSize byteOffset, std::span<std::byte> data)
 // User must transition image to srcLayout before calling and add appropriate barriers.
 template <staging_stream StreamType, device_and_commands DeviceAndCommands, class Fn>
     requires download_foreach_callback<Fn, std::byte>
-auto downloadForEach(StreamType& stream, const DeviceAndCommands& device, VkImage src,
-                     VkImageLayout srcLayout, const VkImageSubresourceLayers& subresource,
-                     const VkExtent3D& extent, VkFormat format, Fn&& fn) {
+auto downloadForEach(StreamType& stream, const DeviceAndCommands& device, const ImageRegion& region,
+                     VkImageLayout srcLayout, VkFormat format, Fn&& fn) {
     using Allocator = typename StreamType::Allocator;
 
     FormatInfo                                                        fmtInfo = formatInfo(format);
     DownloadFutureBuilder<Fn, std::byte, std::byte, Allocator, false> builder(std::forward<Fn>(fn));
 
     stream.template withStagingBufferUsed<std::byte>(
-        imageSizeBytes(extent, subresource.layerCount, fmtInfo),
+        imageSizeBytes(region.region(), fmtInfo),
         [&](VkCommandBuffer cmd, auto& stagingBuf, VkDeviceSize offsetBytes)
             -> std::pair<std::optional<std::function<void(bool)>>, VkDeviceSize> {
             auto copyRegions = generateImageCopyRegions(
-                offsetBytes, offsetBytes + stagingBuf.sizeBytes(), subresource, extent, fmtInfo);
-            device.vkCmdCopyImageToBuffer(cmd, src, srcLayout, stagingBuf,
+                offsetBytes, offsetBytes + stagingBuf.sizeBytes(), region.region(), fmtInfo);
+            device.vkCmdCopyImageToBuffer(cmd, region.image(), srcLayout, stagingBuf,
                                           uint32_t(copyRegions.size()), copyRegions.data());
             auto callback = builder.addSubrange(offsetBytes, stagingBuf.map());
             return {callback, stagingBuf.sizeBytes()};
@@ -1816,19 +1833,18 @@ auto downloadForEach(StreamType& stream, const DeviceAndCommands& device, VkImag
     return DownloadForEachHandle<Fn, std::byte, Allocator>{std::move(builder), finalSemaphore};
 }
 
-// Upload to image from staging buffer with callback to populate data.
+// Upload to image region from staging buffer with callback to populate data.
 // Callback signature: fn(VkDeviceSize byteOffset, std::span<std::byte> stagingData)
-// User must transition image to dstLayout before calling and add appropriate barriers.
+// User must transition image to layout before calling and add appropriate barriers.
 // Handles arbitrary byte-range chunking with multiple VkBufferImageCopy regions.
 template <staging_stream StreamType, device_and_commands DeviceAndCommands, class Fn>
     requires upload_callback<Fn, std::byte>
-void upload(StreamType& stream, const DeviceAndCommands& device, VkImage dst,
-            VkImageLayout dstLayout, const VkImageSubresourceLayers& subresource,
-            const VkExtent3D& extent, VkFormat format, Fn&& fn) {
+void upload(StreamType& stream, const DeviceAndCommands& device, const ImageRegion& region,
+            VkImageLayout layout, VkFormat format, Fn&& fn) {
 
     FormatInfo fmtInfo = formatInfo(format);
     stream.template withStagingBufferUsed<std::byte>(
-        imageSizeBytes(extent, subresource.layerCount, format),
+        imageSizeBytes(region.region(), fmtInfo),
         [&](VkCommandBuffer cmd, auto& stagingBuf, VkDeviceSize offsetBytes) mutable
             -> std::pair<std::optional<std::function<void(bool)>>, VkDeviceSize> {
             // Let user populate the staging buffer
@@ -1836,32 +1852,89 @@ void upload(StreamType& stream, const DeviceAndCommands& device, VkImage dst,
 
             // Generate copy regions (max 5 with hierarchical decomposition)
             auto copyRegions = generateImageCopyRegions(
-                offsetBytes, offsetBytes + stagingBuf.sizeBytes(), subresource, extent, fmtInfo);
-            device.vkCmdCopyBufferToImage(cmd, static_cast<VkBuffer>(stagingBuf), dst, dstLayout,
-                                          uint32_t(copyRegions.size()), copyRegions.data());
+                offsetBytes, offsetBytes + stagingBuf.sizeBytes(), region.region(), fmtInfo);
+            device.vkCmdCopyBufferToImage(cmd, static_cast<VkBuffer>(stagingBuf), region.image(),
+                                          layout, uint32_t(copyRegions.size()), copyRegions.data());
 
             return {std::nullopt, stagingBuf.sizeBytes()};
         });
 }
 
-// Upload contiguous range to image.
-// User must transition image to dstLayout before calling and add appropriate barriers.
+// Upload contiguous range to image region.
+// User must transition image to layout before calling and add appropriate barriers.
+template <staging_stream StreamType, device_and_commands DeviceAndCommands,
+          std::ranges::contiguous_range SrcRange>
+    requires std::same_as<std::remove_cv_t<std::ranges::range_value_t<SrcRange>>, std::byte>
+void upload(StreamType& stream, const DeviceAndCommands& device, SrcRange&& srcRange,
+            const ImageRegion& region, VkImageLayout layout, VkFormat format) {
+
+    if (std::ranges::size(srcRange) != imageSizeBytes(region.region(), format)) {
+        throw std::out_of_range("srcRange size must match image region size in bytes");
+    }
+
+    auto it = reinterpret_cast<const std::byte*>(std::ranges::data(srcRange));
+    upload(stream, device, region, layout, format,
+           [&](VkDeviceSize offset, std::span<std::byte> staging) {
+               std::copy_n(it + offset, staging.size(), staging.begin());
+           });
+}
+
+// ============================================================================
+// DEPRECATED: Legacy image upload/download overloads
+// Use the ImageRegion-based overloads above instead.
+// ============================================================================
+
+// DEPRECATED: Use ImageRegion overload instead
+template <staging_stream StreamType, device_and_commands DeviceAndCommands, class Fn>
+    requires download_transform_callback<Fn, std::byte, std::byte>
+auto download(StreamType& stream, const DeviceAndCommands& device, VkImage src,
+              VkImageLayout srcLayout, const VkImageSubresourceLayers& subresource,
+              VkExtent3D extent, VkFormat format, Fn&& fn) {
+    return download(stream, device,
+                    ImageRegion{src, Region{.subresource = subresource, .extent = extent}},
+                    srcLayout, format, std::forward<Fn>(fn));
+}
+
+// DEPRECATED: Use ImageRegion overload instead
+template <staging_stream StreamType, device_and_commands DeviceAndCommands>
+auto download(StreamType& stream, const DeviceAndCommands& device, VkImage src,
+              VkImageLayout srcLayout, const VkImageSubresourceLayers& subresource,
+              VkExtent3D extent, VkFormat format) {
+    return download(stream, device,
+                    ImageRegion{src, Region{.subresource = subresource, .extent = extent}},
+                    srcLayout, format);
+}
+
+// DEPRECATED: Use ImageRegion overload instead
+template <staging_stream StreamType, device_and_commands DeviceAndCommands, class Fn>
+    requires download_foreach_callback<Fn, std::byte>
+auto downloadForEach(StreamType& stream, const DeviceAndCommands& device, VkImage src,
+                     VkImageLayout srcLayout, const VkImageSubresourceLayers& subresource,
+                     const VkExtent3D& extent, VkFormat format, Fn&& fn) {
+    return downloadForEach(stream, device,
+                           ImageRegion{src, Region{.subresource = subresource, .extent = extent}},
+                           srcLayout, format, std::forward<Fn>(fn));
+}
+
+// DEPRECATED: Use ImageRegion overload instead
+template <staging_stream StreamType, device_and_commands DeviceAndCommands, class Fn>
+    requires upload_callback<Fn, std::byte>
+void upload(StreamType& stream, const DeviceAndCommands& device, VkImage dst, VkImageLayout layout,
+            const VkImageSubresourceLayers& subresource, const VkExtent3D& extent, VkFormat format,
+            Fn&& fn) {
+    upload(stream, device, ImageRegion{dst, Region{.subresource = subresource, .extent = extent}},
+           layout, format, std::forward<Fn>(fn));
+}
+
+// DEPRECATED: Use ImageRegion overload instead
 template <staging_stream StreamType, device_and_commands DeviceAndCommands,
           std::ranges::contiguous_range SrcRange>
     requires std::same_as<std::remove_cv_t<std::ranges::range_value_t<SrcRange>>, std::byte>
 void upload(StreamType& stream, const DeviceAndCommands& device, SrcRange&& srcRange, VkImage dst,
-            VkImageLayout dstLayout, const VkImageSubresourceLayers& subresource, VkExtent3D extent,
+            VkImageLayout layout, const VkImageSubresourceLayers& subresource, VkExtent3D extent,
             VkFormat format) {
-
-    if (std::ranges::size(srcRange) != imageSizeBytes(extent, subresource.layerCount, format)) {
-        throw std::out_of_range("srcRange size must match image size in bytes");
-    }
-
-    auto it = reinterpret_cast<const std::byte*>(std::ranges::data(srcRange));
-    upload(stream, device, dst, dstLayout, subresource, extent, format,
-           [&](VkDeviceSize offset, std::span<std::byte> staging) {
-               std::copy_n(it + offset, staging.size(), staging.begin());
-           });
+    upload(stream, device, std::forward<SrcRange>(srcRange),
+           ImageRegion{dst, Region{.subresource = subresource, .extent = extent}}, layout, format);
 }
 
 // Lightweight non-owning view for staging operations. Holds references to a

@@ -9,6 +9,104 @@
 #include <vko/timeline_queue.hpp>
 
 // =============================================================================
+// Test Helpers
+// =============================================================================
+
+// Create a test image with standard settings for transfer tests
+inline vko::BoundImage<> makeTestImage(Context& ctx, VkExtent3D extent, VkFormat format,
+                                       uint32_t arrayLayers = 1, uint32_t mipLevels = 1,
+                                       VkImageCreateFlags flags = 0) {
+    VkImageType imageType = VK_IMAGE_TYPE_2D;
+    if (extent.depth > 1)
+        imageType = VK_IMAGE_TYPE_3D;
+    else if (extent.height == 1)
+        imageType = VK_IMAGE_TYPE_1D;
+
+    return vko::BoundImage(
+        ctx.device,
+        VkImageCreateInfo{
+            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .pNext       = nullptr,
+            .flags       = flags,
+            .imageType   = imageType,
+            .format      = format,
+            .extent      = extent,
+            .mipLevels   = mipLevels,
+            .arrayLayers = arrayLayers,
+            .samples     = VK_SAMPLE_COUNT_1_BIT,
+            .tiling      = VK_IMAGE_TILING_OPTIMAL,
+            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices   = nullptr,
+            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
+        },
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx.allocator);
+}
+
+// Transition image layout with a pipeline barrier
+template <class StreamType>
+void transitionImageLayout(StreamType& stream, const vko::Device& device, VkImage image,
+                           VkImageLayout oldLayout, VkImageLayout newLayout,
+                           VkImageAspectFlags aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                           uint32_t baseMipLevel = 0, uint32_t levelCount = 1,
+                           uint32_t baseArrayLayer = 0, uint32_t layerCount = 1) {
+    // Determine stage/access masks from layouts
+    VkPipelineStageFlags2 srcStage  = VK_PIPELINE_STAGE_2_NONE;
+    VkAccessFlags2        srcAccess = VK_ACCESS_2_NONE;
+    VkPipelineStageFlags2 dstStage  = VK_PIPELINE_STAGE_2_COPY_BIT;
+    VkAccessFlags2        dstAccess = VK_ACCESS_2_NONE;
+
+    if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        srcStage  = VK_PIPELINE_STAGE_2_COPY_BIT;
+        srcAccess = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+        srcStage  = VK_PIPELINE_STAGE_2_COPY_BIT;
+        srcAccess = VK_ACCESS_2_TRANSFER_READ_BIT;
+    }
+
+    if (newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        dstAccess = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    } else if (newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+        dstAccess = VK_ACCESS_2_TRANSFER_READ_BIT;
+    }
+
+    VkImageMemoryBarrier2 barrier{
+        .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .pNext               = nullptr,
+        .srcStageMask        = srcStage,
+        .srcAccessMask       = srcAccess,
+        .dstStageMask        = dstStage,
+        .dstAccessMask       = dstAccess,
+        .oldLayout           = oldLayout,
+        .newLayout           = newLayout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image               = image,
+        .subresourceRange =
+            {
+                .aspectMask     = aspectMask,
+                .baseMipLevel   = baseMipLevel,
+                .levelCount     = levelCount,
+                .baseArrayLayer = baseArrayLayer,
+                .layerCount     = layerCount,
+            },
+    };
+    VkDependencyInfo depInfo{
+        .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .pNext                    = nullptr,
+        .dependencyFlags          = 0,
+        .memoryBarrierCount       = 0,
+        .pMemoryBarriers          = nullptr,
+        .bufferMemoryBarrierCount = 0,
+        .pBufferMemoryBarriers    = nullptr,
+        .imageMemoryBarrierCount  = 1,
+        .pImageMemoryBarriers     = &barrier,
+    };
+    device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
+}
+
+// =============================================================================
 // SMOKE TEST - Basic API Verification
 // =============================================================================
 
@@ -28,26 +126,7 @@ TEST_F(UnitTestFixture, ImageStaging_SmokeTest_RoundTrip) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     // Prepare test pattern: sequential bytes 0, 1, 2, ...
     const size_t           imageBytes = width * height * 4; // RGBA = 4 bytes per pixel
@@ -64,82 +143,16 @@ TEST_F(UnitTestFixture, ImageStaging_SmokeTest_RoundTrip) {
     };
 
     // Transition image to TRANSFER_DST for upload
-    {
-        VkImageMemoryBarrier2 barrier{
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_NONE,
-            .srcAccessMask       = VK_ACCESS_2_NONE,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = image,
-            .subresourceRange =
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = 0,
-                    .levelCount     = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                },
-        };
-        VkDependencyInfo depInfo{
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &barrier,
-        };
-        ctx->device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-    }
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     // Upload the test pattern
     vko::upload(stream, ctx->device, testPattern, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 subresource, extent, format);
 
     // Transition image to TRANSFER_SRC for download
-    {
-        VkImageMemoryBarrier2 barrier{
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_READ_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = image,
-            .subresourceRange =
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = 0,
-                    .levelCount     = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                },
-        };
-        VkDependencyInfo depInfo{
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &barrier,
-        };
-        ctx->device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-    }
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
     // Download the image
     auto downloadFuture =
@@ -155,16 +168,8 @@ TEST_F(UnitTestFixture, ImageStaging_SmokeTest_RoundTrip) {
     EXPECT_EQ(downloadedData, testPattern) << "Downloaded data does not match uploaded pattern";
 }
 
-// Helper: Calculate extent for a given mip level
-inline VkExtent3D mipExtent(VkExtent3D baseExtent, uint32_t mipLevel) {
-    VkExtent3D extent = baseExtent;
-    for (uint32_t i = 0; i < mipLevel; ++i) {
-        extent.width  = std::max(1u, extent.width / 2);
-        extent.height = std::max(1u, extent.height / 2);
-        extent.depth  = std::max(1u, extent.depth / 2);
-    }
-    return extent;
-}
+// mipExtent is now in vko::mipExtent (formats.hpp)
+using vko::mipExtent;
 
 // Helper: Round-trip test helper (upload pattern, download, verify match)
 template <class StagingStreamType, class BoundImageType, class PatternFn>
@@ -181,82 +186,20 @@ void roundTripImageTest(StagingStreamType& stream, const vko::Device& device, Bo
     patternFn(testPattern);
 
     // Transition to TRANSFER_DST
-    {
-        VkImageMemoryBarrier2 barrier{
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_NONE,
-            .srcAccessMask       = VK_ACCESS_2_NONE,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = image,
-            .subresourceRange =
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = subresource.mipLevel,
-                    .levelCount     = 1,
-                    .baseArrayLayer = subresource.baseArrayLayer,
-                    .layerCount     = subresource.layerCount,
-                },
-        };
-        VkDependencyInfo depInfo{
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &barrier,
-        };
-        device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-    }
+    transitionImageLayout(stream, device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, subresource.aspectMask,
+                          subresource.mipLevel, 1, subresource.baseArrayLayer,
+                          subresource.layerCount);
 
     // Upload
     upload(stream, device, testPattern, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, subresource,
            extent, format);
 
     // Transition to TRANSFER_SRC
-    {
-        VkImageMemoryBarrier2 barrier{
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_READ_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = image,
-            .subresourceRange =
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = subresource.mipLevel,
-                    .levelCount     = 1,
-                    .baseArrayLayer = subresource.baseArrayLayer,
-                    .layerCount     = subresource.layerCount,
-                },
-        };
-        VkDependencyInfo depInfo{
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &barrier,
-        };
-        device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-    }
+    transitionImageLayout(stream, device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, subresource.aspectMask,
+                          subresource.mipLevel, 1, subresource.baseArrayLayer,
+                          subresource.layerCount);
 
     // Download
     auto downloadFuture = download(stream, device, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -532,26 +475,7 @@ TEST_F(UnitTestFixture, ImageStaging_Format_R8_UNORM_Small) {
     constexpr VkFormat   format = VK_FORMAT_R8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -583,26 +507,7 @@ TEST_F(UnitTestFixture, ImageStaging_Format_R8G8_UNORM_Chunked) {
     constexpr VkFormat   format = VK_FORMAT_R8G8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -633,26 +538,7 @@ TEST_F(UnitTestFixture, ImageStaging_Format_R8G8B8A8_UNORM_MultipleChunks) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -683,26 +569,7 @@ TEST_F(UnitTestFixture, ImageStaging_Format_R16G16B16A16_SFLOAT) {
     constexpr VkFormat   format = VK_FORMAT_R16G16B16A16_SFLOAT;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -741,26 +608,7 @@ TEST_F(UnitTestFixture, ImageStaging_Format_R32G32B32A32_SFLOAT) {
     constexpr VkFormat   format = VK_FORMAT_R32G32B32A32_SFLOAT;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -807,26 +655,7 @@ TEST_F(UnitTestFixture, ImageStaging_Compressed_BC1) {
     constexpr VkFormat   format = VK_FORMAT_BC1_RGB_UNORM_BLOCK;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -863,26 +692,7 @@ TEST_F(UnitTestFixture, ImageStaging_Compressed_BC1_Chunked) {
     constexpr VkFormat   format = VK_FORMAT_BC1_RGB_UNORM_BLOCK;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -917,26 +727,7 @@ TEST_F(UnitTestFixture, ImageStaging_Compressed_BC7) {
     constexpr VkFormat   format = VK_FORMAT_BC7_UNORM_BLOCK;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -974,26 +765,7 @@ TEST_F(UnitTestFixture, ImageStaging_Compressed_BC7_Chunked) {
     constexpr VkFormat   format = VK_FORMAT_BC7_UNORM_BLOCK;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1036,26 +808,7 @@ TEST_F(UnitTestFixture, ImageStaging_Compressed_ASTC_4x4) {
     constexpr uint32_t   width = 16, height = 16;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1098,26 +851,7 @@ TEST_F(UnitTestFixture, ImageStaging_Compressed_ASTC_8x8) {
     constexpr uint32_t   width = 32, height = 32;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1157,26 +891,7 @@ TEST_F(UnitTestFixture, ImageStaging_2DArray_TwoLayers) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 2,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format, /*arrayLayers=*/2);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1213,26 +928,7 @@ TEST_F(UnitTestFixture, ImageStaging_2DArray_ChunkedWithinLayers) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 4,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format, /*arrayLayers=*/4);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1324,26 +1020,7 @@ TEST_F(UnitTestFixture, ImageStaging_2DArray_ManySmallLayers) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = layers,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format, layers);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1386,26 +1063,7 @@ TEST_F(UnitTestFixture, ImageStaging_2DArray_ChunkCrossesMultipleLayers) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = layers,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format, layers);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1454,26 +1112,7 @@ TEST_F(UnitTestFixture, ImageStaging_3D_Depth2) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, depth};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_3D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1510,26 +1149,7 @@ TEST_F(UnitTestFixture, ImageStaging_3D_ChunkedWithinSlices) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, depth};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_3D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1566,26 +1186,7 @@ TEST_F(UnitTestFixture, ImageStaging_3D_ChunkSpansSlices) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, depth};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_3D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1622,26 +1223,7 @@ TEST_F(UnitTestFixture, ImageStaging_3D_LargeDepth64) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, depth};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_3D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1685,26 +1267,8 @@ TEST_F(UnitTestFixture, ImageStaging_MipLevel_0) {
     constexpr uint32_t   mipLevel   = 0;
     VkExtent3D           mipExt     = mipExtent(baseExtent, mipLevel);
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = baseExtent,
-            .mipLevels   = mipLevels,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image =
+        makeTestImage(*ctx, baseExtent, format, /*arrayLayers=*/1, /*mipLevels=*/mipLevels);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1738,26 +1302,8 @@ TEST_F(UnitTestFixture, ImageStaging_MipLevel_1) {
     constexpr uint32_t   mipLevel   = 1;
     VkExtent3D           mipExt     = mipExtent(baseExtent, mipLevel);
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = baseExtent,
-            .mipLevels   = mipLevels,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image =
+        makeTestImage(*ctx, baseExtent, format, /*arrayLayers=*/1, /*mipLevels=*/mipLevels);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1792,26 +1338,8 @@ TEST_F(UnitTestFixture, ImageStaging_MipLevel_2) {
     constexpr uint32_t   mipLevel   = 2;
     VkExtent3D           mipExt     = mipExtent(baseExtent, mipLevel);
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = baseExtent,
-            .mipLevels   = mipLevels,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image =
+        makeTestImage(*ctx, baseExtent, format, /*arrayLayers=*/1, /*mipLevels=*/mipLevels);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1847,26 +1375,8 @@ TEST_F(UnitTestFixture, ImageStaging_MipLevel_Smallest) {
     constexpr uint32_t   mipLevel   = mipLevels - 1; // Last mip = 1x1
     VkExtent3D           mipExt     = mipExtent(baseExtent, mipLevel);
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = baseExtent,
-            .mipLevels   = mipLevels,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image =
+        makeTestImage(*ctx, baseExtent, format, /*arrayLayers=*/1, /*mipLevels=*/mipLevels);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1899,63 +1409,14 @@ TEST_F(UnitTestFixture, ImageStaging_MipLevels_AllSequential) {
     constexpr VkFormat   format     = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D baseExtent = {baseWidth, baseHeight, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = baseExtent,
-            .mipLevels   = mipLevels,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image =
+        makeTestImage(*ctx, baseExtent, format, /*arrayLayers=*/1, /*mipLevels=*/mipLevels);
 
     // Upload all mip levels first
-    {
-        VkImageMemoryBarrier2 barrier{
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_NONE,
-            .srcAccessMask       = VK_ACCESS_2_NONE,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = image,
-            .subresourceRange =
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = 0,
-                    .levelCount     = mipLevels,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                },
-        };
-        VkDependencyInfo depInfo{
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &barrier,
-        };
-        ctx->device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-    }
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
+                          /*baseMipLevel=*/0, /*levelCount=*/mipLevels, /*baseArrayLayer=*/0,
+                          /*layerCount=*/1);
 
     // Upload each mip level
     for (uint32_t mip = 0; mip < mipLevels; ++mip) {
@@ -1978,41 +1439,10 @@ TEST_F(UnitTestFixture, ImageStaging_MipLevels_AllSequential) {
     }
 
     // Transition to TRANSFER_SRC for all mips
-    {
-        VkImageMemoryBarrier2 barrier{
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_READ_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = image,
-            .subresourceRange =
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = 0,
-                    .levelCount     = mipLevels,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                },
-        };
-        VkDependencyInfo depInfo{
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &barrier,
-        };
-        ctx->device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-    }
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
+                          /*baseMipLevel=*/0, /*levelCount=*/mipLevels, /*baseArrayLayer=*/0,
+                          /*layerCount=*/1);
 
     // Download each mip level and verify
     for (uint32_t mip = 0; mip < mipLevels; ++mip) {
@@ -2058,26 +1488,7 @@ TEST_F(UnitTestFixture, ImageStaging_Chunking_OneRowPerChunk) {
                                                                /*poolSize=*/rowBytes);
     vko::StagingStream stream(queue, std::move(staging));
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2118,26 +1529,7 @@ TEST_F(UnitTestFixture, ImageStaging_Chunking_HalfRowPerChunk) {
                                                                /*poolSize=*/poolSize);
     vko::StagingStream stream(queue, std::move(staging));
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2177,26 +1569,7 @@ TEST_F(UnitTestFixture, ImageStaging_Chunking_OneAndHalfRowsPerChunk) {
                                                                /*poolSize=*/poolSize);
     vko::StagingStream stream(queue, std::move(staging));
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2235,26 +1608,7 @@ TEST_F(UnitTestFixture, ImageStaging_Chunking_OneLayerPerChunk) {
                                                                /*poolSize=*/layerBytes);
     vko::StagingStream stream(queue, std::move(staging));
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = layers,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format, layers);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2296,26 +1650,7 @@ TEST_F(UnitTestFixture, ImageStaging_Chunking_OneAndHalfLayersPerChunk) {
                                                                /*poolSize=*/poolSize);
     vko::StagingStream stream(queue, std::move(staging));
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = layers,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format, layers);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2361,26 +1696,7 @@ TEST_F(UnitTestFixture, ImageStaging_DataIntegrity_Sequential) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2413,26 +1729,7 @@ TEST_F(UnitTestFixture, ImageStaging_DataIntegrity_RowUnique) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2473,26 +1770,7 @@ TEST_F(UnitTestFixture, ImageStaging_DataIntegrity_LayerUnique) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = layers,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format, layers);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2535,26 +1813,7 @@ TEST_F(UnitTestFixture, ImageStaging_DataIntegrity_SliceUnique3D) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, depth};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_3D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2598,26 +1857,7 @@ TEST_F(UnitTestFixture, ImageStaging_EdgeCase_1x1) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {1, 1, 1}; // Single pixel
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2650,26 +1890,7 @@ TEST_F(UnitTestFixture, ImageStaging_EdgeCase_1xN) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {1, height, 1}; // Single column
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2705,26 +1926,7 @@ TEST_F(UnitTestFixture, ImageStaging_EdgeCase_Nx1) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, 1, 1}; // Single row
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2820,26 +2022,7 @@ TEST_F(UnitTestFixture, ImageStaging_EdgeCase_NonPowerOf2) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2880,26 +2063,7 @@ TEST_F(UnitTestFixture, ImageStaging_EdgeCase_VeryWide) {
     // 4096 * 4 * 4 = 65536 bytes, but pool is 4096 bytes
     // Row = 16384 bytes, so each row needs 4 chunks
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -2940,26 +2104,7 @@ TEST_F(UnitTestFixture, ImageStaging_EdgeCase_VeryTall) {
     // 4 * 4096 * 4 = 65536 bytes, pool is 4096 bytes
     // Row = 16 bytes, so many rows per chunk
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -3004,26 +2149,7 @@ TEST_F(UnitTestFixture, ImageStaging_DownloadConsistency) {
                                                                /*poolSize=*/256);
     vko::StagingStream stream(queue, std::move(staging));
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -3048,82 +2174,16 @@ TEST_F(UnitTestFixture, ImageStaging_DownloadConsistency) {
     }
 
     // Transition to transfer dst
-    {
-        VkImageMemoryBarrier2 barrier{
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_NONE,
-            .srcAccessMask       = VK_ACCESS_2_NONE,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = image,
-            .subresourceRange =
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = 0,
-                    .levelCount     = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                },
-        };
-        VkDependencyInfo depInfo{
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &barrier,
-        };
-        ctx->device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-    }
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     // Upload
     vko::upload(stream, ctx->device, uploadData, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 subresource, extent, format);
 
     // Transition to transfer src for download
-    {
-        VkImageMemoryBarrier2 barrier{
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_READ_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = image,
-            .subresourceRange =
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = 0,
-                    .levelCount     = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                },
-        };
-        VkDependencyInfo depInfo{
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &barrier,
-        };
-        ctx->device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-    }
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
     // Download using download() (returns vector)
     auto downloadFuture1 =
@@ -3199,27 +2259,8 @@ TEST_F(UnitTestFixture, ImageStaging_ConcurrentStreams) {
     vko::StagingStream streamA(queue, std::move(stagingA));
     vko::StagingStream streamB(queue, std::move(stagingB));
 
-    auto makeImage = [&](VkExtent3D extent) {
-        return vko::BoundImage(
-            ctx->device,
-            VkImageCreateInfo{
-                .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                .pNext       = nullptr,
-                .flags       = 0,
-                .imageType   = VK_IMAGE_TYPE_2D,
-                .format      = VK_FORMAT_R8G8B8A8_UNORM,
-                .extent      = extent,
-                .mipLevels   = 1,
-                .arrayLayers = 1,
-                .samples     = VK_SAMPLE_COUNT_1_BIT,
-                .tiling      = VK_IMAGE_TILING_OPTIMAL,
-                .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-                .queueFamilyIndexCount = 0,
-                .pQueueFamilyIndices   = nullptr,
-                .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-            },
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto makeImage = [&](VkExtent3D extent) -> vko::BoundImage<> {
+        return makeTestImage(*ctx, extent, VK_FORMAT_R8G8B8A8_UNORM);
     };
 
     VkExtent3D extentA = {16, 12, 1};
@@ -3246,82 +2287,17 @@ TEST_F(UnitTestFixture, ImageStaging_ConcurrentStreams) {
         }
 
         // Transition to transfer dst
-        {
-            VkImageMemoryBarrier2 barrier{
-                .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                .pNext               = nullptr,
-                .srcStageMask        = VK_PIPELINE_STAGE_2_NONE,
-                .srcAccessMask       = VK_ACCESS_2_NONE,
-                .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-                .dstAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
-                .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image               = imageHandle,
-                .subresourceRange =
-                    {
-                        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .baseMipLevel   = 0,
-                        .levelCount     = 1,
-                        .baseArrayLayer = 0,
-                        .layerCount     = 1,
-                    },
-            };
-            VkDependencyInfo depInfo{
-                .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                .pNext                    = nullptr,
-                .dependencyFlags          = 0,
-                .memoryBarrierCount       = 0,
-                .pMemoryBarriers          = nullptr,
-                .bufferMemoryBarrierCount = 0,
-                .pBufferMemoryBarriers    = nullptr,
-                .imageMemoryBarrierCount  = 1,
-                .pImageMemoryBarriers     = &barrier,
-            };
-            ctx->device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-        }
+        transitionImageLayout(stream, ctx->device, imageHandle, VK_IMAGE_LAYOUT_UNDEFINED,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
         vko::upload(stream, ctx->device, uploadData, imageHandle,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, subresource, extent,
                     VK_FORMAT_R8G8B8A8_UNORM);
 
         // Transition to transfer src
-        {
-            VkImageMemoryBarrier2 barrier{
-                .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-                .pNext               = nullptr,
-                .srcStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-                .srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-                .dstAccessMask       = VK_ACCESS_2_TRANSFER_READ_BIT,
-                .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image               = imageHandle,
-                .subresourceRange =
-                    {
-                        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                        .baseMipLevel   = 0,
-                        .levelCount     = 1,
-                        .baseArrayLayer = 0,
-                        .layerCount     = 1,
-                    },
-            };
-            VkDependencyInfo depInfo{
-                .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-                .pNext                    = nullptr,
-                .dependencyFlags          = 0,
-                .memoryBarrierCount       = 0,
-                .pMemoryBarriers          = nullptr,
-                .bufferMemoryBarrierCount = 0,
-                .pBufferMemoryBarriers    = nullptr,
-                .imageMemoryBarrierCount  = 1,
-                .pImageMemoryBarriers     = &barrier,
-            };
-            ctx->device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-        }
+        transitionImageLayout(stream, ctx->device, imageHandle,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
         return vko::download(stream, ctx->device, imageHandle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                              subresource, extent, VK_FORMAT_R8G8B8A8_UNORM);
@@ -3355,26 +2331,7 @@ TEST_F(UnitTestFixture, ImageStaging_RepeatedDownload_Deterministic) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -3393,66 +2350,14 @@ TEST_F(UnitTestFixture, ImageStaging_RepeatedDownload_Deterministic) {
     }
 
     // Transition + upload
-    {
-        VkImageMemoryBarrier2 barrier{
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_NONE,
-            .srcAccessMask       = VK_ACCESS_2_NONE,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = image,
-            .subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-        };
-        VkDependencyInfo depInfo{
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &barrier,
-        };
-        ctx->device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-    }
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     vko::upload(stream, ctx->device, uploadData, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 subresource, extent, format);
 
     // Transition to src
-    {
-        VkImageMemoryBarrier2 barrier{
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_READ_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = image,
-            .subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-        };
-        VkDependencyInfo depInfo{
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &barrier,
-        };
-        ctx->device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-    }
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
     // Download 3 times and verify all identical
     auto future1 = vko::download(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -3489,26 +2394,7 @@ TEST_F(UnitTestFixture, ImageStaging_Stress_2048x2048) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -3549,26 +2435,7 @@ TEST_F(UnitTestFixture, ImageStaging_DownloadTransform_InvertBytes) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -3586,81 +2453,15 @@ TEST_F(UnitTestFixture, ImageStaging_DownloadTransform_InvertBytes) {
     }
 
     // Transition to transfer dst
-    {
-        VkImageMemoryBarrier2 barrier{
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_NONE,
-            .srcAccessMask       = VK_ACCESS_2_NONE,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = image,
-            .subresourceRange =
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = 0,
-                    .levelCount     = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                },
-        };
-        VkDependencyInfo depInfo{
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &barrier,
-        };
-        ctx->device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-    }
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     vko::upload(stream, ctx->device, uploadData, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 subresource, extent, format);
 
     // Transition to transfer src
-    {
-        VkImageMemoryBarrier2 barrier{
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_READ_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = image,
-            .subresourceRange =
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = 0,
-                    .levelCount     = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                },
-        };
-        VkDependencyInfo depInfo{
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &barrier,
-        };
-        ctx->device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-    }
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
     auto downloadFuture = vko::download(
         stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, subresource, extent,
@@ -3705,26 +2506,7 @@ TEST_F(UnitTestFixture, ImageStaging_Upload_CallbackOffsets) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -3739,41 +2521,8 @@ TEST_F(UnitTestFixture, ImageStaging_Upload_CallbackOffsets) {
     std::vector<std::pair<VkDeviceSize, VkDeviceSize>> uploadRanges;
 
     // Transition to transfer dst
-    {
-        VkImageMemoryBarrier2 barrier{
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_NONE,
-            .srcAccessMask       = VK_ACCESS_2_NONE,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = image,
-            .subresourceRange =
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = 0,
-                    .levelCount     = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                },
-        };
-        VkDependencyInfo depInfo{
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &barrier,
-        };
-        ctx->device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-    }
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     // Upload via callback
     vko::upload(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, subresource,
@@ -3787,41 +2536,8 @@ TEST_F(UnitTestFixture, ImageStaging_Upload_CallbackOffsets) {
                 });
 
     // Transition to transfer src
-    {
-        VkImageMemoryBarrier2 barrier{
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-            .pNext               = nullptr,
-            .srcStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            .dstStageMask        = VK_PIPELINE_STAGE_2_COPY_BIT,
-            .dstAccessMask       = VK_ACCESS_2_TRANSFER_READ_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = image,
-            .subresourceRange =
-                {
-                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel   = 0,
-                    .levelCount     = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount     = 1,
-                },
-        };
-        VkDependencyInfo depInfo{
-            .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .pNext                    = nullptr,
-            .dependencyFlags          = 0,
-            .memoryBarrierCount       = 0,
-            .pMemoryBarriers          = nullptr,
-            .bufferMemoryBarrierCount = 0,
-            .pBufferMemoryBarriers    = nullptr,
-            .imageMemoryBarrierCount  = 1,
-            .pImageMemoryBarriers     = &barrier,
-        };
-        ctx->device.vkCmdPipelineBarrier2(stream.commandBuffer(), &depInfo);
-    }
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
     auto downloadFuture =
         vko::download(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, subresource,
@@ -3860,26 +2576,7 @@ TEST_F(UnitTestFixture, ImageStaging_Upload_SizeMismatchThrows) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -3930,26 +2627,7 @@ TEST_F(UnitTestFixture, ImageStaging_RoundTrip_RandomDataHash) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4011,26 +2689,7 @@ TEST_F(UnitTestFixture, ImageStaging_1D_Width31) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, 1, 1}; // 1D: height=1, depth=1
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_1D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4062,26 +2721,7 @@ TEST_F(UnitTestFixture, ImageStaging_1D_Chunked_Width127) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, 1, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_1D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4113,26 +2753,7 @@ TEST_F(UnitTestFixture, ImageStaging_1DArray_17x7) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, 1, 1}; // 1D array: height=1, depth=1
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_1D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = layers,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format, layers);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4172,26 +2793,7 @@ TEST_F(UnitTestFixture, ImageStaging_1DArray_ChunkSpansLayers_11x13) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, 1, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_1D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = layers,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format, layers);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4238,26 +2840,8 @@ TEST_F(UnitTestFixture, ImageStaging_CubeMap_13x13) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = faces,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format, faces, /*mipLevels=*/1,
+                               VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4300,26 +2884,8 @@ TEST_F(UnitTestFixture, ImageStaging_CubeMap_Chunked_7x7) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = faces,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format, faces, /*mipLevels=*/1,
+                               VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4363,26 +2929,8 @@ TEST_F(UnitTestFixture, ImageStaging_CubeMapArray_11x11x3) {
     constexpr VkFormat   format      = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent      = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = totalLayers,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format, totalLayers, /*mipLevels=*/1,
+                               VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4428,26 +2976,8 @@ TEST_F(UnitTestFixture, ImageStaging_CubeMapArray_Large_19x19x7) {
     constexpr VkFormat   format      = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent      = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = totalLayers,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format, totalLayers, /*mipLevels=*/1,
+                               VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4500,26 +3030,7 @@ TEST_F(UnitTestFixture, ImageStaging_Prime_2D_23x19) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4603,26 +3114,7 @@ TEST_F(UnitTestFixture, ImageStaging_Prime_3D_7x11x13) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, depth};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_3D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4654,26 +3146,7 @@ TEST_F(UnitTestFixture, ImageStaging_Prime_3D_5x7x31) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, depth};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_3D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4715,26 +3188,7 @@ TEST_F(UnitTestFixture, ImageStaging_Prime_WorstCase_101x103) {
     constexpr VkFormat   format = VK_FORMAT_R16G16B16A16_SFLOAT;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4767,26 +3221,7 @@ TEST_F(UnitTestFixture, ImageStaging_Stress_1024x1024) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4825,26 +3260,7 @@ TEST_F(UnitTestFixture, ImageStaging_Stress_512x512_TinyPool) {
     constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
     constexpr VkExtent3D extent = {width, height, 1};
 
-    vko::BoundImage image(
-        ctx->device,
-        VkImageCreateInfo{
-            .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext       = nullptr,
-            .flags       = 0,
-            .imageType   = VK_IMAGE_TYPE_2D,
-            .format      = format,
-            .extent      = extent,
-            .mipLevels   = 1,
-            .arrayLayers = 1,
-            .samples     = VK_SAMPLE_COUNT_1_BIT,
-            .tiling      = VK_IMAGE_TILING_OPTIMAL,
-            .usage       = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-            .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
-        },
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, ctx->allocator);
+    auto image = makeTestImage(*ctx, extent, format);
 
     VkImageSubresourceLayers subresource{
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -4867,4 +3283,595 @@ TEST_F(UnitTestFixture, ImageStaging_Stress_512x512_TinyPool) {
                                data[i + 3]    = static_cast<std::byte>(0xFF);
                            }
                        });
+}
+
+// ============================================================================
+// Sub-region transfer tests
+// ============================================================================
+
+// Test downloading a sub-region from a 2D image with X/Y offset
+// Upload full image with known pattern, then download just a sub-region
+TEST_F(UnitTestFixture, ImageStaging_SubRegion_2D_OffsetXY) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator,
+                                                               /*minPools=*/2, /*maxPools=*/4,
+                                                               /*poolSize=*/1 << 16);
+    vko::StagingStream stream(queue, std::move(staging));
+
+    constexpr uint32_t   width = 32, height = 32;
+    constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
+    constexpr VkExtent3D extent = {width, height, 1};
+
+    auto image = makeTestImage(*ctx, extent, format);
+
+    // Generate test pattern: each pixel encodes its (x,y) position
+    std::vector<std::byte> fullPattern(vko::imageSizeBytes(extent, 1, vko::formatInfo(format)));
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            size_t i           = (y * width + x) * 4;
+            fullPattern[i + 0] = static_cast<std::byte>(x);
+            fullPattern[i + 1] = static_cast<std::byte>(y);
+            fullPattern[i + 2] = static_cast<std::byte>(x ^ y);
+            fullPattern[i + 3] = static_cast<std::byte>(0xFF);
+        }
+    }
+
+    // Upload full image
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vko::ImageRegion fullRegion(image, VK_IMAGE_ASPECT_COLOR_BIT, 0);
+    vko::upload(stream, ctx->device, fullRegion, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, format,
+                [&](VkDeviceSize offset, std::span<std::byte> dst) {
+                    std::copy(fullPattern.begin() + offset,
+                              fullPattern.begin() + offset + dst.size(), dst.begin());
+                });
+
+    // Transition for download
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    // Download a sub-region with offset (8,4) and extent (12,8)
+    constexpr uint32_t subOffsetX = 8, subOffsetY = 4;
+    constexpr uint32_t subWidth = 12, subHeight = 8;
+
+    vko::ImageRegion subRegion(image, vko::Region{
+                                          .subresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                          .offset      = {static_cast<int32_t>(subOffsetX),
+                                                          static_cast<int32_t>(subOffsetY), 0},
+                                          .extent      = {subWidth, subHeight, 1},
+                                      });
+
+    auto downloadFuture =
+        vko::download(stream, ctx->device, subRegion, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, format);
+    stream.submit();
+    auto& downloaded = downloadFuture.get(ctx->device);
+
+    // Verify downloaded data matches expected sub-region from pattern
+    ASSERT_EQ(downloaded.size(), subWidth * subHeight * 4);
+
+    for (uint32_t y = 0; y < subHeight; ++y) {
+        for (uint32_t x = 0; x < subWidth; ++x) {
+            size_t  dstIdx    = (y * subWidth + x) * 4;
+            uint8_t expectedX = subOffsetX + x;
+            uint8_t expectedY = subOffsetY + y;
+
+            EXPECT_EQ(static_cast<uint8_t>(downloaded[dstIdx + 0]), expectedX)
+                << "Mismatch at sub-region (" << x << "," << y << ")";
+            EXPECT_EQ(static_cast<uint8_t>(downloaded[dstIdx + 1]), expectedY)
+                << "Mismatch at sub-region (" << x << "," << y << ")";
+            EXPECT_EQ(static_cast<uint8_t>(downloaded[dstIdx + 2]),
+                      static_cast<uint8_t>(expectedX ^ expectedY))
+                << "Mismatch at sub-region (" << x << "," << y << ")";
+        }
+    }
+}
+
+// Test uploading to a sub-region and verifying surrounding pixels are unchanged
+TEST_F(UnitTestFixture, ImageStaging_SubRegion_Upload_PreservesSurrounding) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator,
+                                                               /*minPools=*/2, /*maxPools=*/4,
+                                                               /*poolSize=*/1 << 16);
+    vko::StagingStream stream(queue, std::move(staging));
+
+    constexpr uint32_t   width = 32, height = 32;
+    constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
+    constexpr VkExtent3D extent = {width, height, 1};
+
+    auto image = makeTestImage(*ctx, extent, format);
+
+    // Upload background (all zeros)
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vko::ImageRegion fullRegion(image, VK_IMAGE_ASPECT_COLOR_BIT, 0);
+    vko::upload(stream, ctx->device, fullRegion, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, format,
+                [&](VkDeviceSize, std::span<std::byte> dst) {
+                    std::fill(dst.begin(), dst.end(), std::byte{0x00});
+                });
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    // Upload distinct pattern to sub-region
+    constexpr uint32_t subOffsetX = 10, subOffsetY = 12;
+    constexpr uint32_t subWidth = 8, subHeight = 6;
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    vko::ImageRegion subRegion(image, vko::Region{
+                                          .subresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                          .offset      = {static_cast<int32_t>(subOffsetX),
+                                                          static_cast<int32_t>(subOffsetY), 0},
+                                          .extent      = {subWidth, subHeight, 1},
+                                      });
+
+    vko::upload(stream, ctx->device, subRegion, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, format,
+                [&](VkDeviceSize, std::span<std::byte> dst) {
+                    std::fill(dst.begin(), dst.end(), std::byte{0xFF});
+                });
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    // Download and verify
+    auto downloadFuture = vko::download(stream, ctx->device, fullRegion,
+                                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, format);
+    stream.submit();
+    auto& downloaded = downloadFuture.get(ctx->device);
+
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            size_t idx         = (y * width + x) * 4;
+            bool   inSubRegion = (x >= subOffsetX && x < subOffsetX + subWidth && y >= subOffsetY &&
+                                y < subOffsetY + subHeight);
+            uint8_t expected   = inSubRegion ? 0xFF : 0x00;
+
+            EXPECT_EQ(static_cast<uint8_t>(downloaded[idx + 0]), expected)
+                << "Mismatch at (" << x << "," << y << ")";
+            EXPECT_EQ(static_cast<uint8_t>(downloaded[idx + 1]), expected)
+                << "Mismatch at (" << x << "," << y << ")";
+            EXPECT_EQ(static_cast<uint8_t>(downloaded[idx + 2]), expected)
+                << "Mismatch at (" << x << "," << y << ")";
+            EXPECT_EQ(static_cast<uint8_t>(downloaded[idx + 3]), expected)
+                << "Mismatch at (" << x << "," << y << ")";
+        }
+    }
+}
+
+// Test single pixel sub-region (edge case)
+TEST_F(UnitTestFixture, ImageStaging_SubRegion_SinglePixel) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator,
+                                                               /*minPools=*/2, /*maxPools=*/4,
+                                                               /*poolSize=*/1 << 16);
+    vko::StagingStream stream(queue, std::move(staging));
+
+    constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
+    constexpr VkExtent3D extent = {16, 16, 1};
+
+    auto image = makeTestImage(*ctx, extent, format);
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    // Upload single pixel at (7, 9)
+    constexpr uint32_t pixelX = 7, pixelY = 9;
+    vko::ImageRegion   singlePixel(
+        image, vko::Region{
+                     .subresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                     .offset      = {static_cast<int32_t>(pixelX), static_cast<int32_t>(pixelY), 0},
+                     .extent      = {1, 1, 1},
+               });
+
+    std::byte pixelData[4] = {std::byte{0xDE}, std::byte{0xAD}, std::byte{0xBE}, std::byte{0xEF}};
+    vko::upload(stream, ctx->device, singlePixel, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, format,
+                [&](VkDeviceSize, std::span<std::byte> dst) {
+                    std::copy(std::begin(pixelData), std::end(pixelData), dst.begin());
+                });
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    auto downloadFuture = vko::download(stream, ctx->device, singlePixel,
+                                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, format);
+    stream.submit();
+    auto& downloaded = downloadFuture.get(ctx->device);
+
+    ASSERT_EQ(downloaded.size(), 4u);
+    EXPECT_EQ(downloaded[0], std::byte{0xDE});
+    EXPECT_EQ(downloaded[1], std::byte{0xAD});
+    EXPECT_EQ(downloaded[2], std::byte{0xBE});
+    EXPECT_EQ(downloaded[3], std::byte{0xEF});
+}
+
+// Test sub-region of a 2D array - download single layer
+TEST_F(UnitTestFixture, ImageStaging_SubRegion_2DArray_SingleLayer) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator,
+                                                               /*minPools=*/2, /*maxPools=*/4,
+                                                               /*poolSize=*/1 << 16);
+    vko::StagingStream stream(queue, std::move(staging));
+
+    constexpr uint32_t   width = 16, height = 16, layers = 4;
+    constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
+    constexpr VkExtent3D extent = {width, height, 1};
+
+    auto   image     = makeTestImage(*ctx, extent, format, layers);
+    size_t layerSize = width * height * 4;
+
+    // Generate test pattern: each layer filled with its index * 50
+    std::vector<std::byte> fullPattern(layerSize * layers);
+    for (uint32_t layer = 0; layer < layers; ++layer) {
+        std::fill(fullPattern.begin() + layer * layerSize,
+                  fullPattern.begin() + (layer + 1) * layerSize,
+                  static_cast<std::byte>(layer * 50));
+    }
+
+    // Upload full image
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
+                          layers);
+    vko::ImageRegion fullRegion(image, VK_IMAGE_ASPECT_COLOR_BIT, 0);
+    vko::upload(stream, ctx->device, fullRegion, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, format,
+                [&](VkDeviceSize offset, std::span<std::byte> dst) {
+                    std::copy(fullPattern.begin() + offset,
+                              fullPattern.begin() + offset + dst.size(), dst.begin());
+                });
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
+                          layers);
+
+    // Download just layer 2
+    constexpr uint32_t targetLayer = 2;
+    vko::ImageRegion   singleLayerRegion(
+        image, vko::Region{
+                     .subresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, targetLayer, 1},
+                     .offset      = {0, 0, 0},
+                     .extent      = extent,
+               });
+
+    auto downloadFuture = vko::download(stream, ctx->device, singleLayerRegion,
+                                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, format);
+    stream.submit();
+    auto& downloaded = downloadFuture.get(ctx->device);
+
+    ASSERT_EQ(downloaded.size(), layerSize);
+
+    // Verify all bytes match expected layer pattern
+    uint8_t expected = targetLayer * 50;
+    for (size_t i = 0; i < downloaded.size(); ++i) {
+        EXPECT_EQ(static_cast<uint8_t>(downloaded[i]), expected)
+            << "Mismatch at byte " << i << " of layer " << targetLayer;
+    }
+}
+
+// Test 3D image sub-region - download Z slice range
+TEST_F(UnitTestFixture, ImageStaging_SubRegion_3D_SliceSubset) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator,
+                                                               /*minPools=*/2, /*maxPools=*/4,
+                                                               /*poolSize=*/1 << 16);
+    vko::StagingStream stream(queue, std::move(staging));
+
+    constexpr uint32_t   width = 8, height = 8, depth = 8;
+    constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
+    constexpr VkExtent3D extent = {width, height, depth};
+
+    auto image = makeTestImage(*ctx, extent, format);
+
+    // Generate pattern: each Z slice filled with z value
+    size_t                 sliceSize = width * height * 4;
+    size_t                 totalSize = sliceSize * depth;
+    std::vector<std::byte> fullPattern(totalSize);
+    for (uint32_t z = 0; z < depth; ++z) {
+        std::fill(fullPattern.begin() + z * sliceSize, fullPattern.begin() + (z + 1) * sliceSize,
+                  static_cast<std::byte>(z * 30));
+    }
+
+    // Upload full image
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vko::ImageRegion fullRegion(image, VK_IMAGE_ASPECT_COLOR_BIT, 0);
+    vko::upload(stream, ctx->device, fullRegion, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, format,
+                [&](VkDeviceSize offset, std::span<std::byte> dst) {
+                    std::copy(fullPattern.begin() + offset,
+                              fullPattern.begin() + offset + dst.size(), dst.begin());
+                });
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    // Download Z slices 2-5 (4 slices)
+    constexpr uint32_t zOffset = 2, zCount = 4;
+    auto               subRegion =
+        fullRegion.subregion({0, 0, static_cast<int32_t>(zOffset)}, {width, height, zCount});
+
+    auto downloadFuture =
+        vko::download(stream, ctx->device, subRegion, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, format);
+    stream.submit();
+    auto& downloaded = downloadFuture.get(ctx->device);
+
+    ASSERT_EQ(downloaded.size(), sliceSize * zCount);
+
+    for (uint32_t z = 0; z < zCount; ++z) {
+        uint8_t expected = (zOffset + z) * 30;
+        for (size_t i = 0; i < sliceSize; ++i) {
+            EXPECT_EQ(static_cast<uint8_t>(downloaded[z * sliceSize + i]), expected)
+                << "Mismatch at slice " << z << " byte " << i;
+        }
+    }
+}
+
+// Test single row sub-region (edge case)
+TEST_F(UnitTestFixture, ImageStaging_SubRegion_SingleRow) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator,
+                                                               /*minPools=*/2, /*maxPools=*/4,
+                                                               /*poolSize=*/1 << 16);
+    vko::StagingStream stream(queue, std::move(staging));
+
+    constexpr uint32_t   width = 32, height = 32;
+    constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
+    constexpr VkExtent3D extent = {width, height, 1};
+
+    auto image = makeTestImage(*ctx, extent, format);
+
+    // Generate pattern: each row filled with row index
+    std::vector<std::byte> fullPattern(width * height * 4);
+    for (uint32_t y = 0; y < height; ++y) {
+        std::fill(fullPattern.begin() + y * width * 4, fullPattern.begin() + (y + 1) * width * 4,
+                  static_cast<std::byte>(y));
+    }
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vko::ImageRegion fullRegion(image, VK_IMAGE_ASPECT_COLOR_BIT, 0);
+    vko::upload(stream, ctx->device, fullRegion, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, format,
+                [&](VkDeviceSize offset, std::span<std::byte> dst) {
+                    std::copy(fullPattern.begin() + offset,
+                              fullPattern.begin() + offset + dst.size(), dst.begin());
+                });
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    // Download just row 15
+    constexpr uint32_t targetRow = 15;
+    auto subRegion = fullRegion.subregion({0, static_cast<int32_t>(targetRow), 0}, {width, 1, 1});
+
+    auto downloadFuture =
+        vko::download(stream, ctx->device, subRegion, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, format);
+    stream.submit();
+    auto& downloaded = downloadFuture.get(ctx->device);
+
+    ASSERT_EQ(downloaded.size(), width * 4);
+    for (size_t i = 0; i < downloaded.size(); ++i) {
+        EXPECT_EQ(static_cast<uint8_t>(downloaded[i]), targetRow) << "Mismatch at byte " << i;
+    }
+}
+
+// Test single column sub-region (edge case)
+TEST_F(UnitTestFixture, ImageStaging_SubRegion_SingleColumn) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator,
+                                                               /*minPools=*/2, /*maxPools=*/4,
+                                                               /*poolSize=*/1 << 16);
+    vko::StagingStream stream(queue, std::move(staging));
+
+    constexpr uint32_t   width = 32, height = 32;
+    constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
+    constexpr VkExtent3D extent = {width, height, 1};
+
+    auto image = makeTestImage(*ctx, extent, format);
+
+    // Generate pattern: each column filled with column index
+    std::vector<std::byte> fullPattern(width * height * 4);
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            size_t idx = (y * width + x) * 4;
+            std::fill(fullPattern.begin() + idx, fullPattern.begin() + idx + 4,
+                      static_cast<std::byte>(x));
+        }
+    }
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vko::ImageRegion fullRegion(image, VK_IMAGE_ASPECT_COLOR_BIT, 0);
+    vko::upload(stream, ctx->device, fullRegion, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, format,
+                [&](VkDeviceSize offset, std::span<std::byte> dst) {
+                    std::copy(fullPattern.begin() + offset,
+                              fullPattern.begin() + offset + dst.size(), dst.begin());
+                });
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    // Download just column 20
+    constexpr uint32_t targetCol = 20;
+    auto subRegion = fullRegion.subregion({static_cast<int32_t>(targetCol), 0, 0}, {1, height, 1});
+
+    auto downloadFuture =
+        vko::download(stream, ctx->device, subRegion, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, format);
+    stream.submit();
+    auto& downloaded = downloadFuture.get(ctx->device);
+
+    ASSERT_EQ(downloaded.size(), height * 4);
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t c = 0; c < 4; ++c) {
+            EXPECT_EQ(static_cast<uint8_t>(downloaded[y * 4 + c]), targetCol)
+                << "Mismatch at row " << y << " channel " << c;
+        }
+    }
+}
+
+// Test sub-region with chunked transfer (small staging pool)
+TEST_F(UnitTestFixture, ImageStaging_SubRegion_Chunked_SmallPool) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    // Tiny pool to force chunking within the sub-region
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator,
+                                                               /*minPools=*/2, /*maxPools=*/8,
+                                                               /*poolSize=*/256);
+    vko::StagingStream stream(queue, std::move(staging));
+
+    constexpr uint32_t   width = 32, height = 32;
+    constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
+    constexpr VkExtent3D extent = {width, height, 1};
+
+    auto image = makeTestImage(*ctx, extent, format);
+
+    // Generate pattern: each pixel encodes position
+    std::vector<std::byte> fullPattern(width * height * 4);
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            size_t i           = (y * width + x) * 4;
+            fullPattern[i + 0] = static_cast<std::byte>(x);
+            fullPattern[i + 1] = static_cast<std::byte>(y);
+            fullPattern[i + 2] = static_cast<std::byte>(x ^ y);
+            fullPattern[i + 3] = static_cast<std::byte>(0xFF);
+        }
+    }
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vko::ImageRegion fullRegion(image, VK_IMAGE_ASPECT_COLOR_BIT, 0);
+    vko::upload(stream, ctx->device, fullRegion, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, format,
+                [&](VkDeviceSize offset, std::span<std::byte> dst) {
+                    std::copy(fullPattern.begin() + offset,
+                              fullPattern.begin() + offset + dst.size(), dst.begin());
+                });
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    // Download a sub-region that will require multiple chunks (16x16 = 1024 bytes, pool=256)
+    constexpr uint32_t subOffsetX = 8, subOffsetY = 8;
+    constexpr uint32_t subWidth = 16, subHeight = 16;
+    auto               subRegion = fullRegion.subregion(
+        {static_cast<int32_t>(subOffsetX), static_cast<int32_t>(subOffsetY), 0},
+        {subWidth, subHeight, 1});
+
+    auto downloadFuture =
+        vko::download(stream, ctx->device, subRegion, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, format);
+    stream.submit();
+    auto& downloaded = downloadFuture.get(ctx->device);
+
+    ASSERT_EQ(downloaded.size(), subWidth * subHeight * 4);
+
+    for (uint32_t y = 0; y < subHeight; ++y) {
+        for (uint32_t x = 0; x < subWidth; ++x) {
+            size_t  idx       = (y * subWidth + x) * 4;
+            uint8_t expectedX = subOffsetX + x;
+            uint8_t expectedY = subOffsetY + y;
+
+            EXPECT_EQ(static_cast<uint8_t>(downloaded[idx + 0]), expectedX)
+                << "X mismatch at (" << x << "," << y << ")";
+            EXPECT_EQ(static_cast<uint8_t>(downloaded[idx + 1]), expectedY)
+                << "Y mismatch at (" << x << "," << y << ")";
+            EXPECT_EQ(static_cast<uint8_t>(downloaded[idx + 2]),
+                      static_cast<uint8_t>(expectedX ^ expectedY))
+                << "XOR mismatch at (" << x << "," << y << ")";
+        }
+    }
+}
+
+// Test sub-region of array image with layer subset (middle layers)
+TEST_F(UnitTestFixture, ImageStaging_SubRegion_2DArray_LayerSubset) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator,
+                                                               /*minPools=*/2, /*maxPools=*/4,
+                                                               /*poolSize=*/1 << 16);
+    vko::StagingStream stream(queue, std::move(staging));
+
+    constexpr uint32_t   width = 16, height = 16, layers = 8;
+    constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
+    constexpr VkExtent3D extent = {width, height, 1};
+
+    auto   image     = makeTestImage(*ctx, extent, format, layers);
+    size_t layerSize = width * height * 4;
+
+    // Generate pattern: each layer filled with layer index * 25
+    std::vector<std::byte> fullPattern(layerSize * layers);
+    for (uint32_t layer = 0; layer < layers; ++layer) {
+        std::fill(fullPattern.begin() + layer * layerSize,
+                  fullPattern.begin() + (layer + 1) * layerSize,
+                  static_cast<std::byte>(layer * 25));
+    }
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
+                          layers);
+    vko::ImageRegion fullRegion(image, VK_IMAGE_ASPECT_COLOR_BIT, 0);
+    vko::upload(stream, ctx->device, fullRegion, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, format,
+                [&](VkDeviceSize offset, std::span<std::byte> dst) {
+                    std::copy(fullPattern.begin() + offset,
+                              fullPattern.begin() + offset + dst.size(), dst.begin());
+                });
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
+                          layers);
+
+    // Download layers 2-5 (4 layers from the middle)
+    constexpr uint32_t baseLayer = 2, layerCount = 4;
+    auto               subRegion = fullRegion.subregion({0, 0, 0}, extent, baseLayer, layerCount);
+
+    auto downloadFuture =
+        vko::download(stream, ctx->device, subRegion, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, format);
+    stream.submit();
+    auto& downloaded = downloadFuture.get(ctx->device);
+
+    ASSERT_EQ(downloaded.size(), layerSize * layerCount);
+
+    for (uint32_t layer = 0; layer < layerCount; ++layer) {
+        uint8_t expected = (baseLayer + layer) * 25;
+        for (size_t i = 0; i < layerSize; ++i) {
+            EXPECT_EQ(static_cast<uint8_t>(downloaded[layer * layerSize + i]), expected)
+                << "Mismatch at layer " << layer << " byte " << i;
+        }
+    }
+}
+
+// Test sub-region that equals full image (offset 0,0,0 with full extent)
+TEST_F(UnitTestFixture, ImageStaging_SubRegion_FullImage) {
+    vko::SerialTimelineQueue queue(ctx->device, ctx->queueFamilyIndex, 0);
+    auto staging = vko::vma::RecyclingStagingPool<vko::Device>(ctx->device, ctx->allocator,
+                                                               /*minPools=*/2, /*maxPools=*/4,
+                                                               /*poolSize=*/1 << 16);
+    vko::StagingStream stream(queue, std::move(staging));
+
+    constexpr uint32_t   width = 16, height = 16;
+    constexpr VkFormat   format = VK_FORMAT_R8G8B8A8_UNORM;
+    constexpr VkExtent3D extent = {width, height, 1};
+
+    auto image = makeTestImage(*ctx, extent, format);
+
+    std::vector<std::byte> fullPattern(width * height * 4);
+    for (size_t i = 0; i < fullPattern.size(); ++i) {
+        fullPattern[i] = static_cast<std::byte>(i & 0xFF);
+    }
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    vko::ImageRegion fullRegion(image, VK_IMAGE_ASPECT_COLOR_BIT, 0);
+    vko::upload(stream, ctx->device, fullRegion, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, format,
+                [&](VkDeviceSize offset, std::span<std::byte> dst) {
+                    std::copy(fullPattern.begin() + offset,
+                              fullPattern.begin() + offset + dst.size(), dst.begin());
+                });
+
+    transitionImageLayout(stream, ctx->device, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+    // Download using subregion() with full image bounds
+    auto subRegion = fullRegion.subregion({0, 0, 0}, extent);
+
+    auto downloadFuture =
+        vko::download(stream, ctx->device, subRegion, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, format);
+    stream.submit();
+    auto& downloaded = downloadFuture.get(ctx->device);
+
+    ASSERT_EQ(downloaded.size(), fullPattern.size());
+    EXPECT_EQ(downloaded, fullPattern);
 }

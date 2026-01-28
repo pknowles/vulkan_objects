@@ -5,7 +5,7 @@
 #include <debugbreak.h>
 #include <gtest/gtest.h>
 #include <iostream>
-#include <test_context_fixtures.hpp>
+#include <test_context_create_info.hpp>
 #include <type_traits>
 #include <vko/acceleration_structures.hpp>
 #include <vko/adapters.hpp>
