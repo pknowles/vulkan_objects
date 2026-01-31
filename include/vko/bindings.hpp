@@ -58,7 +58,7 @@ struct DescriptorSetPoolSizes {
     DescriptorSetPoolSizes(std::span<const VkDescriptorSetLayoutBinding> bindings) {
         std::unordered_map<VkDescriptorType, uint32_t> typeSizes;
         for (const auto& binding : bindings)
-            typeSizes[binding.descriptorType]++;
+            typeSizes[binding.descriptorType] += binding.descriptorCount;
         sizes.reserve(typeSizes.size());
         for (auto& typeSize : typeSizes)
             sizes.push_back({typeSize.first, typeSize.second});
@@ -113,6 +113,18 @@ struct SingleDescriptorSet {
         : layout(makeDescriptorSetLayout(device, bindings, flags, layoutCreateFlags))
         , pool(device, bindings, poolCreateFlags)
         , set(device, descriptorSetPNext, pool, layout) {}
+
+    SingleDescriptorSet(SingleDescriptorSet&& other) noexcept = default;
+    SingleDescriptorSet& operator=(SingleDescriptorSet&& other) noexcept
+    {
+        // These may trigger destruction, which is why they must happen in
+        // reverse order. Why the language doesn't do this for us I don't know.
+        set = std::move(other.set);
+        pool = std::move(other.pool);
+        layout = std::move(other.layout);
+        return *this;
+    }
+
     DescriptorSetLayout     layout;
     SingleDescriptorSetPool pool;
     DescriptorSet           set;
