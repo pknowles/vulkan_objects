@@ -95,6 +95,7 @@ public:
 
     // Since we cache the signalled state we can provide a special constructor
     // for an already-signalled semaphore.
+    // Danger: cannot be used with waitSemaphoreInfo()
     struct already_signalled_t {};
     SemaphoreValue(already_signalled_t)
         : m_signalledCache(true) {}
@@ -205,11 +206,10 @@ public:
     // a command buffer.
     [[nodiscard]] VkSemaphoreSubmitInfo waitSemaphoreInfo(VkPipelineStageFlags2 stageMask,
                                                           uint32_t              deviceIndex = 0) {
-        assert(m_semaphore != VK_NULL_HANDLE);
         return {.sType       = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                 .pNext       = nullptr,
-                .semaphore   = m_semaphore,
-                .value       = m_value.get(),
+                .semaphore   = semaphore(),
+                .value       = value(),
                 .stageMask   = stageMask,
                 .deviceIndex = deviceIndex};
     }
@@ -220,7 +220,12 @@ public:
 
     // Raw access to the semaphore. You probably want waitSemaphoreInfo()
     // instead.
-    [[nodiscard]] VkSemaphore semaphore() const { return m_semaphore; }
+    [[nodiscard]] VkSemaphore semaphore() const {
+        // TODO: that this check exists means RAII rules have been broken
+        if (m_semaphore == VK_NULL_HANDLE)
+            throw Exception("SemaphoreValue::makeSignalled().semaphore() called");
+        return m_semaphore;
+    }
 
 private:
     // TODO: there's an argument for making this a
@@ -652,35 +657,35 @@ struct SubmitPromise {
     SubmitPromise(SubmitPromise&& other) noexcept
         : m_promiseValue(std::move(other.m_promiseValue))
         , m_signalFuture(std::move(other.m_signalFuture))
-        , m_hasValue(other.m_hasValue) {
-        other.m_hasValue = false;
+        , m_valueUnset(other.m_valueUnset) {
+        other.m_valueUnset = false;
     }
     SubmitPromise& operator=(SubmitPromise&& other) noexcept {
         free();
         m_promiseValue   = std::move(other.m_promiseValue);
         m_signalFuture   = std::move(other.m_signalFuture);
-        m_hasValue       = other.m_hasValue;
-        other.m_hasValue = false;
+        m_valueUnset       = other.m_valueUnset;
+        other.m_valueUnset = false;
         return *this;
     }
     ~SubmitPromise() { free(); }
     void setValue(uint64_t value) {
         m_promiseValue.set_value(value);
-        m_hasValue = false;
+        m_valueUnset = false;
     }
 
     SemaphoreValue futureValue() const { return m_signalFuture; }
 
 private:
     void free() {
-        if (m_hasValue) {
+        if (m_valueUnset) {
             m_promiseValue.set_exception(std::make_exception_ptr(TimelineSubmitCancel()));
         }
     }
 
     std::promise<uint64_t> m_promiseValue;
     SemaphoreValue         m_signalFuture;
-    bool                   m_hasValue = true;
+    bool                   m_valueUnset = true;
 };
 
 // A VkQueue with a timeline semaphore that tracks submission. Not thread safe.
@@ -849,6 +854,8 @@ private:
     std::mutex m_mutex;
 };
 
+#ifdef VULKAN_OBJECTS_ENABLE_FOOTGUNS
+
 // WARNING: this is a big footgun as it hides the internal submit promise
 // A convenience wrapper that extends TimelineQueue with a managed internal
 // SubmitPromise. Not thread safe. Use only for tracking submissions to a single
@@ -919,5 +926,7 @@ public:
 private:
     SubmitPromise m_submitPromise;
 };
+
+#endif // VULKAN_OBJECTS_ENABLE_FOOTGUNS
 
 } // namespace vko

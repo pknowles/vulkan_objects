@@ -1,5 +1,8 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 
+// TODO: switch to TimelineQueue
+#define VULKAN_OBJECTS_ENABLE_FOOTGUNS
+
 #include <gtest/gtest.h>
 #include <test_context_fixtures.hpp>
 #include <vector>
