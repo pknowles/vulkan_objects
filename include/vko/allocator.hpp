@@ -282,6 +282,7 @@ public:
         // Binding is a side effect of create(). This is unexpected but
         // currently saves returning the VkDeviceMemory and offset.
         // TODO: probably better to pass these to the caller and not hide features
+        // TODO: leaks if throws. Move to Allocation constructor.
         check(vmaBindBufferMemory(m_allocator, allocation, buffer));
         return {m_allocator, std::move(allocation), allocationInfo};
     }
@@ -299,6 +300,7 @@ public:
         // Binding is a side effect of create(). This is unexpected but
         // currently saves returning the VkDeviceMemory and offset.
         // TODO: probably better to pass these to the caller and not hide features
+        // TODO: leaks if throws. Move to Allocation constructor.
         check(vmaBindImageMemory(m_allocator, allocation, image));
         return {m_allocator, std::move(allocation), allocationInfo};
     }

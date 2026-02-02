@@ -52,9 +52,9 @@ public:
     }
     operator VkCommandBuffer() const& { return m_commandBuffer; }
     operator VkCommandBuffer() && = delete;
-    // explicit operator bool() const & { return static_cast<bool>(m_commandBuffer); }
     bool            engaged() const { return m_commandBuffer.engaged(); }
     CommandBuffer&& end() {
+        assert(engaged());
         if (engaged())
             check(vkEndCommandBuffer(m_commandBuffer));
         return std::move(m_commandBuffer);
@@ -84,8 +84,27 @@ public:
         , m_queue(queue)
         , vkQueueSubmit(vk.vkQueueSubmit)
         , vkQueueWaitIdle(vk.vkQueueWaitIdle) {}
+    ImmediateCommandBuffer(ImmediateCommandBuffer&& other) noexcept = default;
+    ImmediateCommandBuffer& operator=(ImmediateCommandBuffer&& other) noexcept
+    {
+        submit();
+        m_commandBuffer = std::move(other.m_commandBuffer);
+        m_queue = other.m_queue;
+        vkQueueSubmit = other.vkQueueSubmit;
+        vkQueueWaitIdle = other.vkQueueWaitIdle;
+        return *this;
+    }
     ~ImmediateCommandBuffer() {
-        if (static_cast<bool>(m_commandBuffer)) {
+        submit();
+    }
+    void addWait(VkSemaphore semaphore, VkPipelineStageFlags stageMask) {
+        m_waitSemaphores.push_back(semaphore);
+        m_waitSemaphoreStageMasks.push_back(stageMask);
+    }
+    void addSignal(VkSemaphore semaphore) { m_signalSemaphores.push_back(semaphore); }
+    operator VkCommandBuffer() const { return m_commandBuffer; }
+    void submit() {
+        if (m_commandBuffer.engaged()) {
             CommandBuffer cmd(m_commandBuffer.end());
             VkSubmitInfo  submitInfo{
                  .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -98,16 +117,10 @@ public:
                  .signalSemaphoreCount = uint32_t(m_signalSemaphores.size()),
                  .pSignalSemaphores    = m_signalSemaphores.data(),
             };
-            vkQueueSubmit(m_queue, 1, &submitInfo, VK_NULL_HANDLE);
-            vkQueueWaitIdle(m_queue);
+            vko::check(vkQueueSubmit(m_queue, 1, &submitInfo, VK_NULL_HANDLE));
+            vko::check(vkQueueWaitIdle(m_queue));
         }
     }
-    void addWait(VkSemaphore semaphore, VkPipelineStageFlags stageMask) {
-        m_waitSemaphores.push_back(semaphore);
-        m_waitSemaphoreStageMasks.push_back(stageMask);
-    }
-    void addSignal(VkSemaphore semaphore) { m_signalSemaphores.push_back(semaphore); }
-    operator VkCommandBuffer() const { return m_commandBuffer; }
 
 private:
     RecordingCommandBuffer            m_commandBuffer;

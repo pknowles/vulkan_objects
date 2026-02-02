@@ -99,6 +99,7 @@ else()
   endif()
   # Enable AddressSanitizer in debug builds to catch memory issues
   # Disabled temporarily due to NVIDIA driver incompatibility
+  # Results in "terminator_CreateDevice: Failed in ICD /usr/lib64/libGLX_nvidia.so.580.94.16 vkCreateDevice call"
   #if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   #  target_compile_options(vulkan_objects_tests PRIVATE -fsanitize=address -fno-omit-frame-pointer)
   #  target_link_options(vulkan_objects_tests PRIVATE -fsanitize=address)
