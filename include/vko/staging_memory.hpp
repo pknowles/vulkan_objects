@@ -1123,9 +1123,18 @@ public:
         SemaphoreValue result = m_current->promise.futureValue();
         CommandBuffer  cmd(m_current->cmd.end());
 
-        m_queue.get().submit(m_device.get(), std::forward<WaitRange>(waitInfos), cmd,
-                             std::move(m_current->promise), timelineSemaphoreStageMask,
-                             std::forward<SignalRange>(signalInfos));
+        if (m_pendingWaits.empty()) {
+            m_queue.get().submit(m_device.get(), std::forward<WaitRange>(waitInfos), cmd,
+                                 std::move(m_current->promise), timelineSemaphoreStageMask,
+                                 std::forward<SignalRange>(signalInfos));
+        } else {
+            m_pendingWaits.insert(m_pendingWaits.begin(), std::begin(waitInfos),
+                                  std::end(waitInfos));
+            m_queue.get().submit(m_device.get(), m_pendingWaits, cmd, std::move(m_current->promise),
+                                 timelineSemaphoreStageMask,
+                                 std::forward<SignalRange>(signalInfos));
+            m_pendingWaits.clear();
+        }
         m_current.reset();
 
         m_inFlightCmds.push_back({std::move(cmd), result});
@@ -1166,6 +1175,16 @@ public:
 
     // Convenience helper to get the semaphore value for the current command buffer's next submit.
     SemaphoreValue nextSubmitSemaphore() { return commandBuffer().promise.futureValue(); }
+
+    // Appends the given semaphore wait to the next submission. The caller may
+    // require the next submission to happen after some GPU semaphore but may
+    // not control when the submission happens. An equivalent call to add a
+    // semaphore to signal is not expected to be needed as the user would call
+    // submit() at the time.
+    void waitOnNextSubmit(const VkSemaphoreSubmitInfo& submitWaitInfo)
+    {
+        m_pendingWaits.push_back(submitWaitInfo);
+    }
 
 private:
     struct InFlightCmd {
@@ -1216,6 +1235,7 @@ private:
     CommandPool                                     m_commandPool;
     std::deque<InFlightCmd>                         m_inFlightCmds;
     std::optional<TimelineCommandBuffer>            m_current;
+    std::vector<VkSemaphoreSubmitInfo>              m_pendingWaits;
 };
 
 // Concept for types that provide staging stream functionality
@@ -2036,7 +2056,8 @@ public:
     }
 
     // TODO: to be really generic and match the Vulkan API, I think we want a "Submission" object
-    template <typename WaitRange, typename SignalRange>
+    template <class WaitRange   = std::initializer_list<VkSemaphoreSubmitInfo>,
+              class SignalRange = std::initializer_list<VkSemaphoreSubmitInfo>>
     SemaphoreValue
     submit(WaitRange&& waitInfos, SignalRange&& signalInfos,
            VkPipelineStageFlags2 timelineSemaphoreStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT) {
@@ -2164,7 +2185,8 @@ public:
 
     SemaphoreValue submit() { return m_ref.submit(); }
 
-    template <typename WaitRange, typename SignalRange>
+    template <class WaitRange   = std::initializer_list<VkSemaphoreSubmitInfo>,
+              class SignalRange = std::initializer_list<VkSemaphoreSubmitInfo>>
     SemaphoreValue
     submit(WaitRange&& waitInfos, SignalRange&& signalInfos,
            VkPipelineStageFlags2 timelineSemaphoreStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT) {
