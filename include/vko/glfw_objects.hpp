@@ -205,10 +205,10 @@ inline const char* platformSurfaceExtension([[maybe_unused]] PlatformSupport sup
     throw Exception("glfwGetPlatform returned unsupported platform " + std::to_string(platform));
 }
 
-inline bool physicalDevicePresentationSupport([[maybe_unused]] InstanceCommands& vk,
-                                              [[maybe_unused]] PlatformSupport   support,
-                                              VkPhysicalDevice                   physicalDevice,
-                                              uint32_t                           queueFamilyIndex) {
+inline bool physicalDevicePresentationSupport([[maybe_unused]] const InstanceCommands& vk,
+                                              [[maybe_unused]] const PlatformSupport&  support,
+                                              VkPhysicalDevice physicalDevice,
+                                              uint32_t         queueFamilyIndex) {
     int platform = glfwGetPlatform();
     if (platform == 0)
         throw makeLastErrorException("glfwGetPlatform failed");
@@ -299,7 +299,7 @@ WaylandSurfaceKHR makeWaylandSurfaceKHR(const InstanceCommands& vk, VkInstance i
     return WaylandSurfaceKHR{
         vk, instance,
         VkWaylandSurfaceCreateInfoKHR{
-            .sType   = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+            .sType   = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
             .pNext   = nullptr,
             .flags   = 0,
             .display = CHECK_GLFW_NE(glfwGetWaylandDisplay(), (wl_display*)0),
@@ -341,7 +341,7 @@ XlibSurfaceKHR makeXlibSurfaceKHR(const InstanceCommands& vk, VkInstance instanc
 #endif
 
 template <instance_commands InstanceCommands>
-SurfaceKHR makeSurface(const InstanceCommands& vk, VkInstance instance, PlatformSupport support,
+SurfaceKHR makeSurface(const InstanceCommands& vk, VkInstance instance, const PlatformSupport& support,
                        GLFWwindow* window) {
     std::optional<SurfaceVariant> result;
     std::string                   exceptionStrings;

@@ -204,9 +204,17 @@ std::unique_ptr<NVSDK_NGX_Parameter, ParameterDeleter> capabilityParameter() {
 }
 } // anonymous namespace
 
+// An automatically constructing and owning NVSDK_NGX_Parameter. May still use
+// ::null() for delayed initialization, e.g. for fallback if not supported.
 struct CapabilityParameter : std::unique_ptr<NVSDK_NGX_Parameter, ParameterDeleter> {
     CapabilityParameter()
         : std::unique_ptr<NVSDK_NGX_Parameter, ParameterDeleter>(capabilityParameter()) {}
+
+    static CapabilityParameter null() { return CapabilityParameter{create_null_t{}}; }
+
+private:
+    struct create_null_t {};
+    CapabilityParameter(create_null_t&&) {}
 };
 
 template <class T>
