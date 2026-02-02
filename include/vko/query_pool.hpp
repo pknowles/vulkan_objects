@@ -46,6 +46,7 @@
 #include <vector>
 #include <vko/adapters.hpp>
 #include <vko/handles.hpp>
+#include <vko/object.hpp>
 #include <vko/timeline_queue.hpp>
 #include <vulkan/vulkan_core.h>
 
@@ -188,7 +189,7 @@ template <query_result_type T, VkQueryType QueryType, uint32_t PoolCapacity = De
 class SharedQuery {
 public:
     using QueryBatchStateType = QueryBatchState<T, QueryType, PoolCapacity, PipelineStatistics>;
-    SharedQuery(QueryHandle h, std::shared_ptr<QueryBatchStateType> batch)
+    SharedQuery(QueryHandle h, shared_obj<QueryBatchStateType> batch)
         : m_batch(std::move(batch))
         , m_handle(h) {}
 
@@ -203,7 +204,7 @@ public:
     const SemaphoreValue& semaphore() const { return m_batch->m_semaphore.value(); }
 
 private:
-    std::shared_ptr<QueryBatchStateType> m_batch;
+    shared_obj<QueryBatchStateType> m_batch;
     QueryHandle                          m_handle;
 };
 
@@ -217,7 +218,7 @@ public:
     using QueryPoolType       = TypedQueryPool<QueryType, PoolCapacity, PipelineStatistics>;
     using QueryBatchStateType = QueryBatchState<T, QueryType, PoolCapacity, PipelineStatistics>;
     using StateType =
-        std::conditional_t<Shared, std::shared_ptr<QueryBatchStateType>, QueryBatchStateType>;
+        std::conditional_t<Shared, shared_obj<QueryBatchStateType>, QueryBatchStateType>;
 
     QueryBatchImpl(StateType batchState, SemaphoreValue semaphore)
         : m_state(std::move(batchState)) {
@@ -338,17 +339,12 @@ public:
     using QueryBatchStateType   = QueryBatchState<T, QueryType, PoolCapacity, PipelineStatistics>;
     using QueryBatchType = QueryBatchImpl<T, Shared, QueryType, PoolCapacity, PipelineStatistics>;
     using StateType =
-        std::conditional_t<Shared, std::shared_ptr<QueryBatchStateType>, QueryBatchStateType>;
+        std::conditional_t<Shared, shared_obj<QueryBatchStateType>, QueryBatchStateType>;
     using HandleType =
         std::conditional_t<Shared, SharedQuery<T, QueryType, PoolCapacity, PipelineStatistics>,
                            QueryHandle>;
 
-    QueryBatchBuilderImpl()
-        requires(Shared)
-        : m_state(std::make_shared<QueryBatchStateType>()) {}
-    QueryBatchBuilderImpl()
-        requires(!Shared)
-    {}
+    QueryBatchBuilderImpl() = default;
 
     template <device_and_commands DeviceAndCommands, class Fn>
         requires(!Shared)
