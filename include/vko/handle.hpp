@@ -25,7 +25,8 @@ struct CreateHandle;
 // reference to its allocator. std::function could work too, but I have a
 // premature optimization hunch this could be cheaper (naturally, untested).
 template <class T>
-struct DestroyFunc {
+class DestroyFunc {
+public:
     // In most cases the parent is the first parameter of the destroy function
     using Parent = typename handle_traits<T>::destroy_first_param;
 
@@ -36,17 +37,20 @@ struct DestroyFunc {
 
     template <class CommandTable>
     DestroyFunc(const CommandTable& table, Parent parent)
-        : destroy(handle_traits<T>::template destroy_command(table))
-        , parent(parent) {}
-    void operator()(T handle) const { destroy(parent, handle, nullptr); }
+        : m_destroy(handle_traits<T>::template destroy_command(table))
+        , m_parent(parent) {}
+    void operator()(T handle) const { m_destroy(m_parent, handle, nullptr); }
 
+    Parent parent() const { return m_parent; }
+
+private:
     // Copy the function pointer rather than take a reference to the function
     // table itself and risk a dangling pointer
-    handle_traits<T>::destroy_t destroy;
+    handle_traits<T>::destroy_t m_destroy;
 
     // The owning object. This could be a weak_ptr to be extra safe, but the
     // overhead makes it a step too far.
-    Parent parent;
+    Parent m_parent;
 };
 
 // Template class to hold a single vulkan handle
@@ -86,9 +90,20 @@ public:
     }
     operator T() const& { return m_handle; }
     operator T() && = delete;
-    bool     engaged() const { return m_handle != VK_NULL_HANDLE; }
-    T        object() const& { return m_handle; } // useful to be explicit for type deduction
-    const T* ptr() const& { return &m_handle; }
+    [[nodiscard]] bool engaged() const { return m_handle != VK_NULL_HANDLE; }
+    [[nodiscard]] T object() const& { return m_handle; } // useful to be explicit for type deduction
+    [[nodiscard]] const T* ptr() const& { return &m_handle; }
+    [[nodiscard]] Parent   parent() const {
+        return m_destroy.parent();
+    } // Provide access to the parent handle, VkDevice in most cases
+
+    // Safety..
+    operator bool() const = delete;
+    //bool operator==(T raw) = delete;
+    //bool operator!=(T raw) = delete;
+    //auto operator<=>(const T&) const = delete;
+    //friend bool operator==(T raw, const Handle&) = delete;
+    //friend bool operator!=(T raw, const Handle&) = delete;
 
 private:
     void destroy() {

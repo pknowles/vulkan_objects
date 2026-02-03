@@ -302,10 +302,14 @@ TEST(Integration, WindowSystemIntegration) {
     for (;;) {
         int width, height;
         glfwGetWindowSize(window.get(), &width, &height);
-        vko::simple::Swapchain swapchain{
-            device,           surface,
-            surfaceFormat,    VkExtent2D{uint32_t(width), uint32_t(height)},
-            queueFamilyIndex, surfacePresentMode,
+        vko::Swapchain swapchain{
+            device,
+            surface,
+            2u,
+            surfaceFormat,
+            VkExtent2D{uint32_t(width), uint32_t(height)},
+            queueFamilyIndex,
+            surfacePresentMode,
             VK_NULL_HANDLE,
         };
 
@@ -316,13 +320,13 @@ TEST(Integration, WindowSystemIntegration) {
             vko::simple::ImmediateCommandBuffer cmd(device, commandPool, queue);
             cmd.addWait(acquireSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
             cmd.addSignal(renderingFinished);
-            vko::simple::clearSwapchainImage(
-                device, cmd, swapchain.images[imageIndex],
-                swapchain.presented[imageIndex] ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-                                                : VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-                VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VkClearColorValue{.float32 = {1.0f, 1.0f, 0.0f, 1.0f}});
+            vko::clearSwapchainImage(device, cmd, swapchain.images()[imageIndex],
+                                     swapchain.presented()[imageIndex]
+                                         ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                                         : VK_IMAGE_LAYOUT_UNDEFINED,
+                                     VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     VkClearColorValue{.float32 = {1.0f, 1.0f, 0.0f, 1.0f}});
 
             VkImageCopy region{
                 .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
@@ -332,10 +336,11 @@ TEST(Integration, WindowSystemIntegration) {
                 .extent         = {std::min(imageExtent.width, uint32_t(width)),
                                    std::min(imageExtent.height, uint32_t(height)), 1U},
             };
-            device.vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, swapchain.images[imageIndex],
-                                  VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+            device.vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                                  swapchain.images()[imageIndex], VK_IMAGE_LAYOUT_GENERAL, 1,
+                                  &region);
             vko::cmdImageBarrier(
-                device, cmd, swapchain.images[imageIndex],
+                device, cmd, swapchain.images()[imageIndex],
                 {
                     VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -350,7 +355,7 @@ TEST(Integration, WindowSystemIntegration) {
             VkRenderingAttachmentInfo renderingAttachmentInfo{
                 .sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .pNext              = nullptr,
-                .imageView          = swapchain.imageViews[imageIndex],
+                .imageView          = swapchain.imageViews()[imageIndex],
                 .imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 .resolveMode        = VK_RESOLVE_MODE_NONE,
                 .resolveImageView   = VK_NULL_HANDLE,
@@ -377,7 +382,7 @@ TEST(Integration, WindowSystemIntegration) {
             vko::cmdDynamicRenderingDefaults(device, cmd, uint32_t(width), uint32_t(height));
             device.vkCmdDraw(cmd, 3U, 1U, 0U, 0U);
             device.vkCmdEndRendering(cmd);
-            vko::cmdImageBarrier(device, cmd, swapchain.images[imageIndex],
+            vko::cmdImageBarrier(device, cmd, swapchain.images()[imageIndex],
                                  {
                                      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
@@ -673,11 +678,14 @@ TEST(Integration, HelloTriangleRayTracing) {
     for (;;) {
         int width, height;
         glfwGetWindowSize(window.get(), &width, &height);
-        vko::simple::Swapchain swapchain{
-            device,           surface,
-            surfaceFormat,    VkExtent2D{uint32_t(width), uint32_t(height)},
-            queueFamilyIndex, surfacePresentMode,
-            VK_NULL_HANDLE};
+        vko::Swapchain swapchain{device,
+                                 surface,
+                                 2u,
+                                 surfaceFormat,
+                                 VkExtent2D{uint32_t(width), uint32_t(height)},
+                                 queueFamilyIndex,
+                                 surfacePresentMode,
+                                 VK_NULL_HANDLE};
 
         vko::WriteDescriptorSetBuilder writes;
         writes.push_back<VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR>(
@@ -699,13 +707,13 @@ TEST(Integration, HelloTriangleRayTracing) {
             vko::simple::ImmediateCommandBuffer cmd(device, commandPool, queue);
             cmd.addWait(acquireSemaphore, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
             cmd.addSignal(renderingFinished);
-            vko::simple::clearSwapchainImage(
-                device, cmd, swapchain.images[imageIndex],
-                swapchain.presented[imageIndex] ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-                                                : VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-                VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VkClearColorValue{.float32 = {1.0f, 1.0f, 0.0f, 1.0f}});
+            vko::clearSwapchainImage(device, cmd, swapchain.images()[imageIndex],
+                                     swapchain.presented()[imageIndex]
+                                         ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                                         : VK_IMAGE_LAYOUT_UNDEFINED,
+                                     VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                     VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                     VkClearColorValue{.float32 = {1.0f, 1.0f, 0.0f, 1.0f}});
 
             RtPushConstants pushConstant{imageExtent};
             device.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rtPipeline);
@@ -737,9 +745,10 @@ TEST(Integration, HelloTriangleRayTracing) {
                 .extent         = {std::min(imageExtent.width, uint32_t(width)),
                                    std::min(imageExtent.height, uint32_t(height)), 1U},
             };
-            device.vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, swapchain.images[imageIndex],
-                                  VK_IMAGE_LAYOUT_GENERAL, 1, &region);
-            vko::cmdImageBarrier(device, cmd, swapchain.images[imageIndex],
+            device.vkCmdCopyImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                                  swapchain.images()[imageIndex], VK_IMAGE_LAYOUT_GENERAL, 1,
+                                  &region);
+            vko::cmdImageBarrier(device, cmd, swapchain.images()[imageIndex],
                                  {
                                      VK_PIPELINE_STAGE_TRANSFER_BIT,
                                      VK_ACCESS_TRANSFER_WRITE_BIT,

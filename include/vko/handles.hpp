@@ -1,10 +1,20 @@
 // Copyright (c) 2025 Pyarelal Knowles, MIT License
 #pragma once
 
+#include <concepts>
 #include <span>
+#include <type_traits>
 #include <vko/gen_handles.hpp>
 
 namespace vko {
+
+static_assert(!std::is_convertible_v<Semaphore, bool>);
+static_assert(!std::is_constructible_v<bool, Semaphore>);
+static_assert(!std::equality_comparable<Semaphore>);
+static_assert(!std::equality_comparable_with<Semaphore, VkSemaphore>);
+static_assert(!std::equality_comparable_with<Semaphore, nullptr_t>);
+static_assert(!std::equality_comparable_with<Semaphore, int>);
+static_assert(!std::is_arithmetic_v<Semaphore>);
 
 // Special case handle for VkInstance
 class InstanceHandle {
