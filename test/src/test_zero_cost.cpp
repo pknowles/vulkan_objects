@@ -8,13 +8,27 @@
 #include <vko/pnext_chain.hpp>
 #include <vulkan/vulkan_core.h>
 
-// Linker-provided symbols from objcopy (binary data embedded as object file)
-// From test_zero_cost_symbols.txt -> test_zero_cost_symbols.o
-#ifdef SYMBOL_DATA_SUPPORTED
+// Linker-provided symbols from this source file, embedded after the
+// compilation of this source file
+#ifndef SYMBOL_DATA_SUPPORTED
+#error SYMBOL_DATA_SUPPORTED not defined
+#endif
+#if SYMBOL_DATA_SUPPORTED
+#ifdef WIN32
+// From dumpbin, linked via generated source file
+extern const char binary_test_zero_cost_symbols_txt[];
+std::string g_binaryTestZeroCostSymbols(binary_test_zero_cost_symbols_txt);
+#else
+// From objcopy-created object file with embedded data,
+// test_zero_cost_symbols.txt -> test_zero_cost_symbols.o
 extern "C" {
 extern const char _binary_test_zero_cost_symbols_txt_start[];
 extern const char _binary_test_zero_cost_symbols_txt_end[];
 }
+std::string g_binaryTestZeroCostSymbols(_binary_test_zero_cost_symbols_txt_start,
+    _binary_test_zero_cost_symbols_txt_end -
+        _binary_test_zero_cost_symbols_txt_start);
+#endif
 #endif
 
 // Cross-platform noinline attribute (prevents inlining so we can measure code size)
@@ -155,20 +169,15 @@ TEST(ZeroCost, PNextChaining) {
 
 // GTest: Symbol size verification (from embedded build-time data)
 TEST(ZeroCost, SymbolSizes) {
-#ifndef SYMBOL_DATA_SUPPORTED
-    GTEST_SKIP() << "Symbol extraction not supported on this platform";
-#else
+#if SYMBOL_DATA_SUPPORTED
     // Read embedded symbol data (objcopy embeds the text file as binary data)
-    std::string nm_data(_binary_test_zero_cost_symbols_txt_start,
-                        _binary_test_zero_cost_symbols_txt_end -
-                            _binary_test_zero_cost_symbols_txt_start);
-    ASSERT_FALSE(nm_data.empty()) << "No symbol data found - build may have failed";
+    ASSERT_FALSE(g_binaryTestZeroCostSymbols.empty()) << "No symbol data found - build may have failed";
 
     // Pass 1: Parse all exported mockPresent function symbols
     // Expected nm format: "address size type name"
     // Example: "0000000000000020 0000000000000007 T _Z17mockPresentDirectiimPKv"
     std::map<std::string, size_t> symbols;
-    std::istringstream            stream(nm_data);
+    std::istringstream            stream(g_binaryTestZeroCostSymbols);
     std::string                   line;
 
     while (std::getline(stream, line)) {
@@ -188,7 +197,7 @@ TEST(ZeroCost, SymbolSizes) {
     }
 
     // Pass 2: Verify expected symbols exist and have identical sizes
-    ASSERT_FALSE(symbols.empty()) << "No mockPresent symbols found\nData:\n" << nm_data;
+    ASSERT_FALSE(symbols.empty()) << "No mockPresent symbols found\nData:\n" << g_binaryTestZeroCostSymbols;
 
     // Helper to find symbol size by substring (compiler mangles names)
     auto symbolSize = [&](const std::string& substring) -> size_t {
@@ -209,5 +218,7 @@ TEST(ZeroCost, SymbolSizes) {
 
     EXPECT_EQ(symbolSize("mockPresentArgsTuple"), symbolSize("mockPresentDirect"))
         << "Args-tuple API looks to have non-zero overhead";
+#else
+    GTEST_SKIP() << "Symbol extraction not supported on this platform";
 #endif
 }

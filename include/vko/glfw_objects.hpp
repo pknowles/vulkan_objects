@@ -46,8 +46,8 @@ namespace glfw {
 
 // GLFW XCB Workaround Functions
 // GLFW does not provide native XCB getters (only X11/Xlib). These functions are
-// implemented in vulkan_objects_glfw library (src/glfw_xcb_hack.cpp). To use:
-// - Link against vulkan_objects_glfw (enable with VULKAN_OBJECTS_FETCH_GLFW=ON)
+// implemented in vulkan_objects_glfw_xcb library (src/glfw_xcb_hack.cpp). To use:
+// - Link against vulkan_objects_glfw_xcb (enable with VULKAN_OBJECTS_FETCH_GLFW=ON)
 // - Or compile src/glfw_xcb_hack.cpp separately in your project
 // See: https://github.com/glfw/glfw/issues/1061
 #if defined(VK_USE_PLATFORM_XCB_KHR)

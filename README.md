@@ -289,7 +289,7 @@ Admittedly this is not accurate, doesn't quite sit right with me and may change.
 
 **Note on GLFW XCB support:** GLFW does not expose native XCB handles (only
 X11/Xlib), which causes X11 macro pollution (Success, None, etc.). The
-`vulkan_objects_glfw` library provides `glfwGetXCBConnection/Visual/Window`
+`vulkan_objects_glfw_xcb` library provides `glfwGetXCBConnection/Visual/Window`
 workarounds. This is compiled separately to isolate the X11 headers. See
 [glfw/glfw#1061](https://github.com/glfw/glfw/issues/1061). External users can
 either enable `VULKAN_OBJECTS_FETCH_GLFW` or otherwise provide a `glfw` target

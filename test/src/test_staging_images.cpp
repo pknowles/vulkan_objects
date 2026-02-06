@@ -3355,8 +3355,8 @@ TEST_F(UnitTestFixture, ImageStaging_SubRegion_2D_OffsetXY) {
     for (uint32_t y = 0; y < subHeight; ++y) {
         for (uint32_t x = 0; x < subWidth; ++x) {
             size_t  dstIdx    = (y * subWidth + x) * 4;
-            uint8_t expectedX = subOffsetX + x;
-            uint8_t expectedY = subOffsetY + y;
+            uint8_t expectedX = uint8_t(subOffsetX + x);
+            uint8_t expectedY = uint8_t(subOffsetY + y);
 
             EXPECT_EQ(static_cast<uint8_t>(downloaded[dstIdx + 0]), expectedX)
                 << "Mismatch at sub-region (" << x << "," << y << ")";
@@ -3599,7 +3599,7 @@ TEST_F(UnitTestFixture, ImageStaging_SubRegion_3D_SliceSubset) {
     ASSERT_EQ(downloaded.size(), sliceSize * zCount);
 
     for (uint32_t z = 0; z < zCount; ++z) {
-        uint8_t expected = (zOffset + z) * 30;
+        uint8_t expected = uint8_t((zOffset + z) * 30);
         for (size_t i = 0; i < sliceSize; ++i) {
             EXPECT_EQ(static_cast<uint8_t>(downloaded[z * sliceSize + i]), expected)
                 << "Mismatch at slice " << z << " byte " << i;
@@ -3765,8 +3765,8 @@ TEST_F(UnitTestFixture, ImageStaging_SubRegion_Chunked_SmallPool) {
     for (uint32_t y = 0; y < subHeight; ++y) {
         for (uint32_t x = 0; x < subWidth; ++x) {
             size_t  idx       = (y * subWidth + x) * 4;
-            uint8_t expectedX = subOffsetX + x;
-            uint8_t expectedY = subOffsetY + y;
+            uint8_t expectedX = uint8_t(subOffsetX + x);
+            uint8_t expectedY = uint8_t(subOffsetY + y);
 
             EXPECT_EQ(static_cast<uint8_t>(downloaded[idx + 0]), expectedX)
                 << "X mismatch at (" << x << "," << y << ")";
@@ -3828,7 +3828,7 @@ TEST_F(UnitTestFixture, ImageStaging_SubRegion_2DArray_LayerSubset) {
     ASSERT_EQ(downloaded.size(), layerSize * layerCount);
 
     for (uint32_t layer = 0; layer < layerCount; ++layer) {
-        uint8_t expected = (baseLayer + layer) * 25;
+        uint8_t expected = uint8_t((baseLayer + layer) * 25);
         for (size_t i = 0; i < layerSize; ++i) {
             EXPECT_EQ(static_cast<uint8_t>(downloaded[layer * layerSize + i]), expected)
                 << "Mismatch at layer " << layer << " byte " << i;

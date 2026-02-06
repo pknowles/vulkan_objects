@@ -3860,7 +3860,7 @@ TEST_F(UnitTestFixture, DedicatedStagingPool_AllocateSingleAndUpTo_Multiple) {
                                                                         ctx->allocator);
 
     // Allocate multiple pairs
-    std::vector<std::pair<uint32_t, size_t>> pairs; // (single value, upTo size)
+    std::vector<std::pair<size_t, size_t>> pairs; // (single value, upTo size)
 
     for (size_t i = 0; i < 5; ++i) {
         size_t upToSize = 10 + i * 10;

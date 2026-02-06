@@ -52,17 +52,23 @@ target_include_directories(vulkan_objects_tests PRIVATE "${DEBUGBREAK_DIR}" src)
 # TODO: vulkan_objects provides these dependencies. could pick them up
 # separately
 # TODO: default to fatal errors for disabled tests!
-if(TARGET vulkan_objects_glfw)
-  target_link_libraries(vulkan_objects_tests vulkan_objects_glfw)
+if(WIN32 OR NOT XCB_FOUND)
+  target_link_libraries(vulkan_objects_tests glfw)
   target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_GLFW=1)
 else()
-  target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_GLFW=0)
-  if(TARGET glfw)
-    message(WARNING "GLFW found but vulkan_objects_glfw (required for xcb/linux X11 support) is not available - is it still needed? window tests will not be built")
+  if(TARGET vulkan_objects_glfw_xcb)
+    target_link_libraries(vulkan_objects_tests vulkan_objects_glfw_xcb)
+    target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_GLFW=1)
   else()
-    message(WARNING "vulkan_objects_glfw not built - vulkan_objects_tests will not build tests that create a window")
+    target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_GLFW=0)
+    if(TARGET glfw)
+      message(WARNING "GLFW found but vulkan_objects_glfw_xcb (required for xcb/linux X11 support) is not available - is it still needed? window tests will not be built")
+    else()
+      message(WARNING "vulkan_objects_glfw_xcb not built - vulkan_objects_tests will not build tests that create a window")
+    endif()
   endif()
 endif()
+
 if(TARGET slang)
   target_compile_definitions(vulkan_objects_tests PRIVATE VULKAN_OBJECTS_HAS_SLANG=1)
 else()
@@ -87,11 +93,15 @@ else()
 endif()
 
 if(MSVC)
-  target_compile_options(vulkan_objects_tests PRIVATE /W4 /WX)
-  # Enable static analysis in Debug builds
-  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    target_compile_options(vulkan_objects_tests PRIVATE /analyze)
-  endif()
+  target_compile_options(vulkan_objects_tests PRIVATE
+        /W4 /WX
+        /experimental:external /external:W0
+        /external:I${gtest_SOURCE_DIR}/googletest/include
+        /analyze /analyze:external-
+
+        # I haven't found a solution to these false positives from gtest, as much as I love warnings and static analysis
+        /wd6326 # warning C6326: Potential comparison of a constant with another constant. 
+    )
 else()
   target_compile_options(vulkan_objects_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -109,16 +119,15 @@ endif()
 include(GoogleTest)
 gtest_discover_tests(vulkan_objects_tests DISCOVERY_MODE PRE_TEST)
 
-# Zero-cost optimization verification with embedded symbols
-# Create object library for test_zero_cost.cpp with optimizations
+# Zero-cost optimization verification with embedded symbols.
+# The idea is to verify multiple implementations compile to the same thing.
+# This is done by querying and embedding symbol information between compilation and linking.
+# Then at runtime the test reads the information and checks the symbol sizes.
+# Start by creating an object library for just test_zero_cost.cpp with optimizations.
 add_library(test_zero_cost_obj OBJECT src/test_zero_cost.cpp)
 target_link_libraries(test_zero_cost_obj PUBLIC vulkan_objects gtest)
 target_include_directories(test_zero_cost_obj PRIVATE "${DEBUGBREAK_DIR}" src)
 target_compile_options(test_zero_cost_obj PRIVATE
-  $<$<CXX_COMPILER_ID:GNU>:-O3>
-  $<$<CXX_COMPILER_ID:Clang,AppleClang>:-O3>
-  $<$<CXX_COMPILER_ID:MSVC>:/O2>
-
   # Uncomment to debug inlining failures (adds verbose output during compilation):
   # $<$<CXX_COMPILER_ID:GNU>:-fopt-info-inline-optimized -fopt-info-inline-missed>
   # $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Rpass=inline -Rpass-missed=inline>
@@ -129,11 +138,12 @@ if(UNIX AND NOT APPLE)
   set(SYMBOLS_TXT_NAME "test_zero_cost_symbols.txt")
   set(SYMBOLS_O_NAME "test_zero_cost_symbols.o")
 
-  target_compile_definitions(test_zero_cost_obj PRIVATE SYMBOL_DATA_SUPPORTED=1)
+  set_target_properties(test_zero_cost_obj PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+  target_compile_definitions(test_zero_cost_obj PUBLIC SYMBOL_DATA_SUPPORTED=1)
 
   add_custom_command(
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${SYMBOLS_O_NAME}"
-    COMMAND sh -c "nm -S $<TARGET_OBJECTS:test_zero_cost_obj> | grep mockPresent > '${SYMBOLS_TXT_NAME}' || echo 'No symbols' > '${SYMBOLS_TXT_NAME}'"
+    COMMAND sh -c "nm -S $<TARGET_OBJECTS:test_zero_cost_obj> | grep mockPresent > '${SYMBOLS_TXT_NAME}' || echo -n > '${SYMBOLS_TXT_NAME}'"
     COMMAND objcopy
             --input-target=binary
             --output-target=elf64-x86-64
@@ -145,11 +155,35 @@ if(UNIX AND NOT APPLE)
     VERBATIM
     BYPRODUCTS "${CMAKE_CURRENT_BINARY_DIR}/${SYMBOLS_TXT_NAME}"
   )
-
   target_sources(vulkan_objects_tests PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/${SYMBOLS_O_NAME}"
-    $<TARGET_OBJECTS:test_zero_cost_obj>)
+  )
+elseif(FALSE AND WIN32)  # So close, but I don't know how to both enable optimization, see symbols and get their size :(
+  set(SYMBOLS_CPP "${CMAKE_CURRENT_BINARY_DIR}/test_zero_cost_symbols.cpp")
+
+  # Disable something or we get no symbols at all??
+  set_target_properties(test_zero_cost_obj PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+  target_compile_options(test_zero_cost_obj PRIVATE /GL- /Gy)
+  target_compile_definitions(test_zero_cost_obj PUBLIC SYMBOL_DATA_SUPPORTED=1)
+
+  get_filename_component(MSVC_BIN_DIR "${CMAKE_LINKER}" DIRECTORY)
+  find_program(DUMPBIN_EXE dumpbin HINTS "${MSVC_BIN_DIR}")
+  if(NOT DUMPBIN_EXE)
+    message(WARNING "dumpbin.exe not found")
+  endif()
+  add_custom_command(
+    OUTPUT "${SYMBOLS_CPP}"
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command 
+         "$objs = '$<JOIN:$<TARGET_OBJECTS:test_zero_cost_obj>,' '>'; \
+         $out = (& '${DUMPBIN_EXE}' /symbols $objs | Select-String mockPresent) -join \"`n\"; \
+         'extern const char binary_test_zero_cost_symbols_txt[] = R\"(' + $out + ')\";' | Out-File -Encoding UTF8 '${SYMBOLS_CPP}';"
+    DEPENDS $<TARGET_OBJECTS:test_zero_cost_obj>
+    VERBATIM
+  )
+  target_sources(vulkan_objects_tests PRIVATE
+    "${SYMBOLS_CPP}"
+  )
 else()
-  target_compile_definitions(test_zero_cost_obj PRIVATE SYMBOL_DATA_SUPPORTED=0)
-  target_sources(vulkan_objects_tests PRIVATE $<TARGET_OBJECTS:test_zero_cost_obj>)
+  target_compile_definitions(test_zero_cost_obj PUBLIC SYMBOL_DATA_SUPPORTED=0)
 endif()
+target_sources(vulkan_objects_tests PRIVATE $<TARGET_OBJECTS:test_zero_cost_obj>)

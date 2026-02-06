@@ -191,12 +191,15 @@ inline bool physicalDeviceSuitable(const vko::Instance& instance, VkPhysicalDevi
             }))
             return false;
 
+#if 0
+    // For demonstration
     // Check device has required properties
     // TODO: could return a priority and choose the highest
     VkPhysicalDeviceProperties properties =
         vko::get(instance.vkGetPhysicalDeviceProperties, physicalDevice);
-    if (false && properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU)
-        return false; // For demonstration
+    if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU)
+        return false;
+#endif
     return true;
 };
 

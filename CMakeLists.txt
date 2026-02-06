@@ -40,7 +40,7 @@ option(VULKAN_OBJECTS_FETCH_VVL "Include Vulkan Validation Layers with FetchCont
 option(VULKAN_OBJECTS_FETCH_VMA "Include Vulkan Memory Allocator with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_SLANG "Include Slang compiler with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_SHADERC "Include Shaderc compiler with FetchContent()" OFF)
-option(VULKAN_OBJECTS_FETCH_GLFW "Include GLFW for XCB workaround library (vulkan_objects_glfw)" OFF)
+option(VULKAN_OBJECTS_FETCH_GLFW "Include GLFW for XCB workaround library (vulkan_objects_glfw_xcb)" OFF)
 option(VULKAN_OBJECTS_SHADERC_BUILD_EXECUTABLES "Build glslc command-line compiler (for offline shader compilation)" OFF)
 
 if(VULKAN_OBJECTS_SPEC_OVERRIDE)
@@ -156,7 +156,7 @@ if (VULKAN_OBJECTS_FETCH_VVL OR VULKAN_OBJECTS_FETCH_SLANG OR VULKAN_OBJECTS_FET
     set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "" FORCE)
     set(ENABLE_GLSLANG_JS OFF CACHE BOOL "" FORCE)
     set(ENABLE_CTEST OFF CACHE BOOL "" FORCE)
-    set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
+    set(ENABLE_OPT ON CACHE BOOL "" FORCE)
     set(ALLOW_EXTERNAL_SPIRV_TOOLS ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(glslang)
   endif()
@@ -333,9 +333,9 @@ endif()
 # avoid X11 macro pollution (Success, None, etc.) leaking into other headers.
 # Can be removed once GLFW adds native XCB support.
 if((TARGET glfw) AND XCB_FOUND)
-  add_library(vulkan_objects_glfw STATIC src/glfw_xcb_hack.cpp)
-  target_link_libraries(vulkan_objects_glfw PUBLIC vulkan_objects glfw)
-  target_link_libraries(vulkan_objects_glfw PUBLIC ${XCB_LIBRARIES} ${X11_LIBRARIES} ${X11_XCB_LIBRARIES})
+  add_library(vulkan_objects_glfw_xcb STATIC src/glfw_xcb_hack.cpp)
+  target_link_libraries(vulkan_objects_glfw_xcb PUBLIC vulkan_objects glfw)
+  target_link_libraries(vulkan_objects_glfw_xcb PUBLIC ${XCB_LIBRARIES} ${X11_LIBRARIES} ${X11_XCB_LIBRARIES})
 endif()
 
 option(VULKAN_OBJECTS_TESTING_BUILD_ALL "Require all test dependencies (VVL, VMA, etc) to build tests" ON)

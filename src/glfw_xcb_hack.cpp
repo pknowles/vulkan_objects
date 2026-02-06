@@ -14,7 +14,7 @@
 // the Xlib functions and converting to XCB types. It must be compiled in a
 // separate translation unit to prevent X11 macro pollution from leaking.
 //
-// To use: Link against the vulkan_objects_glfw library (enable with
+// To use: Link against the vulkan_objects_glfw_xcb library (enable with
 // VULKAN_OBJECTS_FETCH_GLFW=ON in CMake).
 //
 // References:
