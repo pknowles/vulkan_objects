@@ -563,9 +563,14 @@ int main(int argc, char** argv) {
 
         // Compute parent objects
         std::unordered_set<std::string_view> parentObjects;
+        std::unordered_map<std::string_view, std::vector<std::string_view>> commandsByParent;
         for (auto& command : commands)
+        {
             parentObjects.insert(commandRootParents[command]);
+            commandsByParent[commandRootParents[command]].push_back(command);
+        }
         extensionGroup["parents"] = parentObjects;
+        extensionGroup["commands_by_parent"] = commandsByParent;
 
         extensionGroupCommands.push_back(extensionGroup);
     }

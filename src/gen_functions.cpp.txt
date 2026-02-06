@@ -27,8 +27,12 @@ GlobalCommands::GlobalCommands(PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr)
 ## for extgroup in extension_group_commands
 {% if extgroup.hasPlatform and "" in extgroup.parents %}
 #if defined({{ join(extgroup.extensions, ") || defined(") }})
-## for command in extgroup.commands
+## for parent, commands in extgroup.commands_by_parent
+{% if parent == "" %}
+## for command in commands
     {{ sep }} {{ command }}(reinterpret_cast<PFN_{{ command }}>(vkGetInstanceProcAddr(nullptr, "{{ command }}")))
+## endfor
+{% endif %}
 ## endfor
 #endif
 {% endif %}
@@ -48,8 +52,12 @@ InstanceCommands::InstanceCommands(VkInstance instance, PFN_vkGetInstanceProcAdd
 ## for extgroup in extension_group_commands
 {% if extgroup.hasPlatform and "VkInstance" in extgroup.parents %}
 #if defined({{ join(extgroup.extensions, ") || defined(") }})
-## for command in extgroup.commands
+## for parent, commands in extgroup.commands_by_parent
+{% if parent == "VkInstance" %}
+## for command in commands
     {{ sep }} {{ command }}(reinterpret_cast<PFN_{{ command }}>(vkGetInstanceProcAddr(instance, "{{ command }}")))
+## endfor
+{% endif %}
 ## endfor
 #endif
 {% endif %}
@@ -69,8 +77,12 @@ DeviceCommands::DeviceCommands(VkDevice device, PFN_vkGetDeviceProcAddr vkGetDev
 ## for extgroup in extension_group_commands
 {% if extgroup.hasPlatform and "VkDevice" in extgroup.parents %}
 #if defined({{ join(extgroup.extensions, ") || defined(") }})
-## for command in extgroup.commands
+## for parent, commands in extgroup.commands_by_parent
+{% if parent == "VkDevice" %}
+## for command in commands
     {{ sep }} {{ command }}(reinterpret_cast<PFN_{{ command }}>(vkGetDeviceProcAddr(device, "{{ command }}")))
+## endfor
+{% endif %}
 ## endfor
 #endif
 {% endif %}

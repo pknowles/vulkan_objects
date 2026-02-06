@@ -28,7 +28,7 @@ struct GlobalCommands
 ## for command in global_commands
 {% if command in platform_commands %}
 {% else %}
-    PFN_{{ command }} {{ command }};
+    PFN_{{ command }} {{ command }} = nullptr;
 {% endif %}
 ## endfor
 
@@ -36,8 +36,12 @@ struct GlobalCommands
 ## for extgroup in extension_group_commands
 {% if extgroup.hasPlatform and "" in extgroup.parents %}
 #if defined({{ join(extgroup.extensions, ") || defined(") }})
-## for command in extgroup.commands
-    PFN_{{ command }} {{ command }};
+## for parent, commands in extgroup.commands_by_parent
+{% if parent == "" %}
+## for command in commands
+    PFN_{{ command }} {{ command }} = nullptr;
+## endfor
+{% endif %}
 ## endfor
 #endif
 {% endif %}
@@ -53,7 +57,7 @@ struct InstanceCommands
 ## for command in instance_commands
 {% if command in platform_commands %}
 {% else %}
-    PFN_{{ command }} {{ command }};
+    PFN_{{ command }} {{ command }} = nullptr;
 {% endif %}
 ## endfor
 
@@ -61,8 +65,12 @@ struct InstanceCommands
 ## for extgroup in extension_group_commands
 {% if extgroup.hasPlatform and "VkInstance" in extgroup.parents %}
 #if defined({{ join(extgroup.extensions, ") || defined(") }})
-## for command in extgroup.commands
-    PFN_{{ command }} {{ command }};
+## for parent, commands in extgroup.commands_by_parent
+{% if parent == "VkInstance" %}
+## for command in commands
+    PFN_{{ command }} {{ command }} = nullptr;
+## endfor
+{% endif %}
 ## endfor
 #endif
 {% endif %}
@@ -79,7 +87,7 @@ struct DeviceCommands
 ## for command in device_commands
 {% if command in platform_commands %}
 {% else %}
-    PFN_{{ command }} {{ command }};
+    PFN_{{ command }} {{ command }} = nullptr;
 {% endif %}
 ## endfor
 
@@ -87,8 +95,12 @@ struct DeviceCommands
 ## for extgroup in extension_group_commands
 {% if extgroup.hasPlatform and "VkDevice" in extgroup.parents %}
 #if defined({{ join(extgroup.extensions, ") || defined(") }})
-## for command in extgroup.commands
-    PFN_{{ command }} {{ command }};
+## for parent, commands in extgroup.commands_by_parent
+{% if parent == "VkDevice" %}
+## for command in commands
+    PFN_{{ command }} {{ command }} = nullptr;
+## endfor
+{% endif %}
 ## endfor
 #endif
 {% endif %}
