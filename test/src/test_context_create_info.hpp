@@ -106,7 +106,7 @@ struct TestDeviceCreateInfo {
     std::vector<const char*>             deviceExtensions;
     float                                queuePriority = 1.0f;
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-    TestDeviceFeatures                   features;
+    TestDeviceFeatures                   features{};
     VkDeviceCreateInfo                   deviceCreateInfo;
 
     template <std::ranges::range QueueFamilyIndices>
@@ -118,6 +118,7 @@ struct TestDeviceCreateInfo {
             return exts;
         }())
         , queueCreateInfos(makeQueueCreateInfos(queueFamilyIndices))
+        , features{}
         , deviceCreateInfo{.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
                            .pNext                   = features.pNext(),
                            .flags                   = 0,

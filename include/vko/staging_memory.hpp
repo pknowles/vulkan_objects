@@ -308,7 +308,7 @@ private:
         }
 
         // Wait for submitted batches to finish, then destroy them
-        m_released.waitAndConsume(m_device.get(), [this](Batch& batch) {
+        m_released.waitAndConsume(m_device.get(), [](Batch& batch) {
             for (auto& callback : batch.destroyCallbacks) {
                 callback(true);
             }
@@ -1121,7 +1121,7 @@ void upload(StreamType& stream, const DeviceAndCommands& device, SrcRange&& srcR
         throw std::out_of_range("srcRange size must match BufferSpan size");
     auto it = std::ranges::begin(srcRange);
     upload(stream, device, dst, [&](VkDeviceSize offset, std::span<T> mapped) {
-        std::copy_n(it + offset, mapped.size(), mapped.begin());
+        std::copy_n(it + std::int64_t(offset), mapped.size(), mapped.begin());
     });
 }
 

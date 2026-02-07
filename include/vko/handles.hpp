@@ -12,7 +12,7 @@ static_assert(!std::is_convertible_v<Semaphore, bool>);
 static_assert(!std::is_constructible_v<bool, Semaphore>);
 static_assert(!std::equality_comparable<Semaphore>);
 static_assert(!std::equality_comparable_with<Semaphore, VkSemaphore>);
-static_assert(!std::equality_comparable_with<Semaphore, nullptr_t>);
+static_assert(!std::equality_comparable_with<Semaphore, std::nullptr_t>);
 static_assert(!std::equality_comparable_with<Semaphore, int>);
 static_assert(!std::is_arithmetic_v<Semaphore>);
 

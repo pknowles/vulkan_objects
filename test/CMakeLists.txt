@@ -138,7 +138,7 @@ if(UNIX AND NOT APPLE)
   set(SYMBOLS_TXT_NAME "test_zero_cost_symbols.txt")
   set(SYMBOLS_O_NAME "test_zero_cost_symbols.o")
 
-  set_target_properties(test_zero_cost_obj PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+  target_compile_options(test_zero_cost_obj PRIVATE -O2)
   target_compile_definitions(test_zero_cost_obj PUBLIC SYMBOL_DATA_SUPPORTED=1)
 
   add_custom_command(
@@ -162,7 +162,7 @@ elseif(FALSE AND WIN32)  # So close, but I don't know how to both enable optimiz
   set(SYMBOLS_CPP "${CMAKE_CURRENT_BINARY_DIR}/test_zero_cost_symbols.cpp")
 
   # Disable something or we get no symbols at all??
-  set_target_properties(test_zero_cost_obj PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+  #set_target_properties(test_zero_cost_obj PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
   target_compile_options(test_zero_cost_obj PRIVATE /GL- /Gy)
   target_compile_definitions(test_zero_cost_obj PUBLIC SYMBOL_DATA_SUPPORTED=1)
 

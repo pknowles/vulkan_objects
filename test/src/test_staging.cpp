@@ -1046,6 +1046,8 @@ TEST_F(UnitTestFixture, StagingStream_GiantTransferImplicitCycling) {
         pos = std::max(pos, chunk.offset + chunk.size);
     }
 
+    EXPECT_EQ(totalCovered, gpuBuffer.size());
+
     if (pos < largeSize) {
         gaps.push_back({pos, largeSize});
     }
@@ -1916,6 +1918,7 @@ TEST_F(UnitTestFixture, StagingStream_ConcurrentDownloads) {
     #if 0
                         sharedQueue.wait(ctx->device);
     #endif
+                        std::ignore         = sharedQueue;
                         bool anyNotExpected = false;
                         //printf("Callback download %zu offset=%zu mapping=%p\n", downloadIdx, offset, (const void*)result.data());
                         for (size_t i = 0; i < result.size(); ++i) {
@@ -1944,6 +1947,7 @@ TEST_F(UnitTestFixture, StagingStream_ConcurrentDownloads) {
 #else
                         verifyResults(offset /* partial download */, result, downloadIdx);
 #endif
+                        std::ignore = verifyResults;
 
                         // Danger! UB. Clobber the mapped input data to detect stale data on
                         // reuse. May just crash with some vulkan implementations that map
@@ -3512,7 +3516,7 @@ TEST_F(UnitTestFixture, StagingStream_DownloadBufferSpanWithOffset) {
     // Upload header (zeros) + float data using BufferSpan
     vko::BufferSpan<std::byte> bufSpan(buffer);
     vko::upload(streaming, ctx->device, bufSpan,
-                [&sourceData, headerSize](VkDeviceSize offset, std::span<std::byte> mapped) {
+                [&sourceData](VkDeviceSize offset, std::span<std::byte> mapped) {
                     if (offset < headerSize) {
                         // Header region - write zeros
                         size_t headerBytes = std::min(mapped.size(), headerSize - offset);

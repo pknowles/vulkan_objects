@@ -31,9 +31,9 @@ struct Region {
         assert(offset.x >= 0 && offset.y >= 0 && offset.z >= 0);
         assert(extent.width > 0 && extent.height > 0 && extent.depth > 0);
         assert(layerCount > 0);
-        assert(offset.x + extent.width <= extent.width);
-        assert(offset.y + extent.height <= extent.height);
-        assert(offset.z + extent.depth <= extent.depth);
+        assert(offset.x + int32_t(extent.width) <= int32_t(extent.width));
+        assert(offset.y + int32_t(extent.height) <= int32_t(extent.height));
+        assert(offset.z + int32_t(extent.depth) <= int32_t(extent.depth));
         assert(layerOffset + layerCount <= subresource.layerCount);
         return {
             .subresource = {subresource.aspectMask, subresource.mipLevel,

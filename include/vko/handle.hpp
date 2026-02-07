@@ -37,7 +37,7 @@ public:
 
     template <class CommandTable>
     DestroyFunc(const CommandTable& table, Parent parent)
-        : m_destroy(handle_traits<T>::template destroy_command(table))
+        : m_destroy(handle_traits<T>::template destroy_command<CommandTable>(table))
         , m_parent(parent) {}
     void operator()(T handle) const { m_destroy(m_parent, handle, nullptr); }
 

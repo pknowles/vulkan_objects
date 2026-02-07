@@ -258,7 +258,8 @@ public:
     }
 
     BufferAddress operator+(int64_t elementOffset) const {
-        return BufferAddress(m_buffer, m_byteOffset + elementOffset * sizeof(T));
+        return BufferAddress(m_buffer,
+                             uint64_t(int64_t(m_byteOffset) + elementOffset * int64_t(sizeof(T))));
     }
 
     BufferAddress& operator+=(int64_t elementOffset) {
@@ -267,7 +268,8 @@ public:
     }
 
     BufferAddress operator-(int64_t elementOffset) const {
-        return BufferAddress(m_buffer, m_byteOffset - elementOffset * sizeof(T));
+        return BufferAddress(m_buffer,
+                             uint64_t(int64_t(m_byteOffset) - elementOffset * int64_t(sizeof(T))));
     }
 
     BufferAddress& operator-=(int64_t elementOffset) {
@@ -337,12 +339,12 @@ public:
     BufferSpan subspan(VkDeviceSize offset, VkDeviceSize count) const {
         assert(offset <= m_size && "BufferSpan::subspan offset out of bounds");
         assert(offset + count <= m_size && "BufferSpan::subspan range out of bounds");
-        return BufferSpan(m_address + offset, count);
+        return BufferSpan(m_address + std::int64_t(offset), count);
     }
 
     BufferSpan subspan(VkDeviceSize offset) const {
         assert(offset <= m_size && "BufferSpan::subspan offset out of bounds");
-        return BufferSpan(m_address + offset, m_size - offset);
+        return BufferSpan(m_address + std::int64_t(offset), m_size - offset);
     }
 
 private:
