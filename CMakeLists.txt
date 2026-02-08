@@ -27,6 +27,12 @@ target_include_directories(vulkan_objects PUBLIC include "${generated_directory}
 target_compile_definitions(vulkan_objects PUBLIC VK_NO_PROTOTYPES)
 add_dependencies(vulkan_objects vulkan_objects_generated)
 
+# Whitelist spurious concepts warning for msvc versions before it was fixed
+# warning C4459: declaration of 'allocator' hides global declaration
+if (MSVC AND MSVC_VERSION GREATER_EQUAL 1939)
+  target_compile_options(vulkan_objects PUBLIC /wd4459)
+endif()
+
 set(VULKAN_OBJECTS_SPEC_OVERRIDE "" CACHE FILEPATH "Override path to own vk.xml. Ignores VULKAN_OBJECTS_SPEC_TAG")
 set(VULKAN_OBJECTS_SPEC_TAG "v1.4.335" CACHE STRING "GIT tag from https://github.com/KhronosGroup/Vulkan-Headers/tags")
 set(VULKAN_OBJECTS_VMA_TAG "v3.3.0" CACHE STRING "GIT tag from https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/tags")
