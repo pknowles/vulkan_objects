@@ -1,25 +1,40 @@
 
 # vko: Vulkan Objects
 
-Self-contained Vulkan 3D Graphics API provider and thin RAII wrapper in C++.
+Self-contained C++ Vulkan 3D Graphics API provider and thin RAII wrapper.
 
-- Dependency and lifetime design validation at compile time
-- All-in-one: Generated from the Vulkan spec directly, optional loader included.
-- Pluggable: Consumes native API types for easy integration. Use utilities you
-  want; replace those you don't.
+Just clone, build and start rendering with Vulkan.
 
-There are many optional extras to make common operations easy to write.
-Naturally, these are layered and in separate headers to make ignoring them or
-overriding and specialization easy. This is not an engine or rendering
-abstraction. It does not suck you into an ecosystem.
+- Compile-time dependency and lifetime design validation
+- All-in-one: just source, generated from the Vulkan spec directly
+- Pluggable: consumes C API types for easy integration
+- Headers (official) and optional loader included; no Vulkan SDK required
+- Optional compiler (shaderc and slang)
 
-TLDR by example:
+Use utilities you want; replace those you don't. These are layered and in
+separate headers to make overriding and specialization easy. This is not an
+engine or rendering abstraction. It does not suck you into an ecosystem.
+
+`vulkan_objects` core Vulkan handles provide lifetime safety without wrapping
+the API.
+[vulkan_raii.hpp](https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/vk_raii_ProgrammingGuide.md)
+has similar features but slightly different goals. It is actually provided by
+`vulkan_objects` too. Use it instead or as well if it fits.
+
+TL;DR by example:
+
+```cmake
+# CMake
+set(VULKAN_OBJECTS_FETCH_VMA ON)  # Optional
+add_subdirectory(./path/to/vulkan_objects)
+target_link_libraries(my_vulkan_app vulkan_objects)
+```
 
 ```cpp
 #include <vko/handles.hpp>
 ...
 vko::VulkanLibrary  library;  // Cross platform, just dlopen()
-vko::GlobalCommands globalCommands(library.loader());  // bootstrap with any vkGetInstanceProcAddr
+vko::GlobalCommands globalCommands(library.loader());  // Bootstrap with any vkGetInstanceProcAddr
 vko::Instance       instance(globalCommands, VkInstanceCreateInfo{...});  // Standard CreateInfo structs
 VkPhysicalDevice    physicalDevice(vko::toVector(instance.vkEnumeratePhysicalDevices, instance)[0]);
 vko::Device         device(instance, physicalDevice, VkDeviceCreateInfo{...});
@@ -33,6 +48,9 @@ vko::Image image(device, VkImageCreateInfo{...})
 vko::Image image((vko::DeviceCommands&)device, (VkDevice)device, VkImageCreateInfo{...})
 // ... but you may want vko::BoundImage<vko::vma::Allocator> :)
 
+vko::Image                image;  // Error: no default construction
+std::optional<vko::Image> image;  // Intentional
+
 // Optional glfw integration
 vko::SurfaceKHR surface = vko::glfw::makeSurface(...);
 ```
@@ -40,96 +58,6 @@ vko::SurfaceKHR surface = vko::glfw::makeSurface(...);
 For more example code, see
 [test/src/hello_triangle.cpp](test/src/hello_triangle.cpp). It includes ray
 tracing✨!
-
-The aims are:
-
-1. Dependencies are implied by the language
-
-   No default initialization. Delayed initialization would allow you to create
-   an object before its dependencies are created or even in scope. This makes
-   code ambiguous and error prone. For example, you can't create a VkCommandPool
-   before a VkDevice and by forcing initialization a user will immediately be
-   reminded to create the VkDevice first. It allows the compiler to help us
-   design better.
-
-   If it's truly needed there is always `std::optional` and `std::unique_ptr`.
-   Safety first, RAII by default, that you can override in specific places.
-
-2. Objects are general, composable, have minimal dependencies and don't suck you
-   into an ecosystem
-
-   For example, it's common to pass around an everything "context" object
-   containing the VkDevice, maybe an allocator or queues. This is convenient,
-   but then you have to have one of these objects everywhere. In contrast,
-   objects here are constructed from native vulkan objects.
-
-   The aim is to expose the full featureset of the API near-verbatim. Objects
-   should be reusable and pluggable. A big part of this is sticking to the
-   single-responsibility principle.
-
-   Shortcuts are added but special cases should be easy to override and write
-   without shortcuts. This is done by layering utilities on top. Higher level
-   objects can be replaced without losing much. E.g. users can compose their own
-   higher level objects from intermediate ones in this library. No
-   all-or-nothing monolith objects.
-
-   A difficulty is that function tables from the included loader need to be
-   passed around to make vulkan API calls. To facilitate using your own function
-   tables and not lock you into the ecosystem (yes, this is possible! e.g.
-   [volk](https://github.com/zeux/volk)), many methods are templates that take a
-   function table as the first parameter. For example. see the `device_commands`
-   and `device_and_commands` concepts.
-
-3. Simple, singular implementation
-
-   Supporting older versions and multiple ways to do things for different edge
-   cases is hard. I'm only one person. I'll pick one way and do it well,
-   hopefully without limiting important features.
-
-   This includes vulkan directly from
-   https://github.com/KhronosGroup/Vulkan-Headers, just for `vk.xml`,
-   `vulkan_core.h` and platform-specific headers. Handles are generated, so this
-   library should always support the latest vulkan.
-
-   This library includes its own vulkan function pointer loader, like
-   [volk](https://github.com/zeux/volk), but because vulkan_core.h is included,
-   there is no need to support different versions. It's all one thing. One
-   exception is ifdefs for platform-specific types.
-
-4. Lifetime and ownership is well defined
-
-   Standard RAII: out of scope cleanup, no leaks, help avoid dangling pointers,
-   be safe knowing if you have a handle then the object is valid and
-   initialized. Most objects are move-only and not copyable. This matches the
-   API, e.g. you can't copy a VkDevice.
-
-5. Performance and data oriented
-
-   Avoid forcing heap allocations on the user. Avoid copying memory around to
-   restructure data. Instead, take pointers (i.e. `std::span`) already in vulkan
-   API compatible ways and let the user decide whether to pay the cost or not.
-
-6. No effort plumbing
-
-   Use existing structures to hold data. E.g. there are already many
-   `*CreateInfo` structs that can be taken as an argument. No need to
-   unpack/forward/pack arguments. This is the single definition rule.
-
-   Once objects are allocated, use the Vulkan C API for certain operations. I.e.
-   there is no wrapping raw `vk*()` calls as members on objects. It might look
-   right to add a `drawIndexed()` (calling `vkCmdDrawIndexed`) call on a
-   `CommandBuffer` object, but maybe that's never used because the raw
-   `VkCommandBuffer` is passed to some higher level object and then
-   `CommandBuffer` doesn't have to "know" about drawing.
-
-   Vulkan comes with an official C++
-   [vulkan.hpp](https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/vulkan/vulkan.hpp)
-   and
-   [vulkan_raii.hpp](https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/vk_raii_ProgrammingGuide.md)
-   that do this. They're heavyweight in terms of line count. No really, 15MB+ of
-   pure generated header files. They also mix in helpers, which are great, but
-   there's no layering to pick just what you want to use. Admittedly, it's nice
-   to type `.` and have your IDE auto-complete methods.
 
 ## Quick Reference
 
@@ -184,7 +112,7 @@ vko::DeviceBuffer<int> buf = vko::upload(stream, device, allocator, std::array<i
 stream.submit();
 
 // Queries and Profiling, see query_pool.hpp
-vko::QueryStream queryStream;
+vko::QueryStream<uint64_t, VK_QUERY_TYPE_TIMESTAMP, 64> queryStream;
 vko::ScopedQuery // RAII begin/end query
 auto future = vko::cmdWriteTimestamp(device, cmd, queryStream, stage)
 queries.endBatch(submitPromise.futureValue()) // recycling is blocked without
@@ -306,18 +234,135 @@ themselves (preferred).
   spend some time to come up with a nicer way.
 - Some `vkCreate*` have no destruction. E.g. `vkCreateDisplayModeKHR`. \*shruggie\*
 
+## Design Philosophy
+
+These design decisions reflect the tradeoffs my experience with C++ and Vulkan
+has shown to be effective. They may not suit every project.
+
+1. Dependencies are implied by the language
+
+   No default initialization. Delayed initialization would allow you to create
+   an object before its dependencies are created or even in scope. This makes
+   code ambiguous and error prone. For example, you can't create a VkCommandPool
+   before a VkDevice and by forcing initialization a user will immediately be
+   reminded to create the VkDevice first. It allows the compiler to help us
+   design better.
+
+   If it's truly needed there is always `std::optional` (stack) and
+   `std::unique_ptr` (heap). Safety first, RAII by default, that you can
+   override in specific places.
+
+2. Objects are general, composable, have minimal dependencies and don't suck you
+   into an ecosystem
+
+   For example, it's common to pass around an everything "context" object
+   containing the VkDevice, maybe an allocator or queues. This is convenient,
+   but then you have to have one of these objects everywhere. In contrast,
+   objects here are constructed from native vulkan objects.
+
+   The aim is to expose the full featureset of the API near-verbatim. Objects
+   should be reusable and pluggable. A big part of this is sticking to the
+   single-responsibility principle.
+
+   Shortcuts are added but special cases should be easy to override and write
+   without shortcuts. This is done by layering utilities on top. Higher level
+   objects can be replaced without losing much. E.g. users can compose their own
+   higher level objects from intermediate ones in this library. No
+   all-or-nothing monolith objects.
+
+   A difficulty is that function tables from the included loader need to be
+   passed around to make vulkan API calls. To facilitate using your own function
+   tables and not lock you into the ecosystem (yes, this is possible! e.g.
+   [volk](https://github.com/zeux/volk)), many methods are templates that take a
+   function table as the first parameter. For example. see the `device_commands`
+   and `device_and_commands` concepts.
+
+3. Simple, singular implementation
+
+   Supporting older versions and multiple ways to do things for different edge
+   cases is hard. I'm only one person. I'll pick one way and do it well,
+   hopefully without limiting important features.
+
+   This includes vulkan directly from
+   https://github.com/KhronosGroup/Vulkan-Headers, just for `vk.xml`,
+   `vulkan_core.h` and platform-specific headers. Handles are generated, so this
+   library should always support the latest vulkan.
+
+   This library includes its own vulkan function pointer loader, like
+   [volk](https://github.com/zeux/volk), but because vulkan_core.h is included,
+   there is no need to support different versions. It's all one thing. One
+   exception is ifdefs for platform-specific types.
+
+4. Lifetime and ownership is well defined
+
+   Standard RAII: out of scope cleanup, no leaks, help avoid dangling pointers,
+   be safe knowing if you have a handle then the object is valid and
+   initialized. Most objects are move-only and not copyable. This matches the
+   API, e.g. you can't copy a VkDevice.
+
+5. Performance and data oriented
+
+   Avoid forcing heap allocations on the user. Avoid copying memory around to
+   restructure data. Instead, take pointers (i.e. `std::span`) already in vulkan
+   API compatible ways and let the user decide whether to pay the cost or not.
+   Use templates and avoid virtual functions.
+
+6. No effort plumbing
+
+   Use existing structures to hold data. E.g. there are already many
+   `*CreateInfo` structs that can be taken as an argument. No need to
+   unpack/forward/pack arguments. This is the single definition rule.
+
+   Once objects are allocated, use the Vulkan C API for certain operations. I.e.
+   there is no wrapping raw `vk*()` calls as members on objects. It might look
+   right to add a `CommandBuffer::drawIndexed()` member to call
+   `vkCmdDrawIndexed` or a `Device::createCommandPool()`, but that implies a
+   command buffer needs to "know" about drawing and a device needs to "know"
+   about command pools.
+
+   Reduces cognitive load for those familiar with the C API and online examples.
+   Use templates instead of large generated headers to improve IDE and compiler
+   performance.
+
+Vulkan comes with official
+[vulkan.hpp](https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/vulkan/vulkan.hpp)
+and
+[vulkan_raii.hpp](https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/vk_raii_ProgrammingGuide.md)
+which comprehensively wrap the API in a modern C++ style. Those bindings
+reinterpret the Vulkan API around generated wrappers, member functions and
+internal dispatch table pointers. Notably, IDE auto-complete is great for member
+discoverability.
+
+`vulkan_objects` takes a different approach. It uses the C API directly, adding
+only ownership safety and lightweight incremental abstractions. The goal is to
+make Vulkan safer to use, without sacrificing performance or redesigning Vulkan
+in C++.
+
+| `vulkan_raii.hpp`                          | `vulkan_objects`                     |
+| ------------------------------------------ | ------------------------------------ |
+| Wraps the entire Vulkan API in C++ classes | C++ ownership and safety only        |
+| C++-idiomatic reinterpretation of Vulkan   | Preserves Vulkan’s C API shape       |
+| Commands exposed as member functions       | Explicit `.vk*` on dispatch tables   |
+
 ## Error handling
 
-Exceptions
+**Exceptions**
 
-C++ is really lacking here, re. RTTI. IMO it took so long for us to even get
-move semantics (we still have no std::ranges::output_range) and during that time
-people understandably got the wrong idea about the language and the workarounds
-gave it a bad reputation. There is `std::expected` and `std::error_code`, but
-they don't help with constructors.
+- To allow the compiler to help us prevent delayed initialization we use
+  constructors
+- Constructors must be able to fail and the only way for that to happen is
+  exceptions
 
-- We must have constructors for the compiler to help us avoid delayed initialization.
-- Constructors must be able to fail and the only way for that to happen is exceptions.
+Performance is a common exception concern, but they incur no runtime cost on the
+success path. Object construction remains a direct `vkCreate*` call. You get to
+code for the happy path. Any runtime cost/overhead is paid only in the failure
+case, which should be incredibly rare, and is not as slow as it was 20 years
+ago.
+
+There are `std::expected` and `std::error_code`, but their purposes are
+different and they don't replace RAII well, a concept the language was designed
+around, while offering the same safety benefits, avoiding boilerplate and
+plumbing.
 
 See:
 
@@ -325,10 +370,11 @@ See:
 - [Exceptionally Bad: The Misuse of Exceptions in C++ & How to Do Better - Peter Muldoon - CppCon 2023](https://www.youtube.com/watch?v=Oy-VTqz1_58)
 - [Are exceptions in C++ really slow?](https://stackoverflow.com/questions/13835817/are-exceptions-in-c-really-slow)
 
-With that decision made, we need improved tooling. Particularly smooth and
-intuitive experience debugging IDEs and debuggers to be able to break for
-specific exception categories. I also recognise big initializer lists are ugly
-AF, but they're needed. Don't throw the baby out with the bathwater.
+C++ and RAII tooling is still rough around the edges. This library accepts that
+reality rather than designing around it; it will come. For debugging, it would
+be useful to be able to see which variable is being destroyed in the stack and
+to easily break for specific exception categories. Big constructor initializer
+lists are ugly syntactically, but they're needed for RAII.
 
 ## Generated code
 

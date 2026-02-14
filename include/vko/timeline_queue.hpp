@@ -95,7 +95,8 @@ public:
 
     // Since we cache the signalled state we can provide a special constructor
     // for an already-signalled semaphore.
-    // Danger: cannot be used with waitSemaphoreInfo()
+    // Danger: cannot be used with waitSemaphoreInfo().
+    // TODO: Consider removing! Use a real signalled semaphore instead or std::optional
     struct already_signalled_t {};
     SemaphoreValue(already_signalled_t)
         : m_signalledCache(true) {}
