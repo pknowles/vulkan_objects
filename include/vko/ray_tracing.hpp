@@ -84,7 +84,7 @@ private:
 struct StridedOffsetRegion {
     VkDeviceSize                    offset;
     VkDeviceSize                    stride;
-    VkDeviceSize                    size;
+    VkDeviceSize                    size; // size in bytes of the region
     VkStridedDeviceAddressRegionKHR atAddress(const VkDeviceAddress address) const {
         return VkStridedDeviceAddressRegionKHR{
             .deviceAddress = address + offset,
@@ -99,6 +99,8 @@ struct StridedOffsetRegion {
 template <class Allocator = vma::Allocator>
 struct ShaderBindingTablesStaging {
     template <device_and_commands DeviceAndCommands, std::ranges::input_range HitGroupHandleRange>
+        requires std::same_as<std::ranges::range_value_t<HitGroupHandleRange>,
+                              std::span<const std::byte>>
     ShaderBindingTablesStaging(
         Allocator& allocator, DeviceAndCommands& device,
         const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& rayTracingPipelineProperties,
@@ -188,10 +190,10 @@ struct ShaderBindingTables {
         device.vkCmdCopyBuffer(cmd, staging.tables, tables, 1, &bufferCopy);
     }
     DeviceBuffer<std::byte>         tables;
-    VkStridedDeviceAddressRegionKHR raygenTableOffset;
-    VkStridedDeviceAddressRegionKHR missTableOffset;
-    VkStridedDeviceAddressRegionKHR hitTableOffset;
-    VkStridedDeviceAddressRegionKHR callableTableOffset;
+    VkStridedDeviceAddressRegionKHR raygenTableOffset{};
+    VkStridedDeviceAddressRegionKHR missTableOffset{};
+    VkStridedDeviceAddressRegionKHR hitTableOffset{};
+    VkStridedDeviceAddressRegionKHR callableTableOffset{};
 };
 
 template <VkShaderStageFlagBits stage>

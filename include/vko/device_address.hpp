@@ -66,19 +66,21 @@ public:
     DeviceAddress(const DeviceAddress&) = default;
     DeviceAddress(DeviceAddress&&)      = default;
 
-    template <buffer Buffer>
-        requires std::same_as<container_view_t<Buffer>, T> && requires(const Buffer& b) {
-            { b.address() } -> std::convertible_to<VkDeviceAddress>;
-        }
-    explicit DeviceAddress(const Buffer& buffer)
+    template <class Buffer>
+        requires std::is_lvalue_reference_v<Buffer> && buffer<std::remove_reference_t<Buffer>> &&
+                 std::same_as<container_view_t<Buffer>, T> && requires(Buffer&& b) {
+                     { b.address() } -> std::convertible_to<VkDeviceAddress>;
+                 }
+    explicit DeviceAddress(Buffer&& buffer)
         : m_address(buffer.address()) {}
 
-    template <buffer Buffer, class DeviceAndCommands>
-        requires std::same_as<container_view_t<Buffer>, T> &&
-                 requires(const Buffer& b, const DeviceAndCommands& d) {
+    template <class Buffer, class DeviceAndCommands>
+        requires std::is_lvalue_reference_v<Buffer> && buffer<std::remove_reference_t<Buffer>> &&
+                 std::same_as<container_view_t<Buffer>, T> &&
+                 requires(Buffer&& b, const DeviceAndCommands& d) {
                      { b.address(d) } -> std::convertible_to<VkDeviceAddress>;
                  }
-    explicit DeviceAddress(const Buffer& buffer, const DeviceAndCommands& device)
+    explicit DeviceAddress(Buffer&& buffer, const DeviceAndCommands& device)
         : m_address(buffer.address(device)) {}
 
     // Non-type-safe constructor from raw address
@@ -126,6 +128,16 @@ private:
     VkDeviceAddress m_address = std::numeric_limits<VkDeviceAddress>::max();
 };
 
+// Deduction guide: deduce ValueType from buffer's ValueType, preserving const-correctness
+template <class Buffer>
+    requires std::is_lvalue_reference_v<Buffer> && buffer<std::remove_reference_t<Buffer>>
+DeviceAddress(Buffer&&) -> DeviceAddress<container_view_t<Buffer>>;
+
+// Deduction guide for DeviceAddress with device parameter
+template <class Buffer, class DeviceAndCommands>
+    requires std::is_lvalue_reference_v<Buffer> && buffer<std::remove_reference_t<Buffer>>
+DeviceAddress(Buffer&&, const DeviceAndCommands&) -> DeviceAddress<container_view_t<Buffer>>;
+
 // Reinterpret cast for device addresses
 // Similar to reinterpret_cast for pointers but for device addresses.
 // Only allowed when types have the same size.
@@ -153,9 +165,10 @@ public:
         : m_address(address)
         , m_size(elementCount) {}
 
-    template <buffer Buffer>
-        requires std::same_as<container_view_t<Buffer>, T>
-    explicit DeviceSpan(const Buffer& buffer)
+    template <class Buffer>
+        requires std::is_lvalue_reference_v<Buffer> && buffer<std::remove_reference_t<Buffer>> &&
+                     std::same_as<container_view_t<Buffer>, T>
+    explicit DeviceSpan(Buffer&& buffer)
         : m_address(buffer)
         , m_size(buffer.size()) {}
 
@@ -192,10 +205,24 @@ public:
         return DeviceSpan(m_address + offset, m_size - offset);
     }
 
+    VkStridedDeviceAddressRegionKHR regionKhr() const {
+        return {
+            .deviceAddress = m_address.raw(),
+            .stride        = static_cast<VkDeviceSize>(sizeof(T)),
+            .size = m_size * static_cast<VkDeviceSize>(sizeof(T)), // size in bytes of the region
+        };
+    }
+
 private:
     DeviceAddress<T> m_address = DeviceAddress<T>(VkDeviceAddress(0));
     VkDeviceSize     m_size    = 0;
 };
+
+// Deduction guide: deduce ValueType from buffer's ValueType, preserving
+// const-correctness
+template <class Buffer>
+    requires std::is_lvalue_reference_v<Buffer> && buffer<std::remove_reference_t<Buffer>>
+DeviceSpan(Buffer&&) -> DeviceSpan<container_view_t<Buffer>>;
 
 // Typed wrapper for VkBuffer + byte offset with element-based arithmetic.
 // Analogous to DeviceAddress but for buffers without device addresses. This
@@ -215,9 +242,10 @@ public:
     BufferAddress(const BufferAddress&) = default;
     BufferAddress(BufferAddress&&)      = default;
 
-    template <buffer Buffer>
-        requires std::same_as<container_view_t<Buffer>, T>
-    BufferAddress(const Buffer& buffer, VkDeviceSize byteOffset = 0)
+    template <class Buffer>
+        requires std::is_lvalue_reference_v<Buffer> && buffer<std::remove_reference_t<Buffer>> &&
+                     std::same_as<container_view_t<Buffer>, T>
+    BufferAddress(Buffer&& buffer, VkDeviceSize byteOffset = 0)
         : m_buffer(static_cast<VkBuffer>(buffer))
         , m_byteOffset(byteOffset) {}
 
@@ -289,6 +317,11 @@ private:
     VkDeviceSize m_byteOffset = std::numeric_limits<VkDeviceSize>::max();
 };
 
+// Deduction guide: deduce ValueType from buffer's ValueType, preserving const-correctness
+template <class Buffer>
+    requires std::is_lvalue_reference_v<Buffer> && buffer<std::remove_reference_t<Buffer>>
+BufferAddress(Buffer&&, VkDeviceSize = 0) -> BufferAddress<container_view_t<Buffer>>;
+
 // Reinterpret cast for buffer addresses
 // Similar to reinterpret_cast for pointers but for buffer addresses.
 // Only allowed when types have the same size.
@@ -356,6 +389,7 @@ private:
 // doesn't make much difference because we can't directly read the memory, but
 // doesn't hurt to be accurate.
 template <class Buffer>
+    requires std::is_lvalue_reference_v<Buffer> && buffer<std::remove_reference_t<Buffer>>
 BufferSpan(Buffer&&) -> BufferSpan<container_view_t<Buffer>>;
 
 // Possible helpers (currently disabled), not sure if we want these
