@@ -66,31 +66,56 @@ else()
   target_link_libraries(vulkan_objects PUBLIC Vulkan::Headers)
 endif()
 
-# Platform-specific window manager enablement
+# Per-platform window-system (compositor) enablement.
+#
+# Each platform has an explicit VULKAN_OBJECTS_ENABLE_* switch. When not set
+# explicitly it defaults to what is detected/available. Each switch drives the
+# matching VK_USE_PLATFORM_* define, which in turn drives the GLFW_EXPOSE_NATIVE_*
+# define in glfw_objects.hpp, so the Vulkan and GLFW-native code paths stay
+# consistent. The user is responsible for matching these to the GLFW they link
+# against: GLFW only exports a platform's native handles (e.g.
+# glfwGetWaylandDisplay) when built with that platform, so enabling a platform
+# the linked GLFW lacks will fail to link.
 if(WIN32)
-  target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_WIN32_KHR)
-  target_compile_definitions(vulkan_objects PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+  option(VULKAN_OBJECTS_ENABLE_WIN32 "Enable Win32 window-system support" ON)
+  if(VULKAN_OBJECTS_ENABLE_WIN32)
+    target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_WIN32_KHR)
+    target_compile_definitions(vulkan_objects PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+  endif()
 elseif(ANDROID)
-  target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_ANDROID_KHR)
+  option(VULKAN_OBJECTS_ENABLE_ANDROID "Enable Android window-system support" ON)
+  if(VULKAN_OBJECTS_ENABLE_ANDROID)
+    target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_ANDROID_KHR)
+  endif()
 elseif(APPLE)
-  target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_METAL_EXT)
+  option(VULKAN_OBJECTS_ENABLE_METAL "Enable Metal/Cocoa window-system support" ON)
+  if(VULKAN_OBJECTS_ENABLE_METAL)
+    target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_METAL_EXT)
+  endif()
 elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|BSD|GNU")
   find_package(X11)
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(Wayland wayland-client)
   pkg_check_modules(XCB xcb)
   pkg_check_modules(X11_XCB x11-xcb)
-  if(Wayland_FOUND)
+
+  option(VULKAN_OBJECTS_ENABLE_WAYLAND "Enable Wayland window-system support" ${Wayland_FOUND})
+  option(VULKAN_OBJECTS_ENABLE_XCB "Enable XCB window-system support" ${XCB_FOUND})
+  # Xlib defaults off even when available: prefer XCB. Xlib leaks macros (e.g.
+  # None) into other code.
+  # https://stackoverflow.com/questions/79583727/how-to-avoid-macros-from-x11-polluting-other-third-party-code
+  option(VULKAN_OBJECTS_ENABLE_X11 "Enable Xlib/X11 window-system support. Don't. Use XCB." OFF)
+
+  if(VULKAN_OBJECTS_ENABLE_WAYLAND)
     target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_WAYLAND_KHR)
     target_include_directories(vulkan_objects PUBLIC ${Wayland_INCLUDE_DIRS})
   endif()
-  if(XCB_FOUND)
+  if(VULKAN_OBJECTS_ENABLE_XCB)
     target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_XCB_KHR)
     target_include_directories(vulkan_objects PUBLIC ${XCB_INCLUDE_DIRS})
     target_link_libraries(vulkan_objects PUBLIC ${XCB_LIBRARIES} ${X11_LIBRARIES} ${X11_XCB_LIBRARIES}) # required for glfw_xcb_hack.cpp
   endif()
-  option(VULKAN_OBJECTS_ENABLE_X11 "Enables X11. Don't. Use XCB." OFF) # https://stackoverflow.com/questions/79583727/how-to-avoid-macros-from-x11-polluting-other-third-party-code
-  if(X11_FOUND AND VULKAN_OBJECTS_ENABLE_X11)
+  if(VULKAN_OBJECTS_ENABLE_X11)
     target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_XLIB_KHR)
     #target_link_libraries(vulkan_objects PUBLIC ${X11_LIBRARIES})
   endif()
