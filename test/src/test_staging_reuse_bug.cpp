@@ -191,6 +191,7 @@ TEST_F(UnitTestFixture, DISABLED_StagingPoolReuseBugReproVMA) {
         .pool           = VK_NULL_HANDLE,
         .pUserData      = nullptr,
         .priority       = 0.0f,
+        .minAlignment   = 0,
     };
     uint32_t memTypeIndex = 0;
     ASSERT_EQ(VK_SUCCESS, vmaFindMemoryTypeIndexForBufferInfo(vma, &sampleBufferInfo,
@@ -298,6 +299,7 @@ TEST_F(UnitTestFixture, DISABLED_StagingPoolReuseBugReproVMA) {
             .pool           = VK_NULL_HANDLE,
             .pUserData      = nullptr,
             .priority       = 0.0f,
+            .minAlignment   = 0,
         };
         ASSERT_EQ(VK_SUCCESS, vmaCreateBuffer(vma, &bufferInfo, &allocInfo, &gpuBuffers[i].buffer,
                                               &gpuBuffers[i].allocation, nullptr));
@@ -411,6 +413,7 @@ TEST_F(UnitTestFixture, DISABLED_StagingPoolReuseBugReproVMA) {
                         .pool           = pools[currentPoolIdx],
                         .pUserData      = nullptr,
                         .priority       = 0.0f,
+                        .minAlignment   = 0,
                     };
 
                     StagingBuffer staging;
@@ -669,6 +672,7 @@ TEST_F(UnitTestFixture, DISABLED_StagingPoolReuseBugReproVMA) {
                     .pool           = pools[currentPoolIdx],
                     .pUserData      = nullptr,
                     .priority       = 0.0f,
+                    .minAlignment   = 0,
                 };
 
                 StagingBuffer staging;
@@ -1002,6 +1006,7 @@ TEST_F(UnitTestFixture, DISABLED_StagingPoolReuseBugReproVKOnly) {
             .pool           = VK_NULL_HANDLE,
             .pUserData      = nullptr,
             .priority       = 0.0f,
+            .minAlignment   = 0,
         };
         ASSERT_EQ(VK_SUCCESS, vmaCreateBuffer(vma, &bufferInfo, &allocInfo, &gpuBuffers[i].buffer,
                                               &gpuBuffers[i].allocation, nullptr));

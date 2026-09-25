@@ -172,6 +172,7 @@ inline VmaAllocationCreateInfo allocationCreateInfo(VkMemoryPropertyFlags memory
         .pool           = VK_NULL_HANDLE,
         .pUserData      = nullptr,
         .priority       = 0.0f,
+        .minAlignment   = 0,
     };
 }
 
@@ -186,6 +187,7 @@ inline VmaAllocationCreateInfo allocationCreateInfo(VmaPool               pool,
         .pool           = pool,
         .pUserData      = nullptr,
         .priority       = 0.0f,
+        .minAlignment   = 0,
     };
 }
 

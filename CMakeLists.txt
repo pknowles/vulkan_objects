@@ -34,14 +34,14 @@ if (MSVC AND MSVC_VERSION LESS 1939)
 endif()
 
 set(VULKAN_OBJECTS_SPEC_OVERRIDE "" CACHE FILEPATH "Override path to own vk.xml. Ignores VULKAN_OBJECTS_SPEC_TAG")
-set(VULKAN_OBJECTS_SPEC_TAG "v1.4.335" CACHE STRING "GIT tag from https://github.com/KhronosGroup/Vulkan-Headers/tags")
-set(VULKAN_OBJECTS_VMA_TAG "v3.3.0" CACHE STRING "GIT tag from https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/tags")
-set(VULKAN_OBJECTS_SLANG_TAG "pknowles/gen_deps" CACHE STRING "GIT tag from https://github.com/shader-slang/slang/tags")
-set(VULKAN_OBJECTS_SHADERC_TAG "v2026.1" CACHE STRING "GIT tag from https://github.com/google/shaderc/tags")
-set(VULKAN_OBJECTS_SPIRV_HEADERS_TAG "vulkan-sdk-1.4.341" CACHE STRING "GIT tag from https://github.com/KhronosGroup/SPIRV-Headers/tags")
-set(VULKAN_OBJECTS_SPIRV_TOOLS_TAG "v2026.1" CACHE STRING "GIT tag from https://github.com/KhronosGroup/SPIRV-Tools/tags")
-set(VULKAN_OBJECTS_GLSLANG_TAG "16.2.0" CACHE STRING "GIT tag from https://github.com/KhronosGroup/glslang/tags")
-set(VULKAN_OBJECTS_GLFW_TAG "3.4" CACHE STRING "GIT tag from https://github.com/glfw/glfw/tags")
+set(VULKAN_OBJECTS_SPEC_TAG "v1.4.364" CACHE STRING "GIT tag from https://github.com/KhronosGroup/Vulkan-Headers/tags")
+set(VULKAN_OBJECTS_VMA_TAG "v3.4.0" CACHE STRING "GIT tag from https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/tags")
+set(VULKAN_OBJECTS_SLANG_TAG "v2026.18.3" CACHE STRING "GIT tag from https://github.com/shader-slang/slang/tags")
+set(VULKAN_OBJECTS_SHADERC_TAG "v2026.4" CACHE STRING "GIT tag from https://github.com/google/shaderc/tags")
+set(VULKAN_OBJECTS_SPIRV_HEADERS_TAG "v1.202609.0" CACHE STRING "GIT tag from https://github.com/KhronosGroup/SPIRV-Headers/tags")
+set(VULKAN_OBJECTS_SPIRV_TOOLS_TAG "v2026.4.rc2" CACHE STRING "GIT tag from https://github.com/KhronosGroup/SPIRV-Tools/tags")
+set(VULKAN_OBJECTS_GLSLANG_TAG "16.6.0" CACHE STRING "GIT tag from https://github.com/KhronosGroup/glslang/tags")
+set(VULKAN_OBJECTS_GLFW_TAG "3.5.1" CACHE STRING "GIT tag from https://github.com/glfw/glfw/tags")
 option(VULKAN_OBJECTS_FETCH_VVL "Include Vulkan Validation Layers with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_VMA "Include Vulkan Memory Allocator with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_SLANG "Include Slang compiler with FetchContent()" OFF)
@@ -257,7 +257,7 @@ if(VULKAN_OBJECTS_FETCH_SLANG)
   include(FetchContent)
   FetchContent_Declare(
     slang
-    GIT_REPOSITORY https://github.com/pknowles/slang.git
+    GIT_REPOSITORY https://github.com/shader-slang/slang
     GIT_TAG ${VULKAN_OBJECTS_SLANG_TAG}
     GIT_SHALLOW TRUE
 

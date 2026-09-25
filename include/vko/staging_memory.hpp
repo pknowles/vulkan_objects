@@ -567,6 +567,7 @@ private:
             .pool           = VK_NULL_HANDLE,
             .pUserData      = nullptr,
             .priority       = 0.0f,
+            .minAlignment   = 0,
         };
         uint32_t memTypeIndex = 0;
         check(vmaFindMemoryTypeIndexForBufferInfo(m_allocator.get(), &sampleBufferCreateInfo,
