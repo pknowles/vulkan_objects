@@ -49,6 +49,18 @@ option(VULKAN_OBJECTS_FETCH_SHADERC "Include Shaderc compiler with FetchContent(
 option(VULKAN_OBJECTS_FETCH_GLFW "Include GLFW for XCB workaround library (vulkan_objects_glfw_xcb)" OFF)
 option(VULKAN_OBJECTS_SHADERC_BUILD_EXECUTABLES "Build glslc command-line compiler (for offline shader compilation)" OFF)
 
+# Testing override toggles
+option(VULKAN_OBJECTS_TESTING_BUILD_ALL "Force building tests and fetch most dependencies (VVL, VMA, etc) typically used for library development" OFF)
+option(VULKAN_OBJECTS_TESTING "Enable vulkan_objects tests when BUILD_TESTING is ON; use to force off" ON)
+if(VULKAN_OBJECTS_TESTING_BUILD_ALL)
+  set(VULKAN_OBJECTS_FETCH_VMA ON)
+  set(VULKAN_OBJECTS_FETCH_VVL ON)
+  set(VULKAN_OBJECTS_FETCH_GLFW ON)
+elseif(BUILD_TESTING AND VULKAN_OBJECTS_TESTING AND NOT TARGET vma_static)
+  # Automatically provide VMA as minimal testing requirements
+  set(VULKAN_OBJECTS_FETCH_VMA ON)
+endif()
+
 if(VULKAN_OBJECTS_SPEC_OVERRIDE)
   set(VULKAN_SPEC_XML ${VULKAN_OBJECTS_SPEC_OVERRIDE})
 else()
@@ -369,15 +381,10 @@ if((TARGET glfw) AND XCB_FOUND)
   target_link_libraries(vulkan_objects_glfw_xcb PUBLIC ${XCB_LIBRARIES} ${X11_LIBRARIES} ${X11_XCB_LIBRARIES})
 endif()
 
-option(VULKAN_OBJECTS_TESTING_BUILD_ALL "Require all test dependencies (VVL, VMA, etc) to build tests" ON)
-
-if((NOT VULKAN_OBJECTS_TESTING_BUILD_ALL AND VULKAN_OBJECTS_FETCH_VMA) OR 
-   (VULKAN_OBJECTS_FETCH_VVL AND VULKAN_OBJECTS_FETCH_VMA))
-  if(BUILD_TESTING)
-    option(BUILD_VULKAN_OBJECTS_TESTING "Enable vulkan_objects testing" ON)
-    if(BUILD_VULKAN_OBJECTS_TESTING)
-      enable_testing()
-      add_subdirectory(test)
-    endif()
-  endif()
+# Buld tests if:
+# - The user set VULKAN_OBJECTS_TESTING_BUILD_ALL (takes precedence), or
+# - Cmake testing is enabled, the user didn't disable it and we have minimum dependencies
+if(VULKAN_OBJECTS_TESTING_BUILD_ALL OR (BUILD_TESTING AND VULKAN_OBJECTS_TESTING))
+  enable_testing()
+  add_subdirectory(test)
 endif()
