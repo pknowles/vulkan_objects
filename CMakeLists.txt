@@ -46,7 +46,7 @@ option(VULKAN_OBJECTS_FETCH_VVL "Include Vulkan Validation Layers with FetchCont
 option(VULKAN_OBJECTS_FETCH_VMA "Include Vulkan Memory Allocator with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_SLANG "Include Slang compiler with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_SHADERC "Include Shaderc compiler with FetchContent()" OFF)
-option(VULKAN_OBJECTS_FETCH_GLFW "Include GLFW for XCB workaround library (vulkan_objects_glfw_xcb)" OFF)
+option(VULKAN_OBJECTS_FETCH_GLFW "Include GLFW with FetchContent()" OFF)
 option(VULKAN_OBJECTS_SHADERC_BUILD_EXECUTABLES "Build glslc command-line compiler (for offline shader compilation)" OFF)
 
 if(VULKAN_OBJECTS_SPEC_OVERRIDE)
@@ -97,7 +97,6 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|BSD|GNU")
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(Wayland wayland-client)
   pkg_check_modules(XCB xcb)
-  pkg_check_modules(X11_XCB x11-xcb)
 
   option(VULKAN_OBJECTS_ENABLE_WAYLAND "Enable Wayland window-system support" ${Wayland_FOUND})
   option(VULKAN_OBJECTS_ENABLE_XCB "Enable XCB window-system support" ${XCB_FOUND})
@@ -113,11 +112,10 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|BSD|GNU")
   if(VULKAN_OBJECTS_ENABLE_XCB)
     target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_XCB_KHR)
     target_include_directories(vulkan_objects PUBLIC ${XCB_INCLUDE_DIRS})
-    target_link_libraries(vulkan_objects PUBLIC ${XCB_LIBRARIES} ${X11_LIBRARIES} ${X11_XCB_LIBRARIES}) # required for glfw_xcb_hack.cpp
   endif()
   if(VULKAN_OBJECTS_ENABLE_X11)
     target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_XLIB_KHR)
-    #target_link_libraries(vulkan_objects PUBLIC ${X11_LIBRARIES})
+    target_link_libraries(vulkan_objects PUBLIC X11::X11)
   endif()
 endif()
 
@@ -344,7 +342,7 @@ if(VULKAN_OBJECTS_FETCH_SHADERC)
 endif()
 
 if(VULKAN_OBJECTS_FETCH_GLFW)
-  # GLFW for window/surface creation and XCB workaround
+  # GLFW for window/surface creation
   include(FetchContent)
   FetchContent_Declare(
     glfw
@@ -356,17 +354,6 @@ if(VULKAN_OBJECTS_FETCH_GLFW)
   set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(glfw)
-endif()
-
-# GLFW XCB workaround library - see https://github.com/glfw/glfw/issues/1061
-# GLFW does not expose native XCB handles, only X11/Xlib. This library provides
-# glfwGetXCBConnection/Visual/Window functions. Must be compiled separately to
-# avoid X11 macro pollution (Success, None, etc.) leaking into other headers.
-# Can be removed once GLFW adds native XCB support.
-if((TARGET glfw) AND XCB_FOUND)
-  add_library(vulkan_objects_glfw_xcb STATIC src/glfw_xcb_hack.cpp)
-  target_link_libraries(vulkan_objects_glfw_xcb PUBLIC vulkan_objects glfw)
-  target_link_libraries(vulkan_objects_glfw_xcb PUBLIC ${XCB_LIBRARIES} ${X11_LIBRARIES} ${X11_XCB_LIBRARIES})
 endif()
 
 option(VULKAN_OBJECTS_TESTING_BUILD_ALL "Require all test dependencies (VVL, VMA, etc) to build tests" ON)
