@@ -15,6 +15,9 @@
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
     #define GLFW_EXPOSE_NATIVE_X11
 #endif
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+    #define GLFW_EXPOSE_NATIVE_XCB
+#endif
 
 // NOTE: including glfw3native.h leaks the various native header includes -
 // maybe more than including vulkan.h. You'd need those anyway to create
@@ -44,16 +47,11 @@ static constexpr auto None = 0L;
 namespace vko {
 namespace glfw {
 
-// GLFW XCB Workaround Functions
-// GLFW does not provide native XCB getters (only X11/Xlib). These functions are
-// implemented in vulkan_objects_glfw_xcb library (src/glfw_xcb_hack.cpp). To use:
-// - Link against vulkan_objects_glfw_xcb (enable with VULKAN_OBJECTS_FETCH_GLFW=ON)
-// - Or compile src/glfw_xcb_hack.cpp separately in your project
-// See: https://github.com/glfw/glfw/issues/1061
 #if defined(VK_USE_PLATFORM_XCB_KHR)
-xcb_visualid_t    glfwGetXCBVisualID();
-xcb_connection_t* glfwGetXCBConnection();
-xcb_window_t      glfwGetXCBWindow(GLFWwindow* window);
+// Previously declared here by the vulkan_objects_glfw_xcb workaround
+using ::glfwGetXCBConnection;
+using ::glfwGetXCBVisualID;
+using ::glfwGetXCBWindow;
 #endif
 
 inline const char* errorToString(int errorCode) {
@@ -70,6 +68,10 @@ inline const char* errorToString(int errorCode) {
         case GLFW_PLATFORM_ERROR: return "GLFW_PLATFORM_ERROR: A platform-specific error occurred that does not match any of the more specific categories.";
         case GLFW_FORMAT_UNAVAILABLE: return "GLFW_FORMAT_UNAVAILABLE: The requested format is not supported or available.";
         case GLFW_NO_WINDOW_CONTEXT: return "GLFW_NO_WINDOW_CONTEXT: The specified window does not have an OpenGL or OpenGL ES context.";
+        case GLFW_CURSOR_UNAVAILABLE: return "GLFW_CURSOR_UNAVAILABLE: The specified cursor shape is not available.";
+        case GLFW_FEATURE_UNAVAILABLE: return "GLFW_FEATURE_UNAVAILABLE: The requested feature is not provided by the platform.";
+        case GLFW_FEATURE_UNIMPLEMENTED: return "GLFW_FEATURE_UNIMPLEMENTED: The requested feature is not implemented for the platform.";
+        case GLFW_PLATFORM_UNAVAILABLE: return "GLFW_PLATFORM_UNAVAILABLE: Platform unavailable or no matching platform was found.";
         default: break;
     }
     return "<invalid error code>";
@@ -227,9 +229,15 @@ inline bool physicalDevicePresentationSupport([[maybe_unused]] const InstanceCom
     case GLFW_PLATFORM_X11:
     #if VK_KHR_xcb_surface
         if (support.xcb) {
-            return vk.vkGetPhysicalDeviceXcbPresentationSupportKHR(physicalDevice, queueFamilyIndex,
-                                                                   glfwGetXCBConnection(),
-                                                                   glfwGetXCBVisualID()) == VK_TRUE;
+            // NULL if GLFW did not load X11-xcb, e.g. GLFW_X11_XCB_VULKAN_SURFACE is off
+            if (xcb_connection_t* connection = glfwGetXCBConnection()) {
+                return vk.vkGetPhysicalDeviceXcbPresentationSupportKHR(
+                           physicalDevice, queueFamilyIndex, connection, glfwGetXCBVisualID()) ==
+                       VK_TRUE;
+            }
+        #if !VK_KHR_xlib_surface
+            throw makeLastErrorException("glfwGetXCBConnection failed");
+        #endif
         }
     #endif
     #if VK_KHR_xlib_surface

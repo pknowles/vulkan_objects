@@ -200,7 +200,7 @@ Admittedly this is not accurate, doesn't quite sit right with me and may change.
 | `VULKAN_OBJECTS_FETCH_VMA`                 | `ON` fetches [Vulkan Memory Allocator][vma] source         |
 | `VULKAN_OBJECTS_FETCH_SLANG`               | `ON` fetches [Slang Compiler][slang] source                |
 | `VULKAN_OBJECTS_FETCH_SHADERC`             | `ON` fetches [Shaderc Compiler][shaderc] source            |
-| `VULKAN_OBJECTS_FETCH_GLFW`                | `ON` fetches [GLFW][glfw] and builds XCB workaround library|
+| `VULKAN_OBJECTS_FETCH_GLFW`                | `ON` fetches [GLFW][glfw] source                           |
 | `VULKAN_OBJECTS_SHADERC_BUILD_EXECUTABLES` | `ON` builds `glslc` executable (for offline compilation)   |
 | `VULKAN_OBJECTS_SPEC_OVERRIDE`             | `/path/to/vk.xml` (ignores `_SPEC_TAG`)                    |
 | `VULKAN_OBJECTS_SPEC_TAG`                  | `<default version>` if not `_OVERRIDE`                     |
@@ -215,13 +215,12 @@ Admittedly this is not accurate, doesn't quite sit right with me and may change.
 [shaderc]: https://github.com/google/shaderc
 [glfw]: https://github.com/glfw/glfw
 
-**Note on GLFW XCB support:** GLFW does not expose native XCB handles (only
-X11/Xlib), which causes X11 macro pollution (Success, None, etc.). The
-`vulkan_objects_glfw_xcb` library provides `glfwGetXCBConnection/Visual/Window`
-workarounds. This is compiled separately to isolate the X11 headers. See
-[glfw/glfw#1061](https://github.com/glfw/glfw/issues/1061). External users can
-either enable `VULKAN_OBJECTS_FETCH_GLFW` or otherwise provide a `glfw` target
-themselves (preferred).
+**Note on GLFW XCB support:** XCB surfaces use GLFW's
+`glfwGetXCBConnection/VisualID/Window` from `GLFW_EXPOSE_NATIVE_XCB`, which
+avoids Xlib macro pollution (Success, None, etc.). This needs a GLFW version
+that provides them ([glfw/glfw#2906](https://github.com/glfw/glfw/issues/2906)).
+External users can either enable `VULKAN_OBJECTS_FETCH_GLFW` or otherwise
+provide a `glfw` target themselves (preferred).
 
 ## Issues
 

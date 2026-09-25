@@ -46,7 +46,7 @@ option(VULKAN_OBJECTS_FETCH_VVL "Include Vulkan Validation Layers with FetchCont
 option(VULKAN_OBJECTS_FETCH_VMA "Include Vulkan Memory Allocator with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_SLANG "Include Slang compiler with FetchContent()" OFF)
 option(VULKAN_OBJECTS_FETCH_SHADERC "Include Shaderc compiler with FetchContent()" OFF)
-option(VULKAN_OBJECTS_FETCH_GLFW "Include GLFW for XCB workaround library (vulkan_objects_glfw_xcb)" OFF)
+option(VULKAN_OBJECTS_FETCH_GLFW "Include GLFW with FetchContent()" OFF)
 option(VULKAN_OBJECTS_SHADERC_BUILD_EXECUTABLES "Build glslc command-line compiler (for offline shader compilation)" OFF)
 
 if(VULKAN_OBJECTS_SPEC_OVERRIDE)
@@ -66,33 +66,56 @@ else()
   target_link_libraries(vulkan_objects PUBLIC Vulkan::Headers)
 endif()
 
-# Platform-specific window manager enablement
+# Per-platform window-system (compositor) enablement.
+#
+# Each platform has an explicit VULKAN_OBJECTS_ENABLE_* switch. When not set
+# explicitly it defaults to what is detected/available. Each switch drives the
+# matching VK_USE_PLATFORM_* define, which in turn drives the GLFW_EXPOSE_NATIVE_*
+# define in glfw_objects.hpp, so the Vulkan and GLFW-native code paths stay
+# consistent. The user is responsible for matching these to the GLFW they link
+# against: GLFW only exports a platform's native handles (e.g.
+# glfwGetWaylandDisplay) when built with that platform, so enabling a platform
+# the linked GLFW lacks will fail to link.
 if(WIN32)
-  target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_WIN32_KHR)
-  target_compile_definitions(vulkan_objects PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+  option(VULKAN_OBJECTS_ENABLE_WIN32 "Enable Win32 window-system support" ON)
+  if(VULKAN_OBJECTS_ENABLE_WIN32)
+    target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_WIN32_KHR)
+    target_compile_definitions(vulkan_objects PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+  endif()
 elseif(ANDROID)
-  target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_ANDROID_KHR)
+  option(VULKAN_OBJECTS_ENABLE_ANDROID "Enable Android window-system support" ON)
+  if(VULKAN_OBJECTS_ENABLE_ANDROID)
+    target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_ANDROID_KHR)
+  endif()
 elseif(APPLE)
-  target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_METAL_EXT)
+  option(VULKAN_OBJECTS_ENABLE_METAL "Enable Metal/Cocoa window-system support" ON)
+  if(VULKAN_OBJECTS_ENABLE_METAL)
+    target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_METAL_EXT)
+  endif()
 elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|BSD|GNU")
   find_package(X11)
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(Wayland wayland-client)
   pkg_check_modules(XCB xcb)
-  pkg_check_modules(X11_XCB x11-xcb)
-  if(Wayland_FOUND)
+
+  option(VULKAN_OBJECTS_ENABLE_WAYLAND "Enable Wayland window-system support" ${Wayland_FOUND})
+  option(VULKAN_OBJECTS_ENABLE_XCB "Enable XCB window-system support" ${XCB_FOUND})
+  # Xlib defaults off even when available: prefer XCB. Xlib leaks macros (e.g.
+  # None) into other code.
+  # https://stackoverflow.com/questions/79583727/how-to-avoid-macros-from-x11-polluting-other-third-party-code
+  option(VULKAN_OBJECTS_ENABLE_X11 "Enable Xlib/X11 window-system support. Don't. Use XCB." OFF)
+
+  if(VULKAN_OBJECTS_ENABLE_WAYLAND)
     target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_WAYLAND_KHR)
     target_include_directories(vulkan_objects PUBLIC ${Wayland_INCLUDE_DIRS})
   endif()
-  if(XCB_FOUND)
+  if(VULKAN_OBJECTS_ENABLE_XCB)
     target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_XCB_KHR)
     target_include_directories(vulkan_objects PUBLIC ${XCB_INCLUDE_DIRS})
-    target_link_libraries(vulkan_objects PUBLIC ${XCB_LIBRARIES} ${X11_LIBRARIES} ${X11_XCB_LIBRARIES}) # required for glfw_xcb_hack.cpp
   endif()
-  option(VULKAN_OBJECTS_ENABLE_X11 "Enables X11. Don't. Use XCB." OFF) # https://stackoverflow.com/questions/79583727/how-to-avoid-macros-from-x11-polluting-other-third-party-code
-  if(X11_FOUND AND VULKAN_OBJECTS_ENABLE_X11)
+  if(VULKAN_OBJECTS_ENABLE_X11)
     target_compile_definitions(vulkan_objects PUBLIC VK_USE_PLATFORM_XLIB_KHR)
-    #target_link_libraries(vulkan_objects PUBLIC ${X11_LIBRARIES})
+    target_link_libraries(vulkan_objects PUBLIC X11::X11)
   endif()
 endif()
 
@@ -319,7 +342,7 @@ if(VULKAN_OBJECTS_FETCH_SHADERC)
 endif()
 
 if(VULKAN_OBJECTS_FETCH_GLFW)
-  # GLFW for window/surface creation and XCB workaround
+  # GLFW for window/surface creation
   include(FetchContent)
   FetchContent_Declare(
     glfw
@@ -331,17 +354,6 @@ if(VULKAN_OBJECTS_FETCH_GLFW)
   set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(glfw)
-endif()
-
-# GLFW XCB workaround library - see https://github.com/glfw/glfw/issues/1061
-# GLFW does not expose native XCB handles, only X11/Xlib. This library provides
-# glfwGetXCBConnection/Visual/Window functions. Must be compiled separately to
-# avoid X11 macro pollution (Success, None, etc.) leaking into other headers.
-# Can be removed once GLFW adds native XCB support.
-if((TARGET glfw) AND XCB_FOUND)
-  add_library(vulkan_objects_glfw_xcb STATIC src/glfw_xcb_hack.cpp)
-  target_link_libraries(vulkan_objects_glfw_xcb PUBLIC vulkan_objects glfw)
-  target_link_libraries(vulkan_objects_glfw_xcb PUBLIC ${XCB_LIBRARIES} ${X11_LIBRARIES} ${X11_XCB_LIBRARIES})
 endif()
 
 option(VULKAN_OBJECTS_TESTING_BUILD_ALL "Require all test dependencies (VVL, VMA, etc) to build tests" ON)
