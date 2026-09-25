@@ -215,6 +215,14 @@ Admittedly this is not accurate, doesn't quite sit right with me and may change.
 [shaderc]: https://github.com/google/shaderc
 [glfw]: https://github.com/glfw/glfw
 
+**Window System** enablement flags are set by default. Linux has support for
+multiple - `VULKAN_OBJECTS_ENABLE_WAYLAND` and `VULKAN_OBJECTS_ENABLE_XCB`
+(newer X11 API) default to enabled when development libraries for them are found
+and `VULKAN_OBJECTS_ENABLE_X11` (old API) is always default disabled. They may
+be explicitly enabled/disabled, which is preferable as you immediately get
+compile errors for missing libraries rather than finding out support is missing
+at runtime.
+
 **Note on GLFW XCB support:** GLFW does not expose native XCB handles (only
 X11/Xlib), which causes X11 macro pollution (Success, None, etc.). The
 `vulkan_objects_glfw_xcb` library provides `glfwGetXCBConnection/Visual/Window`
